@@ -8,24 +8,14 @@ import { browser } from 'k6/browser';
 import { sleep, check, fail } from 'k6';
 import { Trend } from 'k6/metrics';
 
-import { checkWopi, getWopiClientUrl, getWopiSrc } from '../lib/wopi_discovery.js';
-import { screenshotPage, setWopiClientAndFile, startCool, watchPostMessages, waitForMessage } from '../lib/test_utils.js';
-import { wopiHost, wopiUrl } from './config.js';
+import { checkWopi, getWopiClientUrl, getWopiSrc } from '../../lib/wopi_discovery.js';
+import { getNetworkBytes, screenshotPage, setWopiClientAndFile, startCool, watchPostMessages, waitForMessage } from '../../lib/test_utils.js';
+import exec from 'k6/execution';
+import { browserScenario, wopiHost, wopiUrl } from '../config.js';
 
 export const options = {
     insecureSkipTLSVerify: true,
-    scenarios: {
-        ui: {
-            executor: 'shared-iterations',
-            vus: 1,
-            iterations: 1,
-            options: {
-                browser: {
-                    type: 'chromium',
-                },
-            },
-        },
-    },
+    scenarios: browserScenario(),
 };
 
 const browserOptions = {
@@ -44,6 +34,7 @@ export function setup() {
 export default async function () {
     let context = await browser.newContext(browserOptions);
     const page = await context.newPage();
+    const vuId = exec.vu.idInTest;
     try {
         page.on('console', (msg) => {
             let text = msg.text();
@@ -53,9 +44,11 @@ export default async function () {
         });
 
         let start = Date.now();
+        console.log(`START_TIME: ${start} vu=${vuId}`);
         frameLoadingTime.add(0);
         pageLoadingTime.add(0);
         await page.goto(wopiHost);
+
         pageLoadingTime.add(Date.now() - start);
 
         await setWopiClientAndFile(page, wopiUrl.toString(), 2);
@@ -69,6 +62,8 @@ export default async function () {
             let message = await waitForMessage(page, "App_LoadingStatus");
             console.log(`message2: ${JSON.stringify(message)}`);
             if (message) {
+                if (message.Values && message.Values.Status == "Document_Loaded")
+                    console.log(`TIMING: ${JSON.stringify({...message.Values, Vu: vuId})}`);
                 ready = (message.Values.Status == "Frame_Ready");
             }
         } while (!ready);
@@ -80,6 +75,9 @@ export default async function () {
         await screenshotPage(page);
         fail(`Browser iteration failed: ${error}`);
     } finally {
+        // Capture cumulative WS byte totals before the tab is closed.
+        const bytes = await getNetworkBytes(page);
+        if (bytes) console.log(`network bytes: sent=${bytes.sent}, received=${bytes.received} vu=${vuId}`);
         await page.close();
     }
 

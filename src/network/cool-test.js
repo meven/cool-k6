@@ -2,9 +2,9 @@ import http from 'k6/http';
 import { sleep } from 'k6';
 import { Trend } from 'k6/metrics';
 
-import { checkWopi, getWopiClientUrl, getWopiSrc } from '../lib/wopi_discovery.js';
-import { CoolClientWs } from '../lib/cool_client_ws.js';
-import { wopiHost, wopiUrl } from './config.js';
+import { checkWopi, getWopiClientUrl, getWopiSrc } from '../../lib/wopi_discovery.js';
+import { CoolClientWs } from '../../lib/cool_client_ws.js';
+import { wopiHost, wopiUrl } from '../config.js';
 
 export const options = {
   iterations: 1,

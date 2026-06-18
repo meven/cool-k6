@@ -1,7 +1,9 @@
 # Cool-K6 test image.
 #
 # Built test bundles from dist/ are embedded so the container is invoked
-# with just the test name on the docker run command line.
+# with just the test name on the docker run command line. The bundles are
+# grouped by category: dist/network/ holds synthetic protocol-level
+# scenarios, dist/browser/ holds the ones driven through a real Chromium.
 #
 # Build:  docker build -t cool-k6 .
 # Run a single embedded test (via env vars):

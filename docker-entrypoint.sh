@@ -2,13 +2,20 @@
 #
 # Launcher for the cool-k6 image.
 #
+# The bundled tests are grouped by category under /app/dist:
+#   network/   synthetic, protocol-level scenarios (no browser)
+#   browser/   scenarios driven through a real Chromium
+#
 # Accepts one or more test references, optionally followed by extra k6
 # flags after a `--` separator. Each test reference can be:
 #   - a bare base name such as "cool-test", resolved to a .js file. It is
-#     looked up first among the bundled tests in /app/dist, then in the
-#     mounted scenarios directory (COOL_K6_TESTS_DIR, default /tests).
+#     searched for inside the category folders of the bundled tests in
+#     /app/dist, then in the mounted scenarios directory
+#     (COOL_K6_TESTS_DIR, default /tests).
+#   - a category-qualified name such as "network/cool-test", looked up
+#     under /app/dist then the mounted directory.
 #   - a file name such as "cool-test.js", same lookup.
-#   - any path containing a slash, used verbatim.
+#   - any absolute path, used verbatim.
 #
 # To run your own scenarios, mount a local directory of k6 scripts at
 # /tests and refer to them by name, the same way as the bundled tests:
@@ -84,7 +91,7 @@ usage: docker run cool-k6 list
        docker run cool-k6 <test>[.js] [<test>[.js] ...] [-- <k6 flags>]
 available tests in /app/dist/:
 EOF
-    ls /app/dist/ | sed 's/^/    /' >&2
+    ( cd /app/dist && find . -name '*.js' | sed 's|^\./||' | sort | sed 's/^/    /' ) >&2
 }
 
 if [ "$#" -eq 0 ]; then
@@ -136,11 +143,11 @@ fi
 
 case "$1" in
     list|ls|--list)
-        echo "available tests in /app/dist/:"
-        ls /app/dist/ | sed 's/^/    /'
-        if [ -d "$COOL_K6_TESTS_DIR" ] && [ -n "$(ls -A "$COOL_K6_TESTS_DIR" 2>/dev/null)" ]; then
+        echo "available tests in /app/dist/ (by category):"
+        ( cd /app/dist && find . -name '*.js' | sed 's|^\./||' | sort | sed 's/^/    /' )
+        if [ -d "$COOL_K6_TESTS_DIR" ] && [ -n "$(find "$COOL_K6_TESTS_DIR" -name '*.js' 2>/dev/null | head -n1)" ]; then
             echo "mounted scenarios in $COOL_K6_TESTS_DIR/:"
-            ls "$COOL_K6_TESTS_DIR/" | sed 's/^/    /'
+            ( cd "$COOL_K6_TESTS_DIR" && find . -name '*.js' | sed 's|^\./||' | sort | sed 's/^/    /' )
         fi
         exit 0
         ;;
@@ -178,28 +185,63 @@ if [ "$skip_tls_verify" -eq 1 ] || [ "$NODE_TLS_REJECT_UNAUTHORIZED" = "0" ]; th
 fi
 
 resolve_test() {
-    # A path (anything with a slash) is used verbatim.
-    case "$1" in
-        /*|*/*) printf '%s\n' "$1"; return ;;
+    arg="$1"
+
+    # An absolute path is used verbatim.
+    case "$arg" in
+        /*) printf '%s\n' "$arg"; return ;;
     esac
 
-    # A bare name resolves to a .js file. Look it up first among the
-    # bundled tests, then in the mounted scenarios directory. If it is in
-    # neither, return the bundled path so the missing-file message names a
-    # concrete location.
-    name="$1"
+    # Name-based lookups resolve to a .js file. Keep any category prefix.
+    name="$arg"
     case "$name" in
         *.js) ;;
         *)    name="$name.js" ;;
     esac
 
-    if [ -f "/app/dist/$name" ]; then
-        printf '/app/dist/%s\n' "$name"
-    elif [ -f "$COOL_K6_TESTS_DIR/$name" ]; then
-        printf '%s/%s\n' "$COOL_K6_TESTS_DIR" "$name"
+    # A category-qualified name such as network/cool-test.js: look for it
+    # under the bundled tests, then the mounted scenarios, then fall back to
+    # using it verbatim as a relative path.
+    case "$name" in
+        */*)
+            if [ -f "/app/dist/$name" ]; then
+                printf '/app/dist/%s\n' "$name"
+            elif [ -f "$COOL_K6_TESTS_DIR/$name" ]; then
+                printf '%s/%s\n' "$COOL_K6_TESTS_DIR" "$name"
+            else
+                printf '%s\n' "$arg"
+            fi
+            return
+            ;;
+    esac
+
+    # A bare name: search inside the category folders, bundled tests first
+    # then the mounted scenarios, and take the first match. If it is in
+    # neither, return a bundled path so the missing-file message names a
+    # concrete location.
+    found=$(find /app/dist -type f -name "$name" 2>/dev/null | sort | head -n1)
+    if [ -z "$found" ] && [ -d "$COOL_K6_TESTS_DIR" ]; then
+        found=$(find "$COOL_K6_TESTS_DIR" -type f -name "$name" 2>/dev/null | sort | head -n1)
+    fi
+    if [ -n "$found" ]; then
+        printf '%s\n' "$found"
     else
         printf '/app/dist/%s\n' "$name"
     fi
+}
+
+# A short, category-qualified name for the banners and the summary table:
+# the path relative to the bundled tests or the mounted scenarios
+# directory (so network/cool-test.js rather than the full path), falling
+# back to the base name for anything else.
+display_name() {
+    case "$1" in
+        /app/dist/*) printf '%s\n' "${1#/app/dist/}"; return ;;
+    esac
+    case "$1" in
+        "$COOL_K6_TESTS_DIR"/*) printf '%s\n' "${1#"$COOL_K6_TESTS_DIR"/}"; return ;;
+    esac
+    basename "$1"
 }
 
 sequence_start=$(date +%s)
@@ -215,7 +257,7 @@ results=""
 final_rc=0
 for t in $tests; do
     test_path=$(resolve_test "$t")
-    test_name=$(basename "$test_path")
+    test_name=$(display_name "$test_path")
     if [ ! -f "$test_path" ]; then
         echo "no such test: $test_path" >&2
         results="${results}

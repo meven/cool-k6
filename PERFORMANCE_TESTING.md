@@ -66,49 +66,74 @@ needs Docker to use it.
 
 ## Built-in scenarios
 
-The image carries the following bundled scripts under `/app/dist/`.
+The image carries the bundled scripts under `/app/dist/`, grouped into
+two categories that make clear how each one drives the server:
+
+- `network/` holds synthetic, protocol-level scenarios. They open a
+  WebSocket to Collabora directly and never start a browser, so they
+  are light and let one host drive many virtual users. They measure
+  the protocol path, not the editor a real user sees.
+- `browser/` holds scenarios driven through a real Chromium with
+  k6-browser. They load the full editor and measure what the user
+  experiences, at the cost of far more CPU and memory per virtual
+  user.
+
 Each script reads the document IDs given below from the WOPI host. All
-scripts default to one iteration unless stated otherwise.
+scripts default to one iteration unless stated otherwise. You can name
+a script by its bare name (`cool-test`), with its category
+(`network/cool-test`), or with the `.js` suffix.
 
-- `cool-test.js`. Fetches the WOPI client iframe over HTTP, opens a
-  WebSocket to Collabora through `CoolClientWs`, opens the document
-  at file ID `2`, sends a short typing sequence, then closes. No
-  browser, so this is the lightest scenario for many virtual users
-  per host. Records `frame_loading_time`.
+### Network-only (synthetic) scenarios
 
-- `cool-browser-test.js`. Drives a Chromium through k6-browser
+- `network/cool-test.js`. Fetches the WOPI client iframe over HTTP,
+  opens a WebSocket to Collabora through `CoolClientWs`, opens the
+  document at file ID `2`, sends a short typing sequence, then closes.
+  The lightest scenario for many virtual users per host. Records
+  `frame_loading_time`.
+
+- `network/cool-multi-user-writer-test.js`. Runs five virtual users in
+  parallel against file ID `2`, each opening a WebSocket directly,
+  navigating to a different page, and typing a short sentence. The
+  document at file ID `2` must have at least five pages. Records
+  cumulative WebSocket bytes sent and received per virtual user.
+
+### Browser-based scenarios
+
+- `browser/cool-browser-test.js`. Drives a Chromium through k6-browser
   against the same file ID `2`. Goes through the WOPI host index
   page, watches the postMessage stream for `App_LoadingStatus`, and
   records `page_loading_time` plus `frame_loading_time` up to
   `Frame_Ready`. Saves a screenshot to `COOL_K6_SCREENSHOT_DIR` if
   the iteration throws.
 
-- `cool-browser-insert-image-test.js`. Same browser path as the test
-  above, file ID `2`. Once the document canvas is visible it sends
-  the `Action_InsertGraphic` postMessage with a sample image URL and
-  holds the page open for two seconds while the change propagates.
+- `browser/cool-browser-insert-image-test.js`. Same browser path as
+  the test above, file ID `2`. Once the document canvas is visible it
+  sends the `Action_InsertGraphic` postMessage with a sample image URL
+  and holds the page open for two seconds while the change propagates.
   Saves a screenshot on failure.
 
-- `cool-multi-user-writer-test.js`. Runs five virtual users in
-  parallel against file ID `2`, each opening a WebSocket directly,
-  navigating to a different page, and typing a short sentence. The
-  document at file ID `2` must have at least five pages. Records
-  cumulative WebSocket bytes sent and received per virtual user.
+- `browser/cool-multi-user-edit-test.js`. Runs `COOL_K6_VUS` browser
+  users (default `1`) against file ID `COOL_K6_FILE_ID` (default `2`),
+  each loading the full editor and running rounds of typing and UNO
+  commands. Records `frame_loading_time` and a per-user `edit_time`.
+  Uses its own env vars for the user count so it is not confused with
+  k6 `--vus`. Saves a screenshot on failure.
 
-- `cool-grammar-check-test.js`. Browser-driven scenario against file
-  ID `3` by default. Holds the document open for `COOL_K6_DWELL_SEC`
-  seconds (default `30`) while the kit-side grammar checker runs
-  through the paragraphs. Captures a Chromium CPU profile via the
-  Chrome DevTools Protocol if `newCDPSession` is available, and
+- `browser/cool-grammar-check-test.js`. Browser-driven scenario against
+  file ID `3` by default. Holds the document open for
+  `COOL_K6_DWELL_SEC` seconds (default `30`) while the kit-side grammar
+  checker runs through the paragraphs. Captures a Chromium CPU profile
+  via the Chrome DevTools Protocol if `newCDPSession` is available, and
   emits the profile on stdout framed by `__CPUPROFILE_START__` /
   `__CPUPROFILE_CHUNK__` / `__CPUPROFILE_END__` markers.
 
-- `cool-browser-profile-test.js`. Same profile-capture mechanism as
-  the grammar-check test but without the dwell. Used to inspect
-  client-side hotspots during the open path. Not for routine
+- `browser/cool-browser-profile-test.js`. Same profile-capture
+  mechanism as the grammar-check test but without the dwell. Used to
+  inspect client-side hotspots during the open path. Not for routine
   capacity testing.
 
-The image lists the bundled scripts when run with no argument:
+The image lists the bundled scripts, grouped by category, when run with
+no argument:
 
 ```
 docker run --rm cool-k6
@@ -124,7 +149,7 @@ override any value in the environment.
 docker run --rm cool-k6 \
     --cool-url  https://collabora.example.com/ \
     --wopi-host https://wopi.example.com/ \
-    cool-test.js
+    network/cool-test.js
 ```
 
 - `--cool-url` is the URL of the Collabora Online server. The tests
@@ -145,7 +170,7 @@ runner passes `--insecure-skip-tls-verify` to k6.
 docker run --rm cool-k6 --insecure \
     --cool-url  https://collabora.internal/ \
     --wopi-host https://wopi.internal/ \
-    cool-test.js
+    network/cool-test.js
 ```
 
 The aliases `--insecure-skip-tls-verify` and `-k` work the same way.
@@ -162,7 +187,7 @@ is:
 docker run --rm cool-k6 \
     --cool-url  https://collabora.example.com/ \
     --wopi-host https://wopi.example.com/ \
-    cool-test.js
+    network/cool-test.js
 ```
 
 Launcher options (`--cool-url`, `--wopi-host`, `--insecure`) belong
@@ -177,14 +202,14 @@ iteration. Expected output, abbreviated:
 === cool-k6 sequence start: 2026-06-12T...
 === WOPI_URL:  https://collabora.example.com/
 === WOPI_HOST: https://wopi.example.com/
-=== tests: cool-test.js
+=== tests: network/cool-test.js
 === k6 flags:
 ======================================================================
 
-=== START cool-test.js ...
+=== START network/cool-test.js ...
 
       execution: local
-      script: /app/dist/cool-test.js
+      script: /app/dist/network/cool-test.js
       ...
       http_req_duration..............: avg=...   min=... med=... max=... p(90)=... p(95)=...
       iteration_duration.............: avg=...
@@ -193,10 +218,10 @@ iteration. Expected output, abbreviated:
       data_received..................: ...
       data_sent......................: ...
 
-=== END cool-test.js rc=0 duration=Xs ...
+=== END network/cool-test.js rc=0 duration=Xs ...
 
 per-test summary:
-    cool-test.js                                       PASS         Xs
+    network/cool-test.js                               PASS         Xs
 ```
 
 If the test exits with a non-zero status, the per-test summary will
@@ -249,7 +274,7 @@ Example, ten virtual users for five minutes:
 docker run --rm cool-k6 \
     --cool-url  https://collabora.example.com/ \
     --wopi-host https://wopi.example.com/ \
-    cool-browser-test.js \
+    browser/cool-browser-test.js \
     -- --vus 10 --duration 5m
 ```
 
@@ -264,7 +289,7 @@ exit code.
 docker run --rm cool-k6 \
     --cool-url  https://collabora.example.com/ \
     --wopi-host https://wopi.example.com/ \
-    cool-test.js cool-browser-test.js cool-multi-user-writer-test.js
+    network/cool-test.js browser/cool-browser-test.js network/cool-multi-user-writer-test.js
 ```
 
 Per-test banners frame START / END with wall-clock timing, and a
@@ -272,16 +297,16 @@ roll-up table at the end of the run shows the result of each test:
 
 ```
 per-test summary:
-    cool-test.js                                       PASS         3s
-    cool-browser-test.js                               PASS         12s
-    cool-multi-user-writer-test.js                     FAIL(99)     47s
+    network/cool-test.js                               PASS         3s
+    browser/cool-browser-test.js                       PASS         12s
+    network/cool-multi-user-writer-test.js             FAIL(99)     47s
 ```
 
 If you need the same k6 flags applied to every test, place them after
 `--`. The runner forwards them to each `k6 run` invocation.
 
 ```
-docker run --rm cool-k6 cool-test.js cool-browser-test.js \
+docker run --rm cool-k6 network/cool-test.js browser/cool-browser-test.js \
     -- --vus 5 --duration 2m
 ```
 
@@ -336,15 +361,17 @@ names up somewhere else.
 
 ## Screenshots on failure
 
-The `cool-browser-test.js` and `cool-browser-insert-image-test.js`
-scripts call the `screenshotPage` helper from their catch handlers,
-so the failing browser state is captured to disk. Mount a host
-directory to keep the screenshots across runs:
+The `browser/cool-browser-test.js`,
+`browser/cool-browser-insert-image-test.js`, and
+`browser/cool-multi-user-edit-test.js` scripts call the `screenshotPage`
+helper from their catch handlers, so the failing browser state is
+captured to disk. Mount a host directory to keep the screenshots across
+runs:
 
 ```
 docker run --rm \
     -v "$PWD/screenshots":/screenshots \
-    cool-k6 cool-browser-test.js
+    cool-k6 browser/cool-browser-test.js
 ```
 
 The image declares `/screenshots` as a volume and exports the path as
@@ -360,11 +387,11 @@ the volume.
   every worker.
 - Browser scenarios use a bundled Chromium, which is heavier than a
   plain HTTP client. Expect fewer virtual users per host than
-  `cool-test.js` can drive.
-- `cool-test.js` records the HTTP fetch of the editor shell as
+  `network/cool-test.js` can drive.
+- `network/cool-test.js` records the HTTP fetch of the editor shell as
   `frame_loading_time`. Use a browser-driven test if you want
   time-to-interactive.
-- `cool-multi-user-writer-test.js` sends typed input at a fixed
+- `network/cool-multi-user-writer-test.js` sends typed input at a fixed
   cadence, not at human pace. Treat its iteration time as a
   synthetic upper bound.
 - The runner stops at the first failing test. To run the remaining
@@ -374,8 +401,14 @@ the volume.
 
 ## Going further
 
-For a full reference of k6 flags and output formats, see the k6
-documentation. For Collabora Online server settings that affect
-performance, see the operator handbook for your version. For the
-WOPI protocol specifics that the tests rely on, see the WOPI
-documentation from the protocol owner.
+- k6 documentation: https://grafana.com/docs/k6/latest/ . A full
+  reference for the flags and output formats the launcher forwards,
+  including the options reference and the browser module used by the
+  browser scenarios.
+- Collabora SDK documentation: https://sdk.collaboraonline.com/ . The
+  integrator guide for the WOPI flow, the postMessage API, and the
+  deployment settings the scenarios exercise.
+- For Collabora Online server settings that affect performance, see the
+  operator handbook for your version.
+- For the WOPI protocol specifics the tests rely on, see the WOPI
+  documentation from the protocol owner.

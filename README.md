@@ -4,10 +4,13 @@ A K6 based test suite for Collabora Online
 
 ## Adding test
 
-Add test to the `src/` directory. Files implementing tests must end in
-`-test.js`.
+Add the test under the category folder that matches how it drives the
+server: `src/network/` for a synthetic, protocol-level scenario (a
+direct WebSocket, no browser), or `src/browser/` for one driven through
+a real Chromium. Files implementing tests must end in `-test.js`.
 
-Build the bundles with `npm run build`. The targets are in `dist/`
+Build the bundles with `npm run build`. The build mirrors each category
+folder into `dist/`, so a test lands at `dist/<category>/<name>.js`
 ready to run. This uses webpack under the hood and the JavaScript
 dialect is ES6.
 
@@ -142,11 +145,11 @@ docker run -v $PWD:/app:Z \
 `k6-run` uses `k6-wrap` to perform the `run` command from k6. You can
 use it as a base to learn how to use the wrapper for other purposes.
 
-The tests are webpacked into the `dist/` directory. To run a test
-using `k6-wrap`, use the following command:
+The tests are webpacked into the `dist/` directory under their category
+folder. To run a test using `k6-wrap`, use the following command:
 
 ```shell
-./k6-run dist/cool-test.js
+./k6-run dist/network/cool-test.js
 ```
 
 ### Other options
