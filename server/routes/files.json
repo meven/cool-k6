@@ -5,10 +5,22 @@
         "path": "documents/writer-large.fodt",
         "readonly": false,
         "wopi": {
-	    "EnableInsertRemoteImage": true,
+            "EnableInsertRemoteImage": true,
             "DisableInsertLocalImage": true,
             "HidePrintOption": true,
             "HideSaveOption": false
         }
-    }
+    },
+    "11": { "path": "documents/blank.odt", "readonly": false },
+    "12": { "path": "documents/writer-5mb.odt", "readonly": false },
+    "13": { "path": "documents/blank.ods", "readonly": false },
+    "14": { "path": "documents/calc-5mb.ods", "readonly": false },
+    "15": { "path": "documents/blank.odp", "readonly": false },
+    "16": { "path": "documents/impress-5mb.odp", "readonly": false },
+    "17": { "path": "documents/blank.odg", "readonly": false },
+    "18": { "path": "documents/draw-5mb.odg", "readonly": false },
+
+    "19": { "path": "documents/writer-5mb.docx", "readonly": false },
+    "20": { "path": "documents/calc-5mb.xlsx", "readonly": false },
+    "21": { "path": "documents/impress-5mb.pptx", "readonly": false }
 }

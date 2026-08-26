@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 300" font-family="sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 z" fill="#5c2983"/>
+    </marker>
+  </defs>
+
+  <!-- floating dots for subtle interest -->
+  <circle cx="60" cy="40" r="4" fill="#5c2983" opacity="0.12"/>
+  <circle cx="915" cy="255" r="5" fill="#5c2983" opacity="0.10"/>
+  <circle cx="500" cy="30" r="3" fill="#40ba2f" opacity="0.18"/>
+
+  <text x="15" y="46" font-size="26" font-weight="bold" fill="#2e1a47">The cool-k6 profiling pipeline</text>
+
+  <!-- boxes -->
+  <g>
+    <rect x="15"  y="95" width="165" height="96" rx="12" fill="#efe7f3" stroke="#5c2983" stroke-width="2"/>
+    <text x="97"  y="138" font-size="20" font-weight="bold" fill="#2e1a47" text-anchor="middle">k6 test</text>
+    <text x="97"  y="163" font-size="14" fill="#5c2983" text-anchor="middle">docker</text>
+
+    <rect x="220" y="95" width="165" height="96" rx="12" fill="#efe7f3" stroke="#5c2983" stroke-width="2"/>
+    <text x="302" y="138" font-size="20" font-weight="bold" fill="#2e1a47" text-anchor="middle">coolwsd</text>
+    <text x="302" y="163" font-size="14" fill="#5c2983" text-anchor="middle">WOPI + WebSocket</text>
+
+    <rect x="425" y="95" width="165" height="96" rx="12" fill="#efe7f3" stroke="#5c2983" stroke-width="2"/>
+    <text x="507" y="138" font-size="20" font-weight="bold" fill="#2e1a47" text-anchor="middle">kit</text>
+    <text x="507" y="163" font-size="14" fill="#5c2983" text-anchor="middle">jailed, per-doc</text>
+
+    <rect x="630" y="95" width="165" height="96" rx="12" fill="#efe7f3" stroke="#5c2983" stroke-width="2"/>
+    <text x="712" y="132" font-size="20" font-weight="bold" fill="#2e1a47" text-anchor="middle">perf record</text>
+    <text x="712" y="157" font-size="13" fill="#5c2983" text-anchor="middle">--pid  or  -G cgroup</text>
+
+    <rect x="835" y="95" width="130" height="96" rx="12" fill="#5c2983" stroke="#2e1a47" stroke-width="2"/>
+    <text x="900" y="132" font-size="19" font-weight="bold" fill="#ffffff" text-anchor="middle">flame</text>
+    <text x="900" y="156" font-size="19" font-weight="bold" fill="#ffffff" text-anchor="middle">graph.svg</text>
+  </g>
+
+  <!-- arrows -->
+  <g stroke="#5c2983" stroke-width="3" marker-end="url(#arrow)">
+    <line x1="182" y1="143" x2="216" y2="143"/>
+    <line x1="387" y1="143" x2="421" y2="143"/>
+    <line x1="592" y1="143" x2="626" y2="143"/>
+    <line x1="797" y1="143" x2="831" y2="143"/>
+  </g>
+
+  <text x="15" y="245" font-size="16" fill="#3c3c3e">Record the kit by pid (attach after it spawns) or by cgroup (attach first, then open the document).</text>
+  <text x="15" y="272" font-size="14" fill="#8b8b89">cgroup mode also captures the initial import; named-pid targeting resolves the jailed kit's symbols.</text>
+</svg>

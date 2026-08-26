@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+#
+# cool-perf: capture a perf flamegraph of a running Collabora Online,
+# scoped to the coolwsd master, its forkit, and its document kits.
+#
+# Works for both deployment styles, because in both the COOL processes
+# carry the names coolwsd / forkit / kit_* (set via prctl) and are
+# visible from the host with their host PIDs:
+#
+#   - Local build:  coolwsd started with `make run` / `make run-one`.
+#   - Docker:       coolwsd running inside a container. Pass -c <name|id>
+#                   to scope to that container. perf runs on the HOST as
+#                   root, so it sees and resolves the container processes
+#                   (and the per-kit chroot jails) through /proc/<pid>/root.
+#
+# perf runs as root (the script re-runs itself under sudo if needed),
+# which is what lets it read the jailed/containerized kit binaries. The
+# capture uses a fixed time window (`-- sleep <duration>`), so coolwsd is
+# never stopped and the jails stay mounted for symbol resolution.
+#
+# Usage:
+#   cool-perf [-d seconds] [-F freq] [-o out.svg] [-c container] [options]
+#
+#   -d SECONDS     capture window (default 30)
+#   -F FREQ        perf sampling frequency in Hz (default 499)
+#   -o FILE        output SVG (default cool-flame.svg)
+#   -c CONTAINER   only profile COOL processes inside this Docker container
+#   -g DIR         FlameGraph scripts directory (default $FLAMEGRAPH_DIR
+#                  or $HOME/FlameGraph, falls back to PATH)
+#   -k             keep the raw perf.data next to the SVG
+#   -h             show this help
+#
+# Drive your workload (k6 test, browser, edits) during the window so the
+# kits are actually busy. An idle kit profiles as empty poll loops.
+
+set -euo pipefail
+
+DURATION=30
+FREQ=499
+OUT="cool-flame.svg"
+CONTAINER=""
+FG_DIR="${FLAMEGRAPH_DIR:-$HOME/FlameGraph}"
+KEEP_DATA=0
+
+die() { echo "cool-perf: $*" >&2; exit 1; }
+
+usage() { sed -n '2,40p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit "${1:-0}"; }
+
+while getopts ":d:F:o:c:g:kh" opt; do
+    case "$opt" in
+        d) DURATION="$OPTARG" ;;
+        F) FREQ="$OPTARG" ;;
+        o) OUT="$OPTARG" ;;
+        c) CONTAINER="$OPTARG" ;;
+        g) FG_DIR="$OPTARG" ;;
+        k) KEEP_DATA=1 ;;
+        h) usage 0 ;;
+        :) die "option -$OPTARG needs an argument" ;;
+        \?) die "unknown option -$OPTARG (use -h)" ;;
+    esac
+done
+
+# Resolve the FlameGraph scripts. Prefer the given/default directory,
+# otherwise look on PATH (some installs put them there).
+collapse="$FG_DIR/stackcollapse-perf.pl"
+flame="$FG_DIR/flamegraph.pl"
+if [ ! -x "$collapse" ] || [ ! -x "$flame" ]; then
+    if command -v stackcollapse-perf.pl >/dev/null && command -v flamegraph.pl >/dev/null; then
+        collapse="$(command -v stackcollapse-perf.pl)"
+        flame="$(command -v flamegraph.pl)"
+    else
+        die "FlameGraph scripts not found in $FG_DIR or on PATH. Clone https://github.com/brendangregg/FlameGraph and pass -g <dir>."
+    fi
+fi
+
+command -v perf >/dev/null || die "perf not installed"
+[ -n "$CONTAINER" ] && { command -v docker >/dev/null || die "docker not found, needed for -c"; }
+
+# Output paths are resolved as the invoking user, before any sudo re-exec,
+# so the SVG lands where the user expects and FlameGraph runs unprivileged.
+OUT_ABS="$(readlink -f "$OUT" 2>/dev/null || echo "$PWD/$OUT")"
+DATA="$(dirname "$OUT_ABS")/cool-perf.data"
+
+# Find the COOL process PIDs by name. comm is set via prctl, so these
+# match whether coolwsd is local or inside a container.
+collect_cool_pids() {
+    { pgrep -x coolwsd || true; pgrep -x forkit || true; pgrep '^kit_' || true; } \
+        | sort -un
+}
+
+cool_pids="$(collect_cool_pids)"
+[ -n "$cool_pids" ] || die "no coolwsd/forkit/kit_* processes found. Is COOL running?"
+
+# When a container is named, keep only the PIDs that belong to it. docker
+# top reports the container's processes with their HOST PIDs, which is the
+# same numbering pgrep returned above.
+if [ -n "$CONTAINER" ]; then
+    ctr_pids="$(docker top "$CONTAINER" -eo pid 2>/dev/null | tail -n +2 | awk '{print $1}' | sort -un)" \
+        || die "could not read processes of container '$CONTAINER'"
+    [ -n "$ctr_pids" ] || die "container '$CONTAINER' has no visible processes"
+    cool_pids="$(comm -12 <(echo "$cool_pids") <(echo "$ctr_pids"))"
+    [ -n "$cool_pids" ] || die "no coolwsd/forkit/kit_* processes inside container '$CONTAINER'"
+fi
+
+pid_csv="$(echo "$cool_pids" | paste -sd,)"
+pid_count="$(echo "$cool_pids" | wc -l)"
+
+echo "cool-perf: profiling $pid_count COOL process(es) for ${DURATION}s at ${FREQ}Hz"
+echo "cool-perf: pids: $pid_csv"
+[ -n "$CONTAINER" ] && echo "cool-perf: container: $CONTAINER"
+
+# perf must run as root to read the jailed/containerized kit binaries.
+# Re-run the record step under sudo if we are not already root.
+SUDO=""
+[ "$(id -u)" -ne 0 ] && SUDO="sudo"
+
+echo "cool-perf: recording (drive your workload now) ..."
+$SUDO perf record -F "$FREQ" -g --call-graph dwarf,32768 --namespaces \
+    --pid "$pid_csv" -o "$DATA" -- sleep "$DURATION"
+
+# Resolve immediately, while the processes (and their jails) are still
+# alive, so symbols come from the live binaries via /proc/<pid>/root.
+echo "cool-perf: resolving symbols and rendering $OUT_ABS ..."
+$SUDO perf script --no-inline -i "$DATA" \
+    | "$collapse" \
+    | "$flame" --title "Collabora Online${CONTAINER:+ ($CONTAINER)}" --width 1600 \
+    > "$OUT_ABS"
+
+if [ "$KEEP_DATA" -eq 1 ]; then
+    $SUDO chown "$(id -u):$(id -g)" "$DATA" 2>/dev/null || true
+    echo "cool-perf: kept raw data at $DATA"
+else
+    $SUDO rm -f "$DATA"
+fi
+
+echo "cool-perf: done -> $OUT_ABS"

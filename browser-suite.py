@@ -1,0 +1,1189 @@
+#!/usr/bin/env python3
+"""
+browser-suite.py: run the per-application browser tests over time and build a
+regression dashboard.
+
+Each run of a test writes a metrics.json (page-load, frame-ready and, in edit
+mode, edit times). While a test runs, this script also samples the Collabora
+Online server's memory (coolwsd + forkit + the document kits) on the host and
+folds the peak into that run's metrics.json, tagged with the COOL commit and a
+timestamp. A run captured by the --flamegraphs pass gets its memory from the
+capture's own /proc sampling instead, because that pass runs its own Collabora
+Online on a free port and the admin endpoint queried here is a different server.
+Results accumulate as history under results/.
+
+The dashboard shows one chart per document and user pool, with commits/time on
+the x axis: load and edit times on the left axis (ms) and memory on the right
+axis (MB), which carries the document's own footprint, the browser heap and the
+peak of the coolwsd process that serves the client and caches the static files.
+Click a point for that run's detail.
+
+A document-process flamegraph can be captured per test document (--flamegraphs):
+for each of the 8 documents k6-flamegraph.py launches its own single-kit coolwsd
+(on its own free port, so it coexists with any COOL already running) and profiles
+the document kit. Each run's detail embeds its own capture, and can show a second
+run beside it to compare commits.
+
+Usage:
+    ./browser-suite.py --run                  # run the suite at the current COOL commit
+    ./browser-suite.py --flamegraphs           # capture per-document flamegraphs (own COOL each)
+    ./browser-suite.py --run --flamegraphs     # both, then rebuild the dashboard
+    ./browser-suite.py --run --commit abc123   # label the run's commit explicitly
+    ./browser-suite.py                          # rebuild the dashboard from results/
+    ./browser-suite.py --demo -o demo.html      # synthetic history, no runs
+
+Running needs docker/k6 (via ./k6-run) and a live COOL + WOPI host; building the
+dashboard needs only the standard library. Memory sampling reuses pylib.perfutils.
+
+COOL memory is read from the admin endpoint at COOL_URL (default
+https://localhost:9980/), kept separate from WOPI_URL (which the k6 container
+needs pointed at a docker/LAN address). Admin creds: COOL_ADMIN (default
+admin:admin).
+"""
+import argparse
+import base64
+import json
+import os
+import re
+import ssl
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+APPS = ("writer", "calc", "impress", "draw")
+DOCS = ("blank", "5mb", "ooxml")
+
+# What each application has to open. "ooxml" is the same content as "5mb" in the Microsoft
+# format, so the two read as a comparison of the formats; Draw has no such format of its own,
+# so there is no document to open for it and no chart for it either.
+DOCS_BY_APP = {
+    "writer": ("blank", "5mb", "ooxml"),
+    "calc": ("blank", "5mb", "ooxml"),
+    "impress": ("blank", "5mb", "ooxml"),
+    "draw": ("blank", "5mb"),
+}
+
+
+def documents() -> list[tuple[str, str]]:
+    """Every (application, document) there is to run, in reading order."""
+    return [(app, doc) for app in APPS for doc in DOCS_BY_APP[app]]
+
+_SSL = ssl.create_default_context()
+_SSL.check_hostname = False
+_SSL.verify_mode = ssl.CERT_NONE
+
+
+def _reachable(url: str, timeout: int = 5) -> bool:
+    try:
+        urllib.request.urlopen(url, timeout=timeout, context=_SSL).close()
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
+def preflight(coolwsd_dir: str) -> bool:
+    cool = os.environ.get("WOPI_URL", "https://localhost:9980/").rstrip("/")
+    wopi = os.environ.get("WOPI_HOST", "https://localhost:3000/").rstrip("/")
+    checks = [
+        ("Collabora Online (coolwsd)", f"{cool}/hosting/discovery",
+         f"cd {coolwsd_dir} && make run"),
+        ("WOPI host", f"{wopi}/",
+         f"cd {ROOT} && SSL_KEY_FILE=server/npm-server-key.pem "
+         "SSL_CRT_FILE=server/npm-server-cert.pem NODE_TLS_REJECT_UNAUTHORIZED=0 npm run server"),
+    ]
+    ok = True
+    for name, url, how in checks:
+        if _reachable(url):
+            print(f"preflight ok: {name} reachable")
+        else:
+            ok = False
+            print(f"ERROR: {name} not reachable at {url}", file=sys.stderr)
+            print(f"       start it with:  {how}", file=sys.stderr)
+    return ok
+
+
+def test_script(app: str, doc: str) -> str:
+    return f"dist/cool-browser-{app}-{doc}-test.js"
+
+
+def git_commit(coolwsd_dir: str) -> str | None:
+    try:
+        out = subprocess.run(["git", "-C", coolwsd_dir, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def cool_metrics() -> dict:
+    """Fetch and parse COOL's Prometheus metrics (/cool/getMetrics). Needs admin
+    credentials (COOL_ADMIN=user:pass, default admin:admin). {} if unreachable.
+
+    Uses COOL_URL (default https://localhost:9980/), deliberately separate from
+    WOPI_URL: the k6 container needs WOPI_URL pointed at a docker/LAN address,
+    which the admin query running here on the host cannot always use (that is
+    why memory came back empty). The admin endpoint is reachable on localhost."""
+    base = os.environ.get("COOL_URL", "https://localhost:9980/").rstrip("/")
+    creds = os.environ.get("COOL_ADMIN", "admin:admin")
+    req = urllib.request.Request(
+        f"{base}/cool/getMetrics",
+        headers={"Authorization": "Basic " + base64.b64encode(creds.encode()).decode()})
+    try:
+        with urllib.request.urlopen(req, timeout=5, context=_SSL) as resp:
+            text = resp.read().decode("utf-8", "replace")
+    except Exception:
+        return {}
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                out[parts[0]] = float(parts[-1])
+            except ValueError:
+                pass
+    return out
+
+
+def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) -> None:
+    out = ROOT / out_rel
+    out.mkdir(parents=True, exist_ok=True)
+    out.chmod(0o777)  # the k6 container user writes metrics.json here
+    env = {**os.environ, "USERS": str(users), "OUT_DIR": out_rel, "COMMIT": commit or ""}
+    print(f"running {app} {doc} {users}u (commit {commit or 'local'}) ...")
+
+    # Tee what k6 says into the run directory. A scenario that measures nothing used to leave
+    # only a metrics.json full of nulls, which says that it failed and nothing about why.
+    log = (out / "k6.log").open("wb")
+    proc = subprocess.Popen(["./k6-run", test_script(app, doc)], cwd=str(ROOT), env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # poll COOL's own metrics while the test runs: kit_memory_used_max_bytes is
+    # the document kit's Private_Dirty (the doc's real footprint), and
+    # global_memory_used_bytes is the whole COOL total. Keep the peaks.
+    peak_doc = peak_total = 0.0
+    reached = False
+    while proc.poll() is None:
+        # Read whatever k6 has written, so its output reaches both the terminal and the log
+        # rather than filling a pipe nobody empties.
+        line = proc.stdout.readline() if proc.stdout else b""
+        if line:
+            sys.stdout.buffer.write(line)
+            sys.stdout.flush()
+            log.write(line)
+
+        m = cool_metrics()
+        if m:
+            reached = True
+        # kit_memory_used_max_bytes is the document kit's Private_Dirty, but it
+        # only reads nonzero while a kit is *assigned* (a doc actively open), so
+        # for short sessions it is often 0; global_memory_used_bytes is the
+        # dependable total (the dashboard falls back to it for the memory line).
+        peak_doc = max(peak_doc, m.get("kit_memory_used_max_bytes", 0.0))
+        peak_total = max(peak_total, m.get("global_memory_used_bytes", 0.0))
+        time.sleep(1)
+    if proc.stdout:
+        rest = proc.stdout.read()
+        if rest:
+            sys.stdout.buffer.write(rest)
+            log.write(rest)
+        proc.stdout.close()
+    log.close()
+
+    proc.wait()
+    if not reached:
+        print(f"WARNING: could not read COOL metrics while {app} {doc} {users}u "
+              f"ran, so no memory is recorded. Check COOL_URL="
+              f"{os.environ.get('COOL_URL', 'https://localhost:9980/')} and "
+              f"COOL_ADMIN (default admin:admin).", file=sys.stderr)
+    mj = out / "metrics.json"
+    if mj.exists() and (peak_doc or peak_total):
+        try:
+            d = json.loads(mj.read_text())
+            d["cool_memory"] = {
+                "peak_doc_mem_mb": round(peak_doc / 1048576, 1) if peak_doc else None,
+                "peak_total_mem_mb": round(peak_total / 1048576, 1) if peak_total else None,
+            }
+            mj.write_text(json.dumps(d, indent=2))
+        except Exception as exc:
+            print(f"could not add memory to {mj}: {exc}", file=sys.stderr)
+
+
+def live_cool_ports(lo: int = 9980, hi: int = 9999) -> list[int]:
+    """Ports in [lo, hi] answering /hosting/discovery. Each document of the
+    --flamegraphs pass launches its own coolwsd on the next free port and stops
+    it again, so more than one instance up here means earlier ones leaked: they
+    hold their port and a kit's memory, and the capture then shares the machine
+    with them."""
+    return [p for p in range(lo, hi + 1)
+            if _reachable(f"https://localhost:{p}/hosting/discovery", timeout=2)]
+
+
+def capture_samples(out_abs: Path) -> int | None:
+    """How many perf samples went into a capture, from the harness metrics.json.
+
+    A capture can succeed and still be worthless: if the kit was idle during the
+    window, the flamegraph is a handful of samples wide and says nothing. This is
+    the number to gate on (see --min-samples)."""
+    try:
+        return int(json.loads((out_abs / "metrics.json").read_text())
+                   .get("flamegraph_samples"))
+    except Exception:
+        return None
+
+
+def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
+                        commit: str | None = None,
+                        prune_perf_data: bool = False,
+                        min_samples: int = 0) -> list[dict]:
+    """Capture one document-process flamegraph per test document (8) via
+    k6-flamegraph.py. For each document it launches its own single-kit coolwsd
+    (make run-one, on its own free port via --new-instance, so it coexists with
+    any coolwsd already on the default port), opens that document with its
+    browser test so the kitbroker_* document kit loads it, and profiles that
+    kit. Output: results/<runid>/flamegraph/<app>-<doc>/flamegraph.svg, and the
+    browser test's own metrics.json one level down in browser/, which is what
+    puts this run on the dashboard as a profiled point.
+
+    Returns one {name, ok, rc, out_rel, log} record per document, for a caller
+    that has to report per-document outcomes (see --junit)."""
+    env = {**os.environ}
+    # On this hybrid P/E-core CPU 'cycles' opens but captures almost nothing for
+    # perf record against the kit; cpu_core/cycles/ pins the P-core PMU.
+    env.setdefault("PERF_EVENT", "cpu_core/cycles/")
+    # A few edits keep the kit busy during the perf window so even a blank
+    # document yields more than a handful of samples.
+    env.setdefault("EDIT", "1")
+    live = live_cool_ports()
+    if len(live) > 1:
+        print(f"WARNING: {len(live)} coolwsd instances already answer on ports "
+              f"{', '.join(str(p) for p in live)}. Leftovers from an earlier "
+              "pass compete with the profiled kit for this machine. Stop them "
+              "with `pkill -f coolwsd` (and restart your own if you had one) "
+              "before trusting these flamegraphs.", file=sys.stderr)
+    failed = []
+    outcomes = []
+    for app, doc in documents():
+            out_rel = (results_dir / runid / "flamegraph" / f"{app}-{doc}").as_posix()
+            print(f"flamegraph {app}-{doc}: own single-kit cool -> {out_rel} ...")
+            cmd = [sys.executable, "k6-flamegraph.py", test_script(app, doc),
+                   "--out-dir", out_rel, "--coolwsd-dir", coolwsd_dir,
+                   "--new-instance"]
+            # Tee the harness output into the run directory. Without this a
+            # failed document left only coolwsd.log behind, which says nothing
+            # about why the harness itself gave up.
+            out_abs = ROOT / out_rel
+            out_abs.mkdir(parents=True, exist_ok=True)
+            # Give the browser test its own OUT_DIR one level down. It writes a
+            # metrics.json of the same name as the harness summary that lands
+            # beside the SVG, so they cannot share a directory, and without an
+            # OUT_DIR of its own the test used to overwrite results/metrics.json
+            # on every document, leaving the capture with no run to attach to.
+            # --out-dir above still decides where the harness itself writes, so
+            # OUT_DIR here only reaches the test through k6-run.
+            browser_rel = f"{out_rel}/browser"
+            browser_abs = ROOT / browser_rel
+            browser_abs.mkdir(parents=True, exist_ok=True)
+            browser_abs.chmod(0o777)  # the k6 container user writes metrics.json here
+            env["OUT_DIR"] = browser_rel
+            env["USERS"] = "1"
+            env["COMMIT"] = commit or ""
+            with (out_abs / "harness.log").open("w") as log:
+                proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env, text=True,
+                                        bufsize=1, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT)
+                for line in proc.stdout:
+                    sys.stdout.write(line)
+                    log.write(line)
+                rc = proc.wait()
+            svg = out_abs / "flamegraph.svg"
+            samples = capture_samples(out_abs)
+            thin = (min_samples > 0 and samples is not None
+                    and samples < min_samples)
+            ok = rc == 0 and svg.is_file() and not thin
+            if samples is not None:
+                print(f"  {samples} perf samples")
+            if not ok:
+                failed.append(f"{app}-{doc}")
+                if rc != 0:
+                    why = f"exit {rc}"
+                elif not svg.is_file():
+                    why = "no flamegraph.svg was written"
+                else:
+                    why = f"only {samples} perf samples, under --min-samples {min_samples}"
+                print(f"  flamegraph {app}-{doc} failed ({why}), see "
+                      f"{out_rel}/harness.log", file=sys.stderr)
+            elif prune_perf_data:
+                # perf.data is by far the biggest thing a capture leaves (tens of
+                # MB per document) and the SVG is what gets read afterwards, so a
+                # durable history keeps the graph and drops the raw samples.
+                pd = out_abs / "perf.data"
+                if pd.is_file():
+                    freed = pd.stat().st_size
+                    pd.unlink()
+                    print(f"  pruned perf.data ({freed // 1048576} MB)")
+            outcomes.append({"name": f"{app}-{doc}", "ok": ok, "rc": rc,
+                             "out_rel": out_rel,
+                             "samples": samples,
+                             "why": None if ok else why,
+                             "log": f"{out_rel}/harness.log"})
+    done = len(documents()) - len(failed)
+    print(f"flamegraphs: {done}/{len(documents())} captured"
+          + (f", failed: {', '.join(failed)}" if failed else ""))
+    return outcomes
+
+
+def new_runid(commit: str | None) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{commit or 'local'}"
+
+
+def run_suite(results_dir: Path, runid: str, users_list: list[int],
+              commit: str | None) -> list[dict]:
+    """Run every document at every user count. Returns one {name, ok, out_rel}
+    record per run, a run counting as ok when it measured the document opening."""
+    outcomes = []
+    for app, doc in documents():
+            for users in users_list:
+                rel = (results_dir / runid / f"{app}-{doc}-{users}u").as_posix()
+                run_one(app, doc, users, rel, commit)
+                ok, why = measured(ROOT / rel)
+                if not ok:
+                    print(f"  {app}-{doc} {users}u {why}", file=sys.stderr)
+                outcomes.append({"name": f"{app}-{doc}-{users}u", "ok": ok,
+                                 "why": why, "out_rel": rel, "log": rel})
+    return outcomes
+
+
+def measured(out: Path) -> tuple[bool, str | None]:
+    """Whether a run measured the document opening, and what is missing where it did not.
+
+    A file of nulls is what a scenario leaves behind when the document never reached
+    Frame_Ready: written, well-formed and empty. Counting that as a pass reports a run where
+    nothing was measured as a green one, which is worse than reporting nothing at all.
+    """
+    mj = out / "metrics.json"
+    if not mj.is_file():
+        return False, "wrote no metrics.json"
+
+    try:
+        metrics = json.loads(mj.read_text()).get("metrics") or {}
+    except Exception as exc:
+        return False, f"wrote a metrics.json that cannot be read: {exc}"
+
+    # frame_ready_ms is the document appearing, which is what every one of these tests is for.
+    ready = metrics.get("frame_ready_ms")
+    if isinstance(ready, dict):
+        ready = ready.get("avg")
+
+    if ready is None:
+        return False, ("measured no frame_ready_ms: the document never appeared. "
+                       "See k6.log beside its metrics.json")
+
+    return True, None
+
+
+def write_junit(path: Path, suite_name: str, cases: list[dict]) -> None:
+    """A JUnit report of the run, for a CI server to show per-document results.
+
+    Deliberately hand-rolled: this repo's tooling runs on the standard library
+    only, and the schema needed here is a flat list of testcases."""
+    def esc(v: str) -> str:
+        return (str(v).replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+    failures = sum(1 for c in cases if not c["ok"])
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           f'<testsuite name="{esc(suite_name)}" tests="{len(cases)}" '
+           f'failures="{failures}">']
+    for c in cases:
+        out.append(f'  <testcase classname="{esc(suite_name)}" '
+                   f'name="{esc(c["name"])}">')
+        if not c["ok"]:
+            detail = c.get("log") or c.get("out_rel") or ""
+            out.append(f'    <failure message="{esc(c.get("why") or "run failed")}">'
+                       f'{esc(detail)}</failure>')
+        out.append('  </testcase>')
+    out.append('</testsuite>')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out) + "\n")
+    print(f"wrote {path}  ({len(cases)} case(s), {failures} failure(s))")
+
+
+_FILE_ID_RE = re.compile(r"FILE_ID\s*=\s*Number\(__ENV\['FILE_ID'\]\s*\|\|\s*(\d+)\)")
+
+
+def document_files() -> dict:
+    """{'app|doc': 'documents/blank.odt'}, the document each test opens.
+
+    Read from the test source's default FILE_ID and the WOPI host's file table,
+    which is where that mapping actually lives. Doing it here rather than
+    recording it per run means runs captured before this existed also show their
+    document. A run's own metrics.json wins when it carries a file of its own,
+    which is what a FILE_ID override would produce."""
+    try:
+        files = json.loads((ROOT / "server" / "routes" / "files.json").read_text())
+    except Exception:
+        return {}
+    out = {}
+    for app, doc in documents():
+            try:
+                text = (ROOT / "src" / f"cool-browser-{app}-{doc}-test.js").read_text()
+            except OSError:
+                continue
+            m = _FILE_ID_RE.search(text)
+            if not m:
+                continue
+            path = (files.get(m.group(1)) or {}).get("path")
+            if path:
+                out[f"{app}|{doc}"] = path
+    return out
+
+
+def _runid_of(mj: Path, results_dir: Path) -> str | None:
+    """The results/<runid>/... directory a metrics.json belongs to, if any."""
+    try:
+        parts = mj.relative_to(results_dir).parts
+    except ValueError:
+        return None
+    return parts[0] if len(parts) > 1 else None
+
+
+def _capture_instructions(mj: Path) -> dict | None:
+    """Instructions the two Collabora Online processes executed during the
+    capture, from the capture's own harness summary, or None without one.
+
+    Two figures: the master, which serves the client, and the document kit,
+    which does the document work. They cover the window perf was attached for,
+    which opens once the server is already up, so they are a picture of the
+    test itself and not of a whole process life."""
+    try:
+        d = json.loads((mj.parent.parent / "metrics.json").read_text())
+    except (OSError, ValueError):
+        return None
+    perf = d.get("perf")
+    if not isinstance(perf, dict):
+        return None
+    out = {}
+    for key, field in (("coolwsd", "master"), ("kit", "kit")):
+        entry = perf.get(key)
+        if isinstance(entry, dict) and entry.get("instructions"):
+            out[field] = entry["instructions"]
+    return out or None
+
+
+def _capture_memory(mj: Path) -> dict | None:
+    """This run's Collabora Online memory, read from the capture's own harness
+    summary, or None when the run has no capture beside it.
+
+    A run of the --flamegraphs pass launches its own Collabora Online on a free
+    port, so the admin endpoint that fills cool_memory during a plain run is not
+    the server under test and nothing is recorded there. The capture does sample
+    memory, from /proc, one level up in the harness metrics.json, so the figures
+    exist and only need reading. Doing it here rather than at capture time means
+    runs recorded before this existed also show their memory.
+
+    The document figure is the kitbroker group, which is the process doing the
+    document work, and proportional set size is preferred over resident size
+    because several kits share the same mapped engine libraries. The total is the
+    largest sum over the sample times rather than a sum of the two peaks, which
+    would count moments that never happened together."""
+    try:
+        d = json.loads((mj.parent.parent / "metrics.json").read_text())
+    except (OSError, ValueError):
+        return None
+    mem = d.get("memory")
+    if not isinstance(mem, dict):
+        return None
+
+    def peak_of(label: str) -> float | None:
+        entry = mem.get(label)
+        if not isinstance(entry, dict):
+            return None
+        return entry.get("peak_pss_mb", entry.get("peak_rss_mb"))
+
+    def series_of(label: str) -> list[dict]:
+        entry = mem.get(label)
+        return entry.get("samples", []) if isinstance(entry, dict) else []
+
+    doc_peak = peak_of("kit")
+    kit = mem.get("kit") if isinstance(mem.get("kit"), dict) else {}
+    wsd = mem.get("coolwsd") if isinstance(mem.get("coolwsd"), dict) else {}
+    master_peak = wsd.get("peak_rss_hwm_mb", wsd.get("peak_rss_mb"))
+    private = kit.get("peak_private_dirty_mb")
+    shared = kit.get("peak_shared_dirty_mb")
+    totals = []
+    wsd_series = series_of("coolwsd")
+    for i, kit_sample in enumerate(series_of("kit")):
+        at = wsd_series[i] if i < len(wsd_series) else {}
+        both = [s.get("pss_mb", s.get("rss_mb", 0.0)) for s in (kit_sample, at)]
+        totals.append(sum(both))
+    total_peak = round(max(totals), 1) if totals else None
+    if doc_peak is None and total_peak is None:
+        return None
+    out = {"peak_doc_mem_mb": doc_peak, "peak_total_mem_mb": total_peak,
+           "source": "capture"}
+    # How the kit's resident memory is made up: the engine libraries it maps,
+    # other mapped files, what the fork handed it, and what the document itself
+    # went on to write. The four add up to the resident total.
+    lib = kit.get("peak_lib_rss_mb")
+    other = kit.get("peak_other_rss_mb")
+    anon = kit.get("peak_anon_rss_mb")
+    inherited = kit.get("peak_anon_shared_dirty_mb")
+    # Resident totals and how many processes were in each group, so the
+    # proportional figures can be read for what they are.
+    if kit.get("peak_rss_mb") is not None:
+        out["peak_doc_rss_mb"] = kit["peak_rss_mb"]
+    if kit.get("max_pids") is not None:
+        out["doc_pids"] = kit["max_pids"]
+    if wsd.get("peak_rss_mb") is not None:
+        out["peak_master_rss_mb"] = wsd["peak_rss_mb"]
+    if wsd.get("peak_pss_mb") is not None:
+        out["peak_master_pss_mb"] = wsd["peak_pss_mb"]
+    if None not in (lib, other, anon, inherited):
+        out["doc_stack"] = {"libraries": lib, "other_files": other,
+                            "inherited": inherited,
+                            "own": round(anon - inherited, 1)}
+    # What the document costs on its own, and the base it inherited from the
+    # process it was forked from, which every other document shares.
+    if private is not None:
+        out["peak_doc_private_mb"] = private
+    if shared is not None:
+        out["peak_doc_shared_mb"] = shared
+    # The high-water mark of the process that serves the client and holds the
+    # static file cache, which no other figure here covers.
+    if master_peak is not None:
+        out["peak_master_hwm_mb"] = master_peak
+    return out
+
+
+def _flamegraph_for(mj: Path, results_dir: Path,
+                    app: str, doc: str) -> tuple[str | None, bool]:
+    """(absolute path to this run's flamegraph or None, was this run profiled).
+
+    Scoped to the run on purpose: a flamegraph is only evidence about the commit
+    it was captured on, so it must not be shared across runs the way it used to
+    be (the newest capture was pinned to every point of that document, which read
+    as if every commit had been profiled). Two shapes match. A run of the
+    --flamegraphs pass sits in browser/ under the directory holding its own SVG,
+    and it is profiled: perf was attached while it ran, so its times are not
+    comparable with a plain run. A plain suite run picks up the capture taken for
+    the same document in the same runid."""
+    here = mj.parent.parent / "flamegraph.svg"
+    if mj.parent.name == "browser" and here.is_file():
+        return str(here.resolve()), True
+    runid = _runid_of(mj, results_dir)
+    if runid:
+        same_run = results_dir / runid / "flamegraph" / f"{app}-{doc}" / "flamegraph.svg"
+        if same_run.is_file():
+            return str(same_run.resolve()), False
+    return None, False
+
+
+def collect(results_dir: Path) -> dict:
+    """{'app|doc|users': [ {commit, ts, runid, metrics, cool_memory, flamegraph},
+    ... ]} over time."""
+    scen: dict = {}
+    files = document_files()
+    for mj in sorted(results_dir.glob("**/metrics.json")):
+        try:
+            d = json.loads(mj.read_text())
+        except Exception:
+            continue
+        app, doc = d.get("app"), d.get("doc")
+        if not (app and doc):
+            continue
+        users = int(d.get("users", 1))
+        ts = d.get("ts") or datetime.fromtimestamp(mj.stat().st_mtime,
+                                                   timezone.utc).isoformat()
+        # Absolute path here, write_dashboard makes it relative to the html.
+        flame, profiled = _flamegraph_for(mj, results_dir, app, doc)
+        scen.setdefault(f"{app}|{doc}|{users}", []).append({
+            "commit": d.get("commit"), "ts": ts,
+            "runid": _runid_of(mj, results_dir),
+            "metrics": d.get("metrics", {}),
+            "cool_memory": d.get("cool_memory") or _capture_memory(mj),
+            "instructions": d.get("instructions") or _capture_instructions(mj),
+            "flamegraph": flame, "profiled": profiled,
+            "file": d.get("file") or files.get(f"{app}|{doc}"),
+        })
+    for pts in scen.values():
+        pts.sort(key=lambda p: p["ts"])
+    return scen
+
+
+def demo_history() -> dict:
+    import random
+    rng = random.Random(11)
+    commits = [f"{c:07x}" for c in (rng.randrange(1 << 28) for _ in range(6))]
+    scen: dict = {}
+    for app, doc in documents():
+            ai = APPS.index(app)
+            big = 2.3 if doc in ("5mb", "ooxml") else 1.0
+            for users in (1, 3):
+                base_fr = (900 + ai * 350) * big * (1.6 if users == 3 else 1.0)
+                base_mem = (600 + ai * 120) * big * (1 + 0.5 * (users - 1))
+                base_bh = (55 + ai * 12) * big  # browser JS heap, MB
+                pts = []
+                for i, commit in enumerate(commits):
+                    drift = 1 + 0.03 * i + (0.35 if i == 4 else 0)  # a regression at commit 5
+                    j = lambda: 1 + rng.uniform(-.04, .04)
+                    m = {"page_load_ms": _stat((110 + rng.uniform(-15, 25))),
+                         "frame_ready_ms": _stat(base_fr * drift * j()),
+                         "browser_heap_mb": _stat(base_bh * drift * j())}
+                    if users > 1:
+                        m["edit_ms"] = _stat(190 * big * drift * j())
+                    pts.append({
+                        "commit": commit,
+                        "ts": f"2026-08-{8 + i:02d}T09:00:00+00:00",
+                        "metrics": m,
+                        "cool_memory": {"peak_doc_mem_mb": round(base_mem * drift * j(), 1),
+                                        "peak_total_mem_mb": round((base_mem + 350) * drift * j(), 1),
+                                        "peak_master_hwm_mb": round((base_mem + 900) * drift * j(), 1),
+                                        "doc_stack": {"libraries": round(200 * j(), 1),
+                                                      "other_files": round(16 * j(), 1),
+                                                      "inherited": round(230 * j(), 1),
+                                                      "own": round(base_mem * 0.2 * drift * j(), 1)}},
+                    })
+                scen[f"{app}|{doc}|{users}"] = pts
+    return scen
+
+
+def _stat(avg: float) -> dict:
+    return {"avg": round(avg, 1), "min": round(avg * .8, 1), "max": round(avg * 1.4, 1),
+            "med": round(avg * .95, 1), "p90": round(avg * 1.25, 1), "p95": round(avg * 1.35, 1)}
+
+
+DASHBOARD = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collabora Online browser-test dashboard</title>
+<style>
+  :root{ --surface:#fcfcfb; --panel:#fff; --ink:#0b0b0b; --ink-soft:#52514e;
+    --ink-faint:#8a8880; --grid:#e6e6e2; --hair:#dcdbd5; --accent:#2a78d6;
+    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --mem:#7a4fc0; --bmem:#d64f9a; --wmem:#b8860b; --ibar-wsd:#8fb8e0; --ibar-kit:#c9b3e6; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
+    --app-writer:#2a6cc9; --app-calc:#1a9e4b; --app-impress:#e8710a; --app-draw:#e0a80f;
+    --shadow:0 1px 2px rgba(11,11,11,.06),0 8px 24px rgba(11,11,11,.05); }
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+    --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee; --ink-soft:#c3c2b7;
+    --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35; --accent:#3987e5;
+    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --mem:#9f7be6; --bmem:#e07bb0; --wmem:#d8a72a; --ibar-wsd:#2f4f6e; --ibar-kit:#4a3a63; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
+    --app-writer:#5a9bea; --app-calc:#35c46f; --app-impress:#ff9440; --app-draw:#f2c94c;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35); }}
+  :root[data-theme=dark]{ --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee;
+    --ink-soft:#c3c2b7; --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35;
+    --accent:#3987e5; --s0:#3987e5; --s1:#d95926; --s2:#199e70; --mem:#9f7be6; --wmem:#d8a72a;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35); }
+  body{margin:0;background:var(--surface);color:var(--ink);line-height:1.5;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:none;margin:0 auto;padding:34px clamp(20px,3.5vw,48px) 64px;}
+  h1{font-size:22px;font-weight:650;letter-spacing:-.01em;margin:0 0 4px;}
+  .sub{color:var(--ink-soft);font-size:14px;margin:0 0 8px;}
+  .legend{display:flex;gap:14px 18px;flex-wrap:wrap;align-items:center;font-size:12.5px;
+    color:var(--ink-soft);position:sticky;top:0;background:var(--surface);
+    padding:10px 0;z-index:5;border-bottom:1px solid var(--hair);}
+  .legend .key{display:inline-flex;align-items:center;gap:7px;}
+  .legend .sep{width:1px;height:15px;background:var(--hair);}
+  /* link to a document-process flamegraph, pushed to the right of the legend */
+  .fg-link{margin-left:auto;font-size:12.5px;color:var(--accent);text-decoration:none;
+    border:1px solid var(--hair);border-radius:7px;padding:4px 11px;background:var(--panel);
+    white-space:nowrap;}
+  .fg-link:hover{border-color:var(--accent);}
+  .fg-link[hidden]{display:none;}
+  .meta a,.fg-inline{color:var(--accent);}
+  .lswatch{width:22px;height:8px;}
+  /* flex flow: charts wrap to as many per row as the view width allows,
+     each between ~420px and ~760px, growing to fill the row */
+  #charts{display:flex;flex-wrap:wrap;gap:16px;margin-top:16px;}
+  /* basis ~340px so a ~1600px view fits 4 per row; grows to fill up to 520px */
+  .chart{flex:1 1 340px;min-width:0;max-width:520px;
+    background:var(--panel);border:1px solid var(--hair);
+    border-left:4px solid var(--app,var(--hair));border-radius:12px;
+    padding:12px 14px 8px;box-shadow:var(--shadow);}
+  .chart.a-writer{--app:var(--app-writer);} .chart.a-calc{--app:var(--app-calc);}
+  .chart.a-impress{--app:var(--app-impress);} .chart.a-draw{--app:var(--app-draw);}
+  .chart h2{font-size:14px;font-weight:650;margin:0 0 6px;text-transform:capitalize;
+    display:flex;align-items:center;gap:8px;}
+  .chart h2::before{content:"";width:9px;height:9px;border-radius:2px;flex:0 0 auto;
+    background:var(--app,var(--ink-faint));}
+  svg{width:100%;height:auto;display:block;}
+  .tick line{stroke:var(--grid);stroke-width:1;}
+  .tick text,.xlab,.axtitle{fill:var(--ink-faint);font-size:10px;
+    font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;}
+  .axtitle{font-family:system-ui,sans-serif;}
+  .baseline{stroke:var(--hair);stroke-width:1;}
+  .line{fill:none;stroke-width:2;} .line.mem{stroke-dasharray:5 4;}
+  .line.frame_ready_ms{stroke:var(--s0);} .line.page_load_ms{stroke:var(--s1);}
+  .line.edit_ms{stroke:var(--s2);} .line.cool_mem{stroke:var(--mem);} .line.browser_mem{stroke:var(--bmem);}
+  .line.master_mem{stroke:var(--wmem);stroke-dasharray:2 3;}
+  .ibar{stroke:none;fill-opacity:.55;} .ibar.wsd{fill:var(--ibar-wsd);} .ibar.kit{fill:var(--ibar-kit);}
+  .sbar{stroke:none;fill-opacity:.85;} .sbar.lib{fill:var(--st-lib);} .sbar.other{fill:var(--st-other);}
+  .sbar.inh{fill:var(--st-inh);} .sbar.own{fill:var(--st-own);}
+  .dot{stroke:var(--panel);stroke-width:1.3;cursor:pointer;transition:r .12s ease;}
+  .dot.frame_ready_ms{fill:var(--s0);} .dot.page_load_ms{fill:var(--s1);}
+  .dot.edit_ms{fill:var(--s2);} .dot.cool_mem{fill:var(--mem);} .dot.browser_mem{fill:var(--bmem);}
+  .dot.master_mem{fill:var(--wmem);}
+  .dot:hover{r:6;} .dot:focus-visible{outline:2px solid var(--ink);outline-offset:1px;}
+  /* a run captured under perf: ringed, since profiling inflates its own times */
+  .dot.prof{stroke:var(--ink);stroke-width:2;}
+  .modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;
+    padding:24px;background:rgba(11,11,11,.55);} .modal[hidden]{display:none;}
+  .modal-card{background:var(--panel);border:1px solid var(--hair);border-radius:12px;
+    box-shadow:var(--shadow);width:min(560px,96vw);max-height:92vh;overflow:auto;}
+  .modal-head{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;
+    border-bottom:1px solid var(--hair);} .modal-head strong{font-size:14px;}
+  .modal-head button{font:inherit;font-size:13px;cursor:pointer;border-radius:7px;
+    border:1px solid var(--hair);background:var(--surface);color:var(--ink);padding:5px 12px;}
+  .modal .meta{padding:8px 16px;color:var(--ink-soft);font-size:12.5px;
+    font-family:ui-monospace,Menlo,monospace;}
+  table{border-collapse:collapse;width:100%;font-size:13px;}
+  th,td{text-align:right;padding:6px 12px;border-bottom:1px solid var(--hair);
+    font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,monospace;}
+  th:first-child,td:first-child{text-align:left;font-family:system-ui,sans-serif;}
+  thead th{color:var(--ink-soft);font-weight:600;}
+  #tip{position:fixed;z-index:60;pointer-events:none;background:var(--panel);color:var(--ink);
+    border:1px solid var(--hair);border-radius:6px;padding:4px 8px;font-size:12px;box-shadow:var(--shadow);
+    font-family:ui-monospace,Menlo,monospace;white-space:nowrap;transition:none;}
+  #tip[hidden]{display:none;}
+  /* the document a chart's test opens */
+  .fname{margin:-2px 0 8px;font-size:11.5px;color:var(--ink-faint);
+    font-family:ui-monospace,Menlo,monospace;overflow-wrap:anywhere;}
+  /* per-chart capture coverage: how many of this document's runs were profiled */
+  .cov{margin-left:auto;font-size:11px;font-weight:500;white-space:nowrap;
+    font-family:ui-monospace,Menlo,monospace;color:var(--ink-faint);
+    border:1px solid var(--hair);border-radius:999px;padding:1px 8px;}
+  .cov.some{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--hair));}
+  .cov.none{opacity:.8;}
+  /* inline flamegraph viewer, in the run detail */
+  .modal-card.wide{width:min(1280px,96vw);}
+  .fg-sec{border-top:1px solid var(--hair);padding:10px 16px 16px;}
+  .fg-sec summary{cursor:pointer;font-size:13px;font-weight:600;}
+  .fg-bar{display:flex;gap:10px 16px;align-items:center;flex-wrap:wrap;
+    margin:10px 0 9px;font-size:12.5px;color:var(--ink-soft);}
+  .fg-bar select{font:inherit;font-size:12.5px;padding:3px 8px;border-radius:7px;
+    border:1px solid var(--hair);background:var(--surface);color:var(--ink);}
+  .fg-grid{display:grid;grid-template-columns:1fr;gap:12px;}
+  .fg-grid.two{grid-template-columns:1fr 1fr;}
+  @media (max-width:900px){.fg-grid.two{grid-template-columns:1fr;}}
+  .fg-frame{margin:0;border:1px solid var(--hair);border-radius:9px;overflow:hidden;}
+  .fg-frame figcaption{font-size:11.5px;color:var(--ink-soft);padding:6px 10px;
+    border-bottom:1px solid var(--hair);font-family:ui-monospace,Menlo,monospace;}
+  /* A capture is a wide artifact: width is what carries the meaning, so fill the
+     panel width and scroll vertically rather than shrinking it to fit a box.
+     fitFrame() sets the real height once the SVG reports its aspect. It also
+     keeps its own light background, so pin that rather than inherit. */
+  .fg-scroll{overflow:auto;max-height:min(72vh,640px);background:#fff;}
+  .fg-frame object{width:100%;height:340px;border:0;display:block;background:#fff;}
+  .fg-missing{margin:0;padding:12px 16px 16px;font-size:12.5px;color:var(--ink-faint);
+    border-top:1px solid var(--hair);}
+  .fg-missing code{font-family:ui-monospace,Menlo,monospace;}
+  footer{margin-top:26px;font-size:12.5px;color:var(--ink-faint);border-top:1px solid var(--hair);
+    padding-top:14px;max-width:74ch;}
+</style></head><body>
+<div class="wrap">
+  <h1>Collabora Online browser tests</h1>
+  <p class="sub">One chart per document and user pool, tracked across commits. Left axis: load and edit times (ms). Right axis: memory (MB), the document's own footprint, the browser heap, and the coolwsd process peak. Click a point for detail.</p>
+  <div class="legend">
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s0)" stroke-width="2.5"/></svg> frame ready</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s1)" stroke-width="2.5"/></svg> page load</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s2)" stroke-width="2.5"/></svg> edit</span>
+    <span class="sep"></span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--mem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> COOL doc memory (MB, right)</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--bmem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> browser heap (MB, right)</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--wmem)" stroke-width="2.5" stroke-dasharray="2 3"/></svg> coolwsd peak (MB, right)</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><rect x="2" y="1" width="7" height="6" fill="var(--ibar-wsd)"/><rect x="12" y="1" width="7" height="6" fill="var(--ibar-kit)"/></svg> instructions, coolwsd and document kit (bars)</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><rect x="0" y="1" width="5" height="6" fill="var(--st-lib)"/><rect x="5.5" y="1" width="5" height="6" fill="var(--st-other)"/><rect x="11" y="1" width="5" height="6" fill="var(--st-inh)"/><rect x="16.5" y="1" width="5" height="6" fill="var(--st-own)"/></svg> kit memory stacked: libraries, other files, inherited, own (MB, right)</span>
+    <a id="fglink" class="fg-link" target="_blank" rel="noopener" hidden>document flamegraph &#8599;</a>
+  </div>
+  <div id="charts"></div>
+  <footer>Each point is one run (one COOL commit) of the document named under the chart title, which is the file that test opens through the WOPI host. Times are ms averaged over the run (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint on a plain run, or the document kit's proportional set size sampled from /proc when the point comes from a flamegraph capture, which runs its own COOL, and browser heap is the page's JS heap. The coolwsd peak is that process's
+resident high-water mark (VmHWM), which is set by its own startup rather than by
+the document, and is the figure a memory limit has to accommodate. The stacked bar beside each point breaks the document kit's resident memory into
+    the engine libraries it maps, other mapped files, what the fork handed it (mostly the
+    dictionaries the parent preloaded), and what the document itself wrote. Only the last layer is
+    the document's own cost; the first three are shared with every other document on the machine,
+    which is why the resident total is several times what one more document actually adds.
+    The bars behind the lines are the instructions each of the two processes
+    executed, the server on the left of a point and the document kit on the right, on their own
+    scale since instructions share no axis with times or memory. They count only the window perf
+    was attached for, which opens after the server is up, so they describe the test and not a whole
+    process life, and they move a lot from run to run. A rising line across commits is a regression. A ringed point was itself captured under perf, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
+</div>
+<div id="tip" role="tooltip" hidden></div>
+<div class="modal" id="modal" hidden><div class="modal-card" id="mcard" role="dialog" aria-modal="true">
+  <div class="modal-head"><strong id="mt">Run</strong><button id="mc" type="button">Close</button></div>
+  <div class="meta" id="mmeta"></div><div id="mb"></div><div id="mfg"></div>
+</div></div>
+<script>
+const DATA = __DATA__;
+const SVGNS = "http://www.w3.org/2000/svg";
+const MS = [{m:"frame_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"}];
+const NAMES={frame_ready_ms:"frame ready",page_load_ms:"page load",edit_ms:"edit",cool_mem:"COOL memory",browser_mem:"browser heap",master_mem:"coolwsd peak"};
+const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","5mb","ooxml"];
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
+function niceStep(s){if(s<=0)return 1;const r=s/4,m=Math.pow(10,Math.floor(Math.log10(r))),n=r/m;return (n<=1?1:n<=2?2:n<=5?5:10)*m;}
+function niceCeil(v){return Math.ceil(v/niceStep(v))*niceStep(v);}
+function el(name,attrs,text){const e=document.createElementNS(SVGNS,name);for(const k in attrs)e.setAttribute(k,attrs[k]);if(text!=null)e.textContent=text;return e;}
+// A run's label is its commit, sometimes with a suffix naming what was changed
+// in that build. Shortening to seven characters would drop the suffix and leave
+// two builds of the same commit looking identical, so keep whatever follows the
+// first dash.
+function shortLabel(c){if(!c)return "";const i=c.indexOf("-");
+  return i<0?c.slice(0,7):c.slice(0,Math.min(i,7))+c.slice(i);}
+// The document kit's resident memory in the layers it is made of, bottom-up.
+// The layers add up to what the process has resident, so the top of the stack is
+// the figure a machine actually has to hold for that document.
+const STACK=[["libraries","lib","engine libraries"],["other_files","other","other mapped files"],
+             ["inherited","inh","inherited from the fork"],["own","own","the document's own"]];
+function stackOf(pt){const m=pt.cool_memory,d=m&&m.doc_stack;if(!d)return null;
+  let total=0;const parts=[];
+  for(const [key,cls,name] of STACK){const v=d[key];if(v==null)continue;
+    parts.push({cls,name,v});total+=v;}
+  return parts.length?{parts,total}:null;}
+function masterOf(pt){const m=pt.cool_memory;
+  return m&&m.peak_master_hwm_mb!=null?m.peak_master_hwm_mb:null;}
+function memOf(pt){const m=pt.cool_memory;if(!m)return null;
+  if(m.peak_doc_mem_mb!=null)return m.peak_doc_mem_mb;
+  if(m.peak_total_mem_mb!=null)return m.peak_total_mem_mb;
+  return m.peak_pss_mb!=null?m.peak_pss_mb:(m.peak_rss_mb!=null?m.peak_rss_mb:null);}
+
+function render(svg, runs){
+  const W=520,H=300,m={top:14,right:52,bottom:46,left:50};
+  const pW=W-m.left-m.right,pH=H-m.top-m.bottom,x0=m.left,x1=x0+pW,y1=m.top+pH;
+  let msMax=0,memMax=0;
+  const heapOf=r=>{const x=r.metrics.browser_heap_mb;return x?x.avg:null;};
+  runs.forEach(r=>{MS.forEach(s=>{const v=r.metrics[s.m]&&r.metrics[s.m].avg;if(v>msMax)msMax=v;});
+    const mm=memOf(r);if(mm!=null&&mm>memMax)memMax=mm;
+    const wm=masterOf(r);if(wm!=null&&wm>memMax)memMax=wm;
+    const sk=stackOf(r);if(sk&&sk.total>memMax)memMax=sk.total;
+    const bh=heapOf(r);if(bh!=null&&bh>memMax)memMax=bh;});
+  const msTop=niceCeil(msMax)||1, memTop=niceCeil(memMax)||1;
+  const yMs=v=>y1-(v/msTop)*pH, yMem=v=>y1-(v/memTop)*pH;
+  const step=niceStep(msTop);
+  for(let v=0;v<=msTop+1e-9;v+=step){const y=yMs(v),t=el("g",{class:"tick"});
+    t.appendChild(el("line",{x1:x0,x2:x1,y1:y,y2:y}));
+    t.appendChild(el("text",{x:x0-7,y:y+3.5,"text-anchor":"end"},String(Math.round(v))));svg.appendChild(t);}
+  if(memMax>0){const ms2=niceStep(memTop);for(let v=0;v<=memTop+1e-9;v+=ms2){
+    svg.appendChild(el("text",{class:"tick",x:x1+7,y:yMem(v)+3.5,"text-anchor":"start"},String(Math.round(v))));}}
+  svg.appendChild(el("line",{class:"baseline",x1:x0,x2:x1,y1:y1,y2:y1}));
+  svg.appendChild(el("text",{class:"axtitle",x:12,y:m.top+pH/2,"text-anchor":"middle",transform:`rotate(-90 12 ${m.top+pH/2})`},"ms"));
+  if(memMax>0)svg.appendChild(el("text",{class:"axtitle",x:W-10,y:m.top+pH/2,"text-anchor":"middle",transform:`rotate(90 ${W-10} ${m.top+pH/2})`},"MB"));
+  const n=runs.length,pad=n>1?18:pW/2;
+  const xAt=i=>x0+pad+(n>1?i*(pW-2*pad)/(n-1):0);
+  // Instructions have no relation to milliseconds or megabytes, so the bars get
+  // the plot height to themselves rather than a shared axis, and are drawn
+  // before anything else so the lines stay readable over them.
+  let instrMax=0;
+  runs.forEach(r=>{const n=r.instructions;if(!n)return;
+    ["master","kit"].forEach(k=>{if(n[k]!=null&&n[k]>instrMax)instrMax=n[k];});});
+  if(instrMax>0){
+    const bw=Math.max(3,Math.min(11,pW/(runs.length*3)));
+    runs.forEach((r,i)=>{const n=r.instructions;if(!n)return;
+      [["master","wsd","coolwsd"],["kit","kit","document kit"]].forEach((spec,j)=>{
+        const v=n[spec[0]];if(v==null)return;
+        const h=(v/instrMax)*pH*0.9, cx=xAt(i)+(j?1:-1)*(bw/2+1);
+        const bar=el("rect",{class:"ibar "+spec[1],x:cx-bw/2,y:y1-h,width:bw,height:h});
+        const tip=`${shortLabel(r.commit)} · ${spec[2]}: ${(v/1e9).toFixed(1)}G instructions`;
+        bar.setAttribute("data-tip",tip);bar.setAttribute("aria-label",tip);
+        svg.appendChild(bar);});});
+  }
+  // One stacked bar per run, on the same MB axis as the memory lines so its
+  // height can be read off that axis rather than taken on trust.
+  runs.forEach((r,i)=>{const sk=stackOf(r);if(!sk)return;
+    const bw=Math.max(4,Math.min(13,pW/(runs.length*3)));
+    const cx=xAt(i)+bw*1.6;
+    let acc=0;
+    sk.parts.forEach(part=>{
+      const yTop=yMem(acc+part.v), h=Math.max(0.5,yMem(acc)-yTop);
+      const rect=el("rect",{class:"sbar "+part.cls,x:cx-bw/2,y:yTop,width:bw,height:h});
+      const tip=`${shortLabel(r.commit)} · ${part.name}: ${Math.round(part.v)} MB of ${Math.round(sk.total)} resident`;
+      rect.setAttribute("data-tip",tip);rect.setAttribute("aria-label",tip);
+      svg.appendChild(rect);acc+=part.v;});});
+  function plot(cls,scale,getv){
+    const pts=[];runs.forEach((r,i)=>{const v=getv(r);if(v!=null)pts.push([i,xAt(i),scale(v),v]);});
+    if(!pts.length)return;
+    if(pts.length>1)svg.appendChild(el("polyline",{class:"line "+cls,points:pts.map(p=>p[1]+","+p[2]).join(" ")}));
+    pts.forEach(p=>{const r=runs[p[0]];
+      const dot=el("circle",{class:"dot "+cls.split(" ")[0]+(r.profiled?" prof":""),cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
+      const short=cls.split(" ")[0],unit=cls.indexOf("mem")>=0?"MB":"ms";
+      const label=`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${Math.round(p[3])} ${unit}`+(r.profiled?" · profiled":"");
+      dot.setAttribute("data-tip",label);dot.setAttribute("aria-label",label);
+      dot.addEventListener("click",()=>openDetail(runs,p[0]));svg.appendChild(dot);});
+  }
+  MS.forEach(s=>plot(s.m,yMs,r=>{const x=r.metrics[s.m];return x?x.avg:null;}));
+  plot("master_mem mem",yMem,masterOf);
+  plot("cool_mem mem",yMem,memOf);
+  plot("browser_mem mem",yMem,heapOf);
+  // x labels: short commit, thinned if crowded
+  const everyk=Math.ceil(n/6);
+  runs.forEach((r,i)=>{if(i%everyk)return;svg.appendChild(el("text",{class:"xlab",x:xAt(i),y:y1+15,"text-anchor":"middle"},r.commit?shortLabel(r.commit):("#"+i)));});
+}
+
+const host=document.getElementById("charts");
+Object.keys(DATA).sort((a,b)=>{const A=a.split("|"),B=b.split("|");
+  return (APP_ORDER.indexOf(A[0])-APP_ORDER.indexOf(B[0]))
+      || (DOC_ORDER.indexOf(A[1])-DOC_ORDER.indexOf(B[1]))
+      || (Number(A[2])-Number(B[2]));}).forEach(key=>{
+  const [app,doc,users]=key.split("|");
+  // capture coverage, so a document with no flamegraph says so instead of just
+  // being silently linkless
+  const runs=DATA[key],nfg=runs.filter(r=>r.flamegraph).length;
+  const cov=nfg
+    ?`<span class="cov some" title="${nfg} of ${runs.length} run(s) of this document were profiled">flame ${nfg}/${runs.length}</span>`
+    :`<span class="cov none" title="no capture for this document yet: ./browser-suite.py --flamegraphs">no flame</span>`;
+  // the document under test, from the newest run that recorded one
+  const file=(runs.filter(r=>r.file).pop()||{}).file;
+  const sec=document.createElement("section");sec.className="chart a-"+app;
+  sec.innerHTML=`<h2>${esc(app)} &middot; ${esc(doc)} &middot; ${esc(users)} user${users==="1"?"":"s"}${cov}</h2>
+    ${file?`<p class="fname" title="the document this test opens">${esc(file)}</p>`:""}
+    <svg data-key="${esc(key)}" viewBox="0 0 520 300" role="img" aria-label="${esc(key)}${file?" of "+esc(file):""} over commits"></svg>`;
+  host.appendChild(sec);
+});
+document.querySelectorAll("svg[data-key]").forEach(svg=>render(svg,DATA[svg.dataset.key]));
+
+// document flamegraph: link the header to the most recent run that has one
+(function(){let best=null;
+  Object.values(DATA).forEach(runs=>runs.forEach(r=>{
+    if(r.flamegraph&&(!best||(r.ts||"")>(best.ts||"")))best=r;}));
+  const a=document.getElementById("fglink");
+  if(best&&best.flamegraph){a.href=best.flamegraph;
+    a.textContent="latest document flamegraph \u2197";
+    a.hidden=false;}})();
+
+const modal=document.getElementById("modal"),mb=document.getElementById("mb"),mt=document.getElementById("mt"),
+  mmeta=document.getElementById("mmeta"),mfg=document.getElementById("mfg"),mcard=document.getElementById("mcard");
+
+function fgLabel(r){return (r.commit?shortLabel(r.commit):"local")+" · "+String(r.ts||"").replace("T"," ").slice(0,16);}
+function fgFrame(r){
+  // <object>, not <img>: the capture carries its own script, so search and zoom
+  // keep working inside the frame
+  return `<figure class="fg-frame"><figcaption>${esc(fgLabel(r))} &middot; `+
+    `<a class="fg-inline" href="${esc(r.flamegraph)}" target="_blank" rel="noopener">open \u2197</a></figcaption>`+
+    `<div class="fg-scroll"><object type="image/svg+xml" data="${esc(r.flamegraph)}"`+
+    // aspect from the SVG itself, measured when this file was written: a file://
+    // page is an opaque origin, so it cannot read the size out of the embedded
+    // document. Without it the capture would be scaled down to a fixed box.
+    (r.fg_aspect?` style="height:auto;aspect-ratio:1/${r.fg_aspect}"`:``)+
+    ` aria-label="flamegraph ${esc(fgLabel(r))}"></object></div></figure>`;
+}
+// The open run's flamegraph, inline, optionally beside another run of the same
+// document for a before/after read. cmp is an index into runs, or null.
+function renderFg(runs,i,cmp){
+  const r=runs[i],others=runs.map((x,j)=>j).filter(j=>j!==i&&runs[j].flamegraph);
+  if(!r.flamegraph){
+    mcard.classList.remove("wide");
+    mfg.innerHTML=`<p class="fg-missing">No flamegraph for this run. `+
+      (others.length?`${others.length} other run(s) of this document have one.`
+                    :`Capture one with <code>./browser-suite.py --flamegraphs</code>.`)+`</p>`;
+    return;
+  }
+  mcard.classList.add("wide");
+  const other=cmp!=null&&runs[cmp]&&runs[cmp].flamegraph?runs[cmp]:null;
+  const opts=[`<option value="">none</option>`].concat(others.map(j=>
+    `<option value="${j}"${j===cmp?" selected":""}>${esc(fgLabel(runs[j]))}</option>`)).join("");
+  mfg.innerHTML=`<details class="fg-sec" open><summary>document flamegraph</summary>
+    <div class="fg-bar"><label>side by side with: <select id="fgcmp"${others.length?"":" disabled"}>${opts}</select></label>
+      <span>the kitbroker_* document kit while this document is open</span></div>
+    <div class="fg-grid${other?" two":""}">${fgFrame(r)}${other?fgFrame(other):""}</div></details>`;
+  // open on the base of the graph: flamegraph.pl draws the root at the bottom,
+  // and the widest frames there are what you look at first
+  mfg.querySelectorAll(".fg-scroll").forEach(d=>{d.scrollTop=d.scrollHeight;});
+  const sel=document.getElementById("fgcmp");
+  if(sel)sel.addEventListener("change",()=>renderFg(runs,i,sel.value===""?null:Number(sel.value)));
+}
+
+function openDetail(runs,i){
+  const r=runs[i];mt.textContent="Run detail";
+  let meta=`commit ${esc(r.commit||"(unknown)")}  ·  ${esc(r.ts||"")}`;
+  if(r.file)meta+=`  ·  ${esc(r.file)}`;
+  if(r.runid)meta+=`  ·  run ${esc(r.runid)}`;
+  mmeta.innerHTML=meta;
+  const cols=["avg","min","med","p90","p95","max"];
+  let h='<table><thead><tr><th>metric</th>'+cols.map(c=>`<th>${c}</th>`).join("")+'</tr></thead><tbody>';
+  Object.keys(r.metrics).forEach(name=>{const s=r.metrics[name]||{};
+    h+=`<tr><td>${name.replace(/_ms$/,"")} (ms)</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
+  const cm=r.cool_memory;
+  const asMb=v=>v==null?null:Math.round(v);
+  if(cm){
+    // The document kit: what it had resident, what the proportional split gives
+    // it, and how many kits that split was over. One kit alive means it carries
+    // nearly the whole shared base, so the proportional figure runs high.
+    const rss=asMb(cm.peak_doc_rss_mb), pss=asMb(cm.peak_doc_mem_mb!=null?cm.peak_doc_mem_mb:cm.peak_pss_mb);
+    const own=asMb(cm.peak_doc_private_mb), inh=asMb(cm.peak_doc_shared_mb), kits=cm.doc_pids;
+    const bits=[];
+    if(rss!=null)bits.push(`resident ${rss}`);
+    if(pss!=null)bits.push(`proportional ${pss}${kits?` over ${kits} kit${kits>1?"s":""}`:""}`);
+    if(own!=null)bits.push(`own ${own}`);
+    if(inh!=null)bits.push(`inherited ${inh}`);
+    if(bits.length)h+=`<tr><td>document kit (MB)</td><td colspan="6" style="text-align:left">${bits.join(", ")}</td></tr>`;
+    const wbits=[];
+    if(cm.peak_master_hwm_mb!=null)wbits.push(`peak ${asMb(cm.peak_master_hwm_mb)}`);
+    if(cm.peak_master_rss_mb!=null)wbits.push(`resident ${asMb(cm.peak_master_rss_mb)}`);
+    if(cm.peak_master_pss_mb!=null)wbits.push(`proportional ${asMb(cm.peak_master_pss_mb)}`);
+    if(cm.peak_total_mem_mb!=null)wbits.push(`both processes ${asMb(cm.peak_total_mem_mb)}`);
+    if(wbits.length)h+=`<tr><td>coolwsd (MB)</td><td colspan="6" style="text-align:left">${wbits.join(", ")}</td></tr>`;}
+  const ds=cm&&cm.doc_stack;
+  if(ds){const tot=STACK.reduce((a,[k])=>a+(ds[k]||0),0);
+    h+=`<tr><td>kit memory (MB)</td><td colspan="6" style="text-align:left">`+
+      STACK.filter(([k])=>ds[k]!=null).map(([k,,name])=>`${name} ${Math.round(ds[k])}`).join(", ")+
+      `, resident ${Math.round(tot)}</td></tr>`;}
+  const ins=r.instructions;
+  if(ins){h+=`<tr><td>instructions (G)</td><td colspan="6" style="text-align:left">`+
+    (ins.master!=null?`coolwsd ${(ins.master/1e9).toFixed(1)}`:"")+
+    (ins.kit!=null?`${ins.master!=null?", ":""}document kit ${(ins.kit/1e9).toFixed(1)}`:"")+"</td></tr>";}
+  mb.innerHTML=h+"</tbody></table>";
+  renderFg(runs,i,null);
+  modal.hidden=false;document.getElementById("mc").focus();
+}
+function close(){modal.hidden=true;}
+document.getElementById("mc").addEventListener("click",close);
+modal.addEventListener("click",e=>{if(e.target===modal)close();});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!modal.hidden)close();});
+
+// instant hover tooltip (no native <title> delay)
+const tip=document.getElementById("tip");
+function placeTip(e){const pad=14,w=tip.offsetWidth,h=tip.offsetHeight;
+  let x=e.clientX+pad,y=e.clientY+pad;
+  if(x+w>innerWidth)x=e.clientX-pad-w; if(y+h>innerHeight)y=e.clientY-pad-h;
+  tip.style.left=x+"px";tip.style.top=y+"px";}
+// Whatever carries a tip, rather than the dots alone: the instruction bars and the stacked
+// memory bars carry one each and used to say nothing when the pointer was on them.
+function tipTarget(t){return (t instanceof Element)?t.closest("[data-tip]"):null;}
+document.addEventListener("mouseover",e=>{const d=tipTarget(e.target);
+  if(d){tip.textContent=d.getAttribute("data-tip")||"";tip.hidden=false;placeTip(e);}});
+document.addEventListener("mousemove",e=>{if(!tip.hidden)placeTip(e);});
+document.addEventListener("mouseout",e=>{if(tipTarget(e.target))tip.hidden=true;});
+// also on keyboard focus, for accessibility
+document.addEventListener("focusin",e=>{const d=tipTarget(e.target);
+  if(d){const b=d.getBoundingClientRect();
+    tip.textContent=d.getAttribute("data-tip")||"";tip.hidden=false;
+    tip.style.left=(b.right+8)+"px";tip.style.top=(b.top)+"px";}});
+document.addEventListener("focusout",e=>{if(tipTarget(e.target))tip.hidden=true;});
+</script></body></html>
+"""
+
+
+def _svg_aspect(path: Path) -> float | None:
+    """height/width of an SVG, from its viewBox or its width/height attributes.
+
+    The dashboard needs it to give an embedded capture the right height: a page
+    opened over file:// is an opaque origin, so its script cannot read the size
+    out of the document inside an <object>, and a flamegraph left to fit a fixed
+    box shrinks to a fraction of the panel width."""
+    try:
+        head = path.open("rb").read(4096).decode("utf-8", "replace")
+    except OSError:
+        return None
+    m = re.search(r'viewBox\s*=\s*"[\d.+-]+\s+[\d.+-]+\s+([\d.]+)\s+([\d.]+)"', head)
+    if not m:
+        w = re.search(r'\swidth\s*=\s*"([\d.]+)(?:px)?"', head)
+        h = re.search(r'\sheight\s*=\s*"([\d.]+)(?:px)?"', head)
+        if not (w and h):
+            return None
+        m = (w.group(1), h.group(1))
+        wv, hv = float(m[0]), float(m[1])
+    else:
+        wv, hv = float(m.group(1)), float(m.group(2))
+    if wv <= 0 or hv <= 0:
+        return None
+    return round(hv / wv, 4)
+
+
+def write_dashboard(scen: dict, out: str) -> None:
+    # Flamegraph paths are stored absolute; rewrite them relative to the html
+    # file's directory so the links work from wherever the dashboard is opened.
+    out_dir = Path(out).resolve().parent
+    flames = 0
+    for pts in scen.values():
+        for p in pts:
+            fg = p.get("flamegraph")
+            if fg:
+                p["fg_aspect"] = _svg_aspect(Path(fg))
+                p["flamegraph"] = os.path.relpath(fg, out_dir).replace(os.sep, "/")
+                flames += 1
+    Path(out).write_text(DASHBOARD.replace("__DATA__", json.dumps(scen)))
+    runs = sum(len(v) for v in scen.values())
+    print(f"wrote {out}  ({len(scen)} chart(s), {runs} run(s), {flames} flamegraph link(s))")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Run browser tests over time and build a dashboard.")
+    ap.add_argument("--results", default="results", help="history directory (default results/)")
+    ap.add_argument("--run", action="store_true", help="run the suite first (needs docker/k6)")
+    ap.add_argument("--users", default="1,3", help="comma-separated user counts to run")
+    ap.add_argument("--commit", help="commit label for this run (default: git HEAD of --coolwsd-dir)")
+    ap.add_argument("--coolwsd-dir", default=os.environ.get("COOLWSD_DIR"),
+                    help="online checkout, to read the commit under test "
+                         "(default: $COOLWSD_DIR)")
+    ap.add_argument("-o", "--out", default="browser-dashboard.html", help="dashboard output file")
+    ap.add_argument("--flamegraphs", action="store_true",
+                    help="capture a document-process flamegraph per test document "
+                         "(8), each via k6-flamegraph.py launching its own "
+                         "single-kit coolwsd on its own port; each run's detail then "
+                         "embeds its own capture")
+    ap.add_argument("--demo", action="store_true", help="use synthetic history instead of results/")
+    ap.add_argument("--junit", metavar="FILE",
+                    help="write a JUnit report of this run's per-document "
+                         "outcomes, for a CI server to display and trend")
+    ap.add_argument("--min-samples", type=int, default=0, metavar="N",
+                    help="count a capture as failed when perf collected fewer "
+                         "than N samples for it (0 = off). An idle kit yields a "
+                         "flamegraph that renders but means nothing")
+    ap.add_argument("--prune-perf-data", action="store_true",
+                    help="delete each capture's perf.data once its flamegraph.svg "
+                         "exists (tens of MB per document), for a history that is "
+                         "kept around")
+    ap.add_argument("--strict", action="store_true",
+                    help="exit non-zero if any document failed, not just when all "
+                         "of them did (for CI)")
+    args = ap.parse_args()
+
+    cases: list[dict] = []
+    if args.demo:
+        scen = demo_history()
+    else:
+        results = Path(args.results)
+        if args.run or args.flamegraphs:
+            if not args.coolwsd_dir:
+                return ("no online checkout given: set COOLWSD_DIR (or pass "
+                        "--coolwsd-dir) to the online checkout under test")
+            commit = args.commit or git_commit(args.coolwsd_dir)
+            runid = new_runid(commit)
+            if args.run:
+                if not preflight(args.coolwsd_dir):
+                    return ("aborting: start Collabora Online and the WOPI host "
+                            "(see the commands above), then re-run")
+                cases += run_suite(results, runid,
+                                   [int(u) for u in args.users.split(",") if u.strip()],
+                                   commit)
+            if args.flamegraphs:
+                # The pass launches its own single-kit coolwsd per document (on
+                # its own free port), so it needs no pre-running COOL; it just
+                # needs docker/k6, perf and the FlameGraph tools.
+                cases += capture_flamegraphs(results, runid, args.coolwsd_dir,
+                                             commit, args.prune_perf_data,
+                                             args.min_samples)
+            if args.junit:
+                write_junit(Path(args.junit), f"cool-perf.{runid}", cases)
+        scen = collect(results)
+        if not scen:
+            return (f"no metrics.json found under {results}/ - run the suite first "
+                    f"(./browser-suite.py --run) or pass --demo")
+    write_dashboard(scen, args.out)
+    # A pass where every document failed is a broken run, not an empty one, and
+    # CI wants to hear about it. --strict makes any single failure fatal.
+    failed = [c["name"] for c in cases if not c["ok"]]
+    if failed and (args.strict or len(failed) == len(cases)):
+        return f"{len(failed)} of {len(cases)} run(s) failed: {', '.join(failed)}"
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

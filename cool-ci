@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+"""
+cool-ci: run the Collabora Online performance suite the way a CI job wants to,
+and keep its results somewhere durable.
+
+Three subcommands:
+
+    ./cool-ci doctor      check the machine can run the suite, explain what is missing
+    ./cool-ci run         doctor, then run the suite and publish the results
+    ./cool-ci publish     copy a finished run into the store and rebuild its dashboard
+
+This never builds Collabora Online. The build is expected to exist already,
+either as the tree that $COOLWSD_DIR points at or as a snapshot installed into
+it with cool-use-build. coolwsd is started from the exact command line
+`make run-one` would use, but without make, so that a job can never quietly
+relink the binaries it was asked to measure.
+
+Configuration is all environment, so a Jenkins job needs no arguments:
+
+    COOLWSD_DIR        the prebuilt online tree to measure (required)
+    COOL_PERF_STORE    durable results store (default /var/lib/cool-perf)
+    COOL_PERF_KEEP     how many runs to keep in the store (default 20)
+    COOL_BUILDS_DIR    build snapshots, for cool-use-build (default: beside the tree)
+    COOL_PERF_LABEL    label the runs with this instead of the built commit
+    PERF_EVENT         perf sampling event (default cycles, self-tested and
+                       downgraded automatically when it captures nothing)
+    HOST_IP            IP the k6 container reaches the host on (default: auto)
+    WOPI_PORT          port for the test WOPI host (default 3000)
+
+See CI-JENKINS.md for the pipeline and the machine setup.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import ssl
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+K6_IMAGE = "grafana/k6:1.7.1-with-browser"
+# Writer, Calc and Impress each have a blank document, a big one and the same big one in the
+# Microsoft format; Draw has no such format, so it has the first two.
+DOC_COUNT = 11
+
+_SSL = ssl.create_default_context()
+_SSL.check_hostname = False
+_SSL.verify_mode = ssl.CERT_NONE
+
+OK, WARN, FAIL = "ok", "warn", "fail"
+
+
+def env(name: str, default: str = "") -> str:
+    return os.environ.get(name) or default
+
+
+def store_dir() -> Path:
+    return Path(env("COOL_PERF_STORE", "/var/lib/cool-perf")).expanduser()
+
+
+def tree_dir() -> Path | None:
+    d = env("COOLWSD_DIR")
+    return Path(d).expanduser().resolve() if d else None
+
+
+def http_ok(url: str, timeout: int = 5) -> bool:
+    try:
+        urllib.request.urlopen(url, timeout=timeout, context=_SSL).close()
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
+def listening_ports() -> set:
+    """TCP ports in LISTEN state. Kept local rather than shared with
+    k6-flamegraph.py: it is two lines of ss parsing, and the harness is the one
+    piece here that must not grow new import-time dependencies."""
+    try:
+        out = subprocess.run(["ss", "-ltnH"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except Exception:
+        return set()
+    ports = set()
+    for line in out.splitlines():
+        cols = line.split()
+        if len(cols) >= 4:
+            m = re.search(r":(\d+)$", cols[3])
+            if m:
+                ports.add(int(m.group(1)))
+    return ports
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def build_label() -> tuple[str | None, str]:
+    """(label, how it was decided). A snapshot installed by cool-use-build wins
+    over git HEAD: after a swap the tree's HEAD no longer describes the binaries
+    that are about to be measured."""
+    if env("COOL_PERF_LABEL"):
+        return env("COOL_PERF_LABEL"), "COOL_PERF_LABEL"
+    t = tree_dir()
+    if not t:
+        return None, "no COOLWSD_DIR"
+    marker = t / ".cool-build-installed"
+    try:
+        ident = json.loads(marker.read_text()).get("id")
+        if ident:
+            return ident, f"snapshot installed in the tree ({marker.name})"
+    except Exception:
+        pass
+    out = run(["git", "-C", str(t), "rev-parse", "--short=12", "HEAD"])
+    if out.returncode == 0 and out.stdout.strip():
+        return out.stdout.strip(), "git HEAD of the tree"
+    return None, "the tree has no snapshot marker and no git HEAD"
+
+
+def cool_cmd() -> str:
+    """The coolwsd command line to start, from cool-use-build run-cmd."""
+    if env("COOL_CMD"):
+        return env("COOL_CMD")
+    out = run([sys.executable, str(ROOT / "cool-use-build"), "run-cmd"])
+    if out.returncode != 0 or not out.stdout.strip():
+        raise SystemExit("could not derive the coolwsd command line:\n"
+                         + (out.stderr or out.stdout))
+    return out.stdout.strip()
+
+
+# --------------------------------------------------------------------------- #
+# doctor
+# --------------------------------------------------------------------------- #
+
+def checks(publishing: bool = True) -> list[tuple[str, str, str]]:
+    """[(status, what, detail-or-hint)] for everything a run needs.
+
+    @p publishing says whether the runs are going into the store afterwards. Measuring needs
+    nothing but the workspace, so a store that cannot be written is only in the way of the
+    publishing half.
+    """
+    res = []
+
+    def add(status, what, detail=""):
+        res.append((status, what, detail))
+
+    t = tree_dir()
+    if not t:
+        add(FAIL, "COOLWSD_DIR", "not set: point it at the prebuilt online tree")
+    elif not t.is_dir():
+        add(FAIL, "COOLWSD_DIR", f"{t} does not exist")
+    else:
+        add(OK, "COOLWSD_DIR", str(t))
+        # The build must already exist. These are the four things a run loads.
+        for rel, what in (("coolwsd", "server binary"),
+                          ("systemplate", "jail template"),
+                          ("engine/instdir", "engine runtime"),
+                          ("browser/dist", "browser bundle")):
+            p = t / rel
+            add(OK if p.exists() else FAIL, f"build: {rel}",
+                what if p.exists() else
+                f"missing {p}: build online before this job runs")
+        add(OK if (t / "Makefile").is_file() else FAIL, "build: configured",
+            "Makefile present" if (t / "Makefile").is_file()
+            else "no Makefile: the tree is not configured")
+
+    label, how = build_label()
+    add(OK if label else FAIL, "build label", f"{label} ({how})" if label
+        else f"{how}: set COOL_PERF_LABEL")
+
+    missing = [n for n in ("cool-browser-writer-blank-test.js",
+                           "cool-browser-draw-5mb-test.js")
+               if not (ROOT / "dist" / n).is_file()]
+    add(OK if not missing else FAIL, "k6 test bundles",
+        "dist/ is built" if not missing
+        else "dist/ is missing or stale: run `npm ci && npm run build`")
+
+    for tool, hint in (("docker", "the k6 tests run in a container"),
+                       ("perf", "install linux-tools / perf for your kernel"),
+                       ("stackcollapse-perf.pl", "install FlameGraph and put it on PATH"),
+                       ("flamegraph.pl", "install FlameGraph and put it on PATH"),
+                       ("npm", "the test WOPI host is a node server"),
+                       ("ss", "iproute2, for port discovery")):
+        add(OK if shutil.which(tool) else FAIL, f"tool: {tool}",
+            shutil.which(tool) or hint)
+
+    if shutil.which("docker"):
+        d = run(["docker", "info"])
+        add(OK if d.returncode == 0 else FAIL, "docker daemon",
+            "reachable" if d.returncode == 0
+            else "cannot talk to the daemon: is the agent user in the docker group?")
+        img = run(["docker", "image", "inspect", K6_IMAGE])
+        add(OK if img.returncode == 0 else WARN, "k6 image",
+            K6_IMAGE if img.returncode == 0
+            else f"{K6_IMAGE} not pulled yet, the first run will fetch it")
+
+    # perf sampling permission. Unprivileged perf needs paranoid <= 1, and the
+    # harness falls back to sudo, which in a job must not prompt.
+    try:
+        paranoid = int(Path("/proc/sys/kernel/perf_event_paranoid").read_text().strip())
+    except Exception:
+        paranoid = None
+    sudo_ok = run(["sudo", "-n", "true"]).returncode == 0 if shutil.which("sudo") else False
+    if paranoid is not None and paranoid <= 1:
+        add(OK, "perf permission", f"perf_event_paranoid={paranoid}")
+    elif sudo_ok:
+        add(WARN, "perf permission",
+            f"perf_event_paranoid={paranoid}, falling back to passwordless sudo")
+    else:
+        add(FAIL, "perf permission",
+            f"perf_event_paranoid={paranoid} and sudo would prompt: "
+            "set kernel.perf_event_paranoid=-1 (sysctl) or grant NOPASSWD perf")
+
+    # The kit runs in a jail built from user namespaces.
+    unshare = run(["unshare", "-U", "true"]) if shutil.which("unshare") else None
+    if unshare is not None:
+        add(OK if unshare.returncode == 0 else FAIL, "user namespaces",
+            "unshare -U works" if unshare.returncode == 0
+            else "unprivileged user namespaces are blocked, the kit cannot jail: "
+                 "check kernel.unprivileged_userns_clone and "
+                 "kernel.apparmor_restrict_unprivileged_userns")
+    for sysctl, want in (("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "0"),):
+        p = Path(sysctl)
+        if p.exists():
+            val = p.read_text().strip()
+            add(OK if val == want else FAIL, f"sysctl {p.name}",
+                val if val == want else f"{val}, needs {want} for the jail")
+
+    leaked = [p for p in sorted(listening_ports())
+              if 9980 <= p <= 9999
+              and http_ok(f"https://localhost:{p}/hosting/discovery", 2)]
+    add(OK if not leaked else WARN, "no leftover coolwsd",
+        "none listening" if not leaked
+        else f"{len(leaked)} instance(s) on {leaked}: `pkill -f coolwsd` first")
+
+    wopi_port = int(env("WOPI_PORT", "3000"))
+    if wopi_port in listening_ports() and not http_ok(
+            f"https://localhost:{wopi_port}/wopi/files/1", 3):
+        add(FAIL, f"WOPI port {wopi_port}",
+            "something else is listening there and it is not the test WOPI host")
+    else:
+        add(OK, f"WOPI port {wopi_port}", "free, or already the test WOPI host")
+
+    s = store_dir()
+    try:
+        s.mkdir(parents=True, exist_ok=True)
+        probe = s / ".cool-ci-write-test"
+        probe.write_text("ok")
+        probe.unlink()
+        add(OK, "results store", str(s))
+    except Exception as exc:
+        # The store is the durable half, so it lives outside the workspace and usually under
+        # /var/lib, which nobody owns by default. Both ways out are worth saying: own that
+        # directory, or keep the runs somewhere already owned. It is only in the way of
+        # publishing, though: measuring writes into results/ in the workspace.
+        add(FAIL if publishing else WARN, "results store",
+            f"{s} is not writable ({exc.__class__.__name__}). Either "
+            f"`sudo install -d -o $USER -g $USER {s}`, or point COOL_PERF_STORE at a "
+            f"directory you own such as $HOME/cool-perf, or measure without it: "
+            f"`cool-ci run --no-publish` keeps the run in results/")
+
+    for label_, path in (("workspace", ROOT), ("store", s if s.exists() else ROOT)):
+        try:
+            st = os.statvfs(path)
+            gb = st.f_bavail * st.f_frsize / 1e9
+            add(OK if gb >= 5 else WARN, f"free space ({label_})",
+                f"{gb:.1f} GB free" + ("" if gb >= 5 else ", a full run needs a few GB"))
+        except Exception:
+            pass
+    return res
+
+
+def cmd_doctor(args) -> int:
+    res = checks(getattr(args, "publish", True))
+    width = max(len(w) for _, w, _ in res)
+    for status, what, detail in res:
+        mark = {OK: "ok  ", WARN: "warn", FAIL: "FAIL"}[status]
+        print(f"[{mark}] {what:{width}}  {detail}")
+    fails = [w for s, w, _ in res if s == FAIL]
+    warns = [w for s, w, _ in res if s == WARN]
+    print(f"\n{len(res)} checks, {len(fails)} failed, {len(warns)} warned")
+    # keep the table ahead of the verdict in a CI log, where the two streams
+    # are interleaved by arrival
+    sys.stdout.flush()
+    if fails:
+        print("cannot run: " + ", ".join(fails), file=sys.stderr)
+        return 1
+    if warns and args.strict:
+        print("--strict: warnings are fatal: " + ", ".join(warns), file=sys.stderr)
+        return 1
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# run
+# --------------------------------------------------------------------------- #
+
+def wait_for(what: str, seconds: int, probe) -> bool:
+    for _ in range(seconds):
+        if probe():
+            return True
+        time.sleep(1)
+    print(f"timed out waiting for {what}", file=sys.stderr)
+    return False
+
+
+def start_cool(log_path: Path) -> tuple[subprocess.Popen, int] | None:
+    """Start coolwsd for the suite phase and return it with the port it bound.
+
+    The command line comes from the Makefile via cool-use-build, so no make runs
+    and nothing gets relinked. --find-free-port means the port has to be
+    discovered rather than assumed."""
+    import shlex
+    cmd = cool_cmd()
+    before = listening_ports()
+    print(f"starting coolwsd: {cmd}")
+    log = log_path.open("w")
+    proc = subprocess.Popen(shlex.split(cmd), cwd=str(tree_dir()),
+                            stdout=log, stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    for _ in range(90):
+        for port in sorted(listening_ports() - before):
+            if http_ok(f"https://localhost:{port}/hosting/discovery"):
+                print(f"coolwsd is up on port {port}")
+                return proc, port
+        if proc.poll() is not None:
+            print(f"coolwsd exited early with {proc.returncode}, see {log_path}",
+                  file=sys.stderr)
+            return None
+        time.sleep(1)
+    print(f"coolwsd did not come up, see {log_path}", file=sys.stderr)
+    stop_proc(proc)
+    return None
+
+
+def start_wopi(log_path: Path, port: int) -> subprocess.Popen | None:
+    """Start the test WOPI host over HTTPS. It has to match coolwsd's scheme:
+    the host page refuses to submit when the schemes differ, and the browser
+    test then waits for a Frame_Ready that never comes."""
+    if http_ok(f"https://localhost:{port}/wopi/files/1", 3):
+        print(f"WOPI host already answering on {port}")
+        return None
+    log = log_path.open("w")
+    print(f"starting the WOPI host on {port} ...")
+    proc = subprocess.Popen(["npm", "run", "server"], cwd=str(ROOT),
+                            env={**os.environ, "PORT": str(port),
+                                 "SSL_KEY_FILE": "server/npm-server-key.pem",
+                                 "SSL_CRT_FILE": "server/npm-server-cert.pem",
+                                 "NODE_TLS_REJECT_UNAUTHORIZED": "0"},
+                            stdout=log, stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    if not wait_for("the WOPI host", 30,
+                    lambda: http_ok(f"https://localhost:{port}/wopi/files/1", 3)):
+        stop_proc(proc)
+        return None
+    return proc
+
+
+def stop_proc(proc: subprocess.Popen | None) -> None:
+    """Stop a process group started here, escalating if it ignores SIGTERM.
+    Signalling the group matters for coolwsd, which forks its forkit and kits."""
+    if proc is None:
+        return
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            break
+        try:
+            proc.wait(timeout=15)
+            return
+        except Exception:
+            continue
+
+
+def cmd_run(args) -> int:
+    rc = cmd_doctor(argparse.Namespace(strict=False, publish=args.publish))
+    if rc != 0:
+        return rc
+    label, how = build_label()
+    print(f"\nmeasuring build {label} ({how})\n")
+    logs = ROOT / "ci-logs"
+    logs.mkdir(exist_ok=True)
+    # Anchor a relative report path to the repo, not to the caller's cwd: a job
+    # invoking this by absolute path from elsewhere would otherwise write the
+    # report in one place and look for it in another.
+    junit = Path(args.junit)
+    if not junit.is_absolute():
+        junit = ROOT / junit
+
+    suite_env = {**os.environ}
+    cool_proc = wopi_proc = None
+    try:
+        if args.suite:
+            started = start_cool(logs / "coolwsd-suite.log")
+            if started is None:
+                return 1
+            cool_proc, port = started
+            wopi_port = int(env("WOPI_PORT", "3000"))
+            wopi_proc = start_wopi(logs / "wopi.log", wopi_port)
+            if wopi_proc is None and not http_ok(
+                    f"https://localhost:{wopi_port}/wopi/files/1", 3):
+                return 1
+            # The k6 container reaches the host over HOST_IP, while the admin
+            # metrics query runs here and uses localhost.
+            host = env("HOST_IP", "localhost")
+            suite_env.update({
+                "WOPI_URL": f"https://{host}:{port}/",
+                "COOL_URL": f"https://localhost:{port}/",
+                "WOPI_HOST": f"https://{host}:{wopi_port}/",
+                "NODE_TLS_REJECT_UNAUTHORIZED": "0",
+            })
+        # Same certificates for any WOPI host the flamegraph pass starts itself.
+        suite_env.setdefault("WOPI_SSL_KEY", str(ROOT / "server/npm-server-key.pem"))
+        suite_env.setdefault("WOPI_SSL_CRT", str(ROOT / "server/npm-server-cert.pem"))
+        # Portable default. k6-flamegraph self-tests the event before the run
+        # and falls back (cpu_core, cpu_atom, task-clock) when it captures
+        # nothing, which is what a hybrid CPU or a VM without a PMU needs.
+        suite_env.setdefault("PERF_EVENT", env("PERF_EVENT", "cycles"))
+        suite_env["COOL_CMD"] = cool_cmd()
+
+        cmd = [sys.executable, str(ROOT / "browser-suite.py"),
+               "--results", "results", "--commit", label or "unknown",
+               "--junit", str(junit), "--prune-perf-data",
+               "--min-samples", str(args.min_samples),
+               "-o", "browser-dashboard.html"]
+        if args.suite:
+            cmd += ["--run", "--users", args.users]
+        if args.flamegraphs:
+            cmd += ["--flamegraphs"]
+        if args.strict:
+            cmd += ["--strict"]
+        print("running: " + " ".join(cmd))
+        suite_rc = subprocess.run(cmd, cwd=str(ROOT), env=suite_env).returncode
+    finally:
+        stop_proc(wopi_proc)
+        stop_proc(cool_proc)
+
+    runid = latest_runid(ROOT / "results")
+    if runid is None:
+        print("no run directory was produced", file=sys.stderr)
+        return suite_rc or 1
+
+    # Measuring and keeping are two things. A run on a workstation is often only worth looking
+    # at once, and the store lives where only its owner may write.
+    if not args.publish:
+        print(f"not publishing: {runid} stays in results/")
+        return suite_rc
+
+    pub_rc = publish(runid, store_dir(), int(env("COOL_PERF_KEEP", "20")),
+                     junit=junit)
+    return suite_rc or pub_rc
+
+
+# --------------------------------------------------------------------------- #
+# publish
+# --------------------------------------------------------------------------- #
+
+def latest_runid(results: Path) -> str | None:
+    """Newest run directory. The runid starts with a UTC timestamp, so the
+    lexical maximum is the most recent."""
+    if not results.is_dir():
+        return None
+    runs = sorted(p.name for p in results.iterdir() if p.is_dir())
+    return runs[-1] if runs else None
+
+
+def publish(runid: str, store: Path, keep: int, junit: Path | None = None) -> int:
+    """Copy one run into the store, prune old ones, rebuild the store dashboard.
+
+    The store is the durable half: a CI workspace is wiped between builds, so
+    the history that the charts plot has to live outside it. The dashboard is
+    written at the top of the store, which is also what makes its links to the
+    captures resolve (they are relative to the html)."""
+    src = ROOT / "results" / runid
+    if not src.is_dir():
+        print(f"nothing to publish: {src} does not exist", file=sys.stderr)
+        return 1
+    dst_results = store / "results"
+    dst_results.mkdir(parents=True, exist_ok=True)
+    dst = dst_results / runid
+    print(f"publishing {runid} to {dst}")
+    if dst.exists():
+        shutil.rmtree(dst, ignore_errors=True)
+    subprocess.run(["cp", "-a", str(src), str(dst)], check=True)
+    if junit and junit.is_file():
+        (store / "junit").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(junit, store / "junit" / f"{runid}.xml")
+
+    runs = sorted(p for p in dst_results.iterdir() if p.is_dir())
+    if keep > 0 and len(runs) > keep:
+        for old in runs[:len(runs) - keep]:
+            print(f"pruning {old.name} (keeping {keep})")
+            shutil.rmtree(old, ignore_errors=True)
+
+    rc = subprocess.run([sys.executable, str(ROOT / "browser-suite.py"),
+                         "--results", str(dst_results),
+                         "-o", str(store / "index.html")],
+                        cwd=str(ROOT)).returncode
+    if rc != 0:
+        print("could not rebuild the store dashboard", file=sys.stderr)
+        return rc
+    (store / "last-run.json").write_text(json.dumps({
+        "runid": runid,
+        "label": build_label()[0],
+        "published_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "runs_in_store": len(sorted(p for p in dst_results.iterdir() if p.is_dir())),
+    }, indent=2) + "\n")
+    print(f"\ndashboard: {store / 'index.html'}")
+    return 0
+
+
+def cmd_publish(args) -> int:
+    runid = args.runid or latest_runid(ROOT / "results")
+    if not runid:
+        print("no run to publish under results/", file=sys.stderr)
+        return 1
+    return publish(runid, store_dir(), int(env("COOL_PERF_KEEP", "20")))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Run the Collabora Online performance suite under CI.",
+        epilog="Configuration comes from the environment, see the module docstring.")
+    sub = ap.add_subparsers(dest="cmd")
+
+    d = sub.add_parser("doctor", help="check the machine can run the suite")
+    d.add_argument("--strict", action="store_true", help="treat warnings as failures")
+    d.set_defaults(func=cmd_doctor)
+
+    r = sub.add_parser("run", help="doctor, run the suite, publish the results")
+    r.add_argument("--suite", action=argparse.BooleanOptionalAction, default=True,
+                   help="run the plain timing suite (needs a coolwsd, which this "
+                        "starts and stops itself)")
+    r.add_argument("--flamegraphs", action=argparse.BooleanOptionalAction, default=True,
+                   help=f"capture a flamegraph per document ({DOC_COUNT})")
+    r.add_argument("--users", default=env("COOL_PERF_USERS", "1,3"),
+                   help="user counts for the timing suite (env COOL_PERF_USERS)")
+    r.add_argument("--publish", action=argparse.BooleanOptionalAction, default=True,
+                   help="copy the run into COOL_PERF_STORE and rebuild its dashboard. "
+                        "--no-publish leaves it in results/ and needs no store")
+    r.add_argument("--junit", default="ci-logs/junit.xml", help="JUnit report path")
+    r.add_argument("--min-samples", type=int, default=int(env("COOL_PERF_MIN_SAMPLES", "30")),
+                   help="fail a document whose capture collected fewer perf "
+                        "samples than this (env COOL_PERF_MIN_SAMPLES, 0 = off)")
+    r.add_argument("--strict", action="store_true",
+                   help="fail the job if any single document fails")
+    r.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("publish", help="copy a run into the store, rebuild its dashboard")
+    p.add_argument("--runid", help="which run to publish (default: the newest)")
+    p.set_defaults(func=cmd_publish)
+
+    args = ap.parse_args()
+    if not getattr(args, "func", None):
+        ap.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

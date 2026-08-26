@@ -22,6 +22,7 @@
     "xpath": "0.0.32"
   },
   "devDependencies": {
+    "puppeteer": "^23",
     "webpack": "^5",
     "webpack-cli": "^6.0.1",
     "webpack-glob-entries": "^1.0.1"

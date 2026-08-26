@@ -232,10 +232,18 @@ def read_proc_mem(pid: str) -> dict[str, int]:
 
     VmRSS is the current resident size and VmHWM the peak resident size since
     the process started (both from /proc/<pid>/status, always readable for our
-    own processes). Pss (proportional set size, which splits shared pages by
-    the number of sharers) comes from /proc/<pid>/smaps_rollup and is a better
-    figure when several kits share the same mapped libraries; it may be
-    unreadable, in which case it is simply left out."""
+    own processes). The rest come from /proc/<pid>/smaps_rollup, which may be
+    unreadable, in which case they are simply left out.
+
+    Pss (proportional set size) splits shared pages by the number of sharers.
+    Private_Dirty is the memory this process alone owns and would have to be
+    reclaimed if it exited, which for a document kit is what that one document
+    costs on top of the base every kit inherits. Shared_Dirty is the largest
+    part of that base: a kit is forked from the parent, so everything the parent
+    wrote before forking, above all the preloaded dictionaries, starts out as
+    dirty pages shared with the parent and with every other kit, and only turns
+    private for the pages a kit goes on to write. Shared_Clean is mostly the
+    mapped engine libraries."""
     out: dict[str, int] = {}
     try:
         for line in Path(f"/proc/{pid}/status").read_text().splitlines():
@@ -245,33 +253,88 @@ def read_proc_mem(pid: str) -> dict[str, int]:
                 out["hwm_kb"] = int(line.split()[1])
     except (OSError, ValueError):
         return {}
+    wanted = {"Pss": "pss_kb", "Private_Dirty": "private_dirty_kb",
+              "Private_Clean": "private_clean_kb", "Shared_Dirty": "shared_dirty_kb",
+              "Shared_Clean": "shared_clean_kb"}
     try:
         for line in Path(f"/proc/{pid}/smaps_rollup").read_text().splitlines():
-            if line.startswith("Pss:"):
-                out["pss_kb"] = int(line.split()[1])
-                break
+            key = line.split(":", 1)[0]
+            if key in wanted:
+                out[wanted[key]] = int(line.split()[1])
     except (OSError, ValueError):
         pass
     return out
 
 
+_SMAPS_HEADER = re.compile(r"^[0-9a-f]+-[0-9a-f]+ \S+ \S+ \S+ \S+\s*(.*)$")
+
+
+def read_proc_smaps(pid: str) -> dict[str, int]:
+    """Resident memory of one pid split by what backs each mapping (kB), or {}.
+
+    A document kit maps the engine libraries, which are the same files every
+    other kit maps, and it inherits the memory the parent had written before the
+    fork. Neither is the document's own cost, and a single resident total hides
+    both, so the mappings are read one by one from /proc/<pid>/smaps and sorted
+    into the libraries, other files, and anonymous memory. The anonymous part is
+    reported twice over: the whole of it, and the share still shared with the
+    parent, which is what the fork handed over rather than what the document
+    went on to write."""
+    out = {"lib_rss_kb": 0, "other_rss_kb": 0, "anon_rss_kb": 0,
+           "anon_shared_dirty_kb": 0}
+    where = None
+    try:
+        with open(f"/proc/{pid}/smaps", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                header = _SMAPS_HEADER.match(line)
+                if header:
+                    path = header.group(1).strip()
+                    if path.endswith(".so") or ".so." in path:
+                        where = "lib"
+                    elif not path or path.startswith("["):
+                        where = "anon"
+                    else:
+                        where = "other"
+                    continue
+                if where is None:
+                    continue
+                key, _, rest = line.partition(":")
+                if key == "Rss":
+                    out[f"{where}_rss_kb"] += int(rest.split()[0])
+                elif key == "Shared_Dirty" and where == "anon":
+                    out["anon_shared_dirty_kb"] += int(rest.split()[0])
+    except (OSError, ValueError, IndexError):
+        return {}
+    return out
+
+
 def group_mem(pids: list[str]) -> dict[str, int]:
     """Sum the memory figures from read_proc_mem across a set of pids (kB).
-    Pss is included only when at least one pid exposed it."""
+    The smaps figures are included only when at least one pid exposed them.
+
+    Only Pss and the private figures add up across processes. A page shared by
+    several kits is counted once per kit in Shared_Dirty and Shared_Clean, so
+    the sum of those over a group tells how much base each member carries, not
+    how much memory the group holds."""
     agg: dict[str, int] = {"rss_kb": 0, "hwm_kb": 0}
-    pss = 0
-    have_pss = False
+    smaps_keys = ("pss_kb", "private_dirty_kb", "private_clean_kb",
+                  "shared_dirty_kb", "shared_clean_kb")
+    split_keys = ("lib_rss_kb", "other_rss_kb", "anon_rss_kb",
+                  "anon_shared_dirty_kb")
+    smaps: dict[str, int] = {}
     for pid in pids:
         m = read_proc_mem(pid)
         if not m:
             continue
         agg["rss_kb"] += m.get("rss_kb", 0)
         agg["hwm_kb"] += m.get("hwm_kb", 0)
-        if "pss_kb" in m:
-            have_pss = True
-            pss += m["pss_kb"]
-    if have_pss:
-        agg["pss_kb"] = pss
+        for key in smaps_keys:
+            if key in m:
+                smaps[key] = smaps.get(key, 0) + m[key]
+        for key, value in read_proc_smaps(pid).items():
+            if key in split_keys:
+                smaps[key] = smaps.get(key, 0) + value
+    agg.update(smaps)
     return agg
 
 
@@ -297,9 +360,22 @@ class MemorySampler:
             if not (m.get("rss_kb") or m.get("pss_kb")):
                 continue
             self._hwm_kb[label] = max(self._hwm_kb[label], m.get("hwm_kb", 0))
-            rec = {"t_s": t, "rss_mb": round(m["rss_kb"] / 1024, 1)}
-            if "pss_kb" in m:
-                rec["pss_mb"] = round(m["pss_kb"] / 1024, 1)
+            # How many processes were in the group, because the proportional
+            # figures divide shared pages by the number of sharers and mean
+            # nothing without it.
+            rec = {"t_s": t, "rss_mb": round(m["rss_kb"] / 1024, 1),
+                   "pids": len(pids)}
+            for key, field in (("pss_kb", "pss_mb"),
+                               ("lib_rss_kb", "lib_rss_mb"),
+                               ("other_rss_kb", "other_rss_mb"),
+                               ("anon_rss_kb", "anon_rss_mb"),
+                               ("anon_shared_dirty_kb", "anon_shared_dirty_mb"),
+                               ("private_dirty_kb", "private_dirty_mb"),
+                               ("private_clean_kb", "private_clean_mb"),
+                               ("shared_dirty_kb", "shared_dirty_mb"),
+                               ("shared_clean_kb", "shared_clean_mb")):
+                if key in m:
+                    rec[field] = round(m[key] / 1024, 1)
             self._series[label].append(rec)
 
     def summary(self) -> dict[str, dict]:
@@ -317,8 +393,21 @@ class MemorySampler:
             if pss:
                 entry["peak_pss_mb"] = max(pss)
                 entry["mean_pss_mb"] = round(sum(pss) / len(pss), 1)
+            # The private figure is what this group costs on its own and the shared
+            # ones are the base it inherited, so both peaks are worth keeping.
+            for field in ("private_dirty_mb", "private_clean_mb",
+                          "shared_dirty_mb", "shared_clean_mb",
+                          "lib_rss_mb", "other_rss_mb", "anon_rss_mb",
+                          "anon_shared_dirty_mb"):
+                values = [s[field] for s in series if field in s]
+                if values:
+                    entry[f"peak_{field}"] = max(values)
+                    entry[f"mean_{field}"] = round(sum(values) / len(values), 1)
             if self._hwm_kb[label]:
                 entry["peak_rss_hwm_mb"] = round(self._hwm_kb[label] / 1024, 1)
+            counts = [s["pids"] for s in series if "pids" in s]
+            if counts:
+                entry["max_pids"] = max(counts)
             out[label] = entry
         return out
 

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>k6-flamegraph dashboard</title>
+</head>
+<body>
+
+<style>
+  :root {
+    --surface:#fcfcfb; --panel:#ffffff; --ink:#0b0b0b; --ink-soft:#52514e;
+    --ink-faint:#8a8880; --grid:#e6e6e2; --hair:#dcdbd5;
+    --coolwsd:#2a78d6; --kit:#eb6834;
+    --shadow:0 1px 2px rgba(11,11,11,.06),0 8px 24px rgba(11,11,11,.05);
+  }
+  @media (prefers-color-scheme:dark){ :root:not([data-theme=light]){
+    --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee; --ink-soft:#c3c2b7;
+    --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35;
+    --coolwsd:#3987e5; --kit:#d95926;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+  }}
+  :root[data-theme=dark]{
+    --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee; --ink-soft:#c3c2b7;
+    --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35;
+    --coolwsd:#3987e5; --kit:#d95926;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+  }
+  body{margin:0;background:var(--surface);color:var(--ink);line-height:1.5;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1040px;margin:0 auto;padding:36px 24px 64px;}
+  header{margin-bottom:20px;}
+  h1{font-size:22px;font-weight:650;letter-spacing:-.01em;margin:0 0 4px;}
+  .sub{color:var(--ink-soft);font-size:14px;margin:0;}
+  code{font-family:ui-monospace,Menlo,monospace;font-size:.9em;
+    background:color-mix(in srgb,var(--ink) 8%,transparent);padding:1px 5px;border-radius:4px;}
+  .legend{display:flex;gap:20px;align-items:center;margin:0 0 8px;
+    font-size:13px;color:var(--ink-soft);position:sticky;top:0;
+    background:var(--surface);padding:10px 0;z-index:5;}
+  .legend .key{display:inline-flex;align-items:center;gap:7px;}
+  .swatch{width:12px;height:12px;border-radius:3px;}
+  .swatch.coolwsd{background:var(--coolwsd);} .swatch.kit{background:var(--kit);}
+  .scenario{margin-top:26px;}
+  .scenario-title{font-size:16px;font-weight:650;letter-spacing:-.01em;
+    margin:0 0 10px;display:flex;align-items:baseline;gap:10px;}
+  .scenario-title .count{font-size:12px;font-weight:500;color:var(--ink-faint);
+    font-family:ui-monospace,Menlo,monospace;}
+  .panels{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));}
+  .panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;
+    padding:16px 16px 10px;box-shadow:var(--shadow);}
+  .panel h3{font-size:13px;font-weight:600;margin:0;}
+  .panel .unit{font-size:12px;color:var(--ink-faint);margin:2px 0 8px;}
+  svg{width:100%;height:auto;display:block;}
+  .tick line{stroke:var(--grid);stroke-width:1;}
+  .tick text,.xlab{fill:var(--ink-faint);font-size:11px;
+    font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;}
+  .xlab{fill:var(--ink-soft);font-family:system-ui,sans-serif;}
+  .vlab{fill:var(--ink-soft);font-size:11px;font-weight:600;
+    font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;}
+  .line{fill:none;stroke-width:2;}
+  .line.coolwsd{stroke:var(--coolwsd);} .line.kit{stroke:var(--kit);}
+  .dot{stroke:var(--panel);stroke-width:1.5;cursor:pointer;transition:r .12s ease;}
+  .dot.coolwsd{fill:var(--coolwsd);} .dot.kit{fill:var(--kit);}
+  .dot:hover{r:6.5;} .dot:focus-visible{outline:2px solid var(--ink);outline-offset:1px;}
+  .baseline{stroke:var(--hair);stroke-width:1;}
+  /* flamegraph modal */
+  .modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;
+    justify-content:center;padding:24px;background:rgba(11,11,11,.55);}
+  .modal[hidden]{display:none;}
+  .modal-card{background:var(--panel);border:1px solid var(--hair);border-radius:12px;
+    box-shadow:var(--shadow);width:min(1120px,96vw);max-height:92vh;
+    display:flex;flex-direction:column;overflow:hidden;}
+  .modal-head{display:flex;justify-content:space-between;align-items:center;gap:12px;
+    padding:12px 16px;border-bottom:1px solid var(--hair);}
+  .modal-head strong{font-size:14px;}
+  .modal-head button{font:inherit;font-size:13px;cursor:pointer;border-radius:7px;
+    border:1px solid var(--hair);background:var(--surface);color:var(--ink);padding:5px 12px;}
+  .modal-head button:hover{background:color-mix(in srgb,var(--ink) 9%,transparent);}
+  .modal-body{overflow:auto;background:#fff;}
+  .modal-body iframe{width:100%;height:70vh;border:0;display:block;background:#fff;}
+  .modal-body .flamewrap{padding:12px 14px;}
+  .modal-body .msg{padding:36px;color:var(--ink-faint);text-align:center;}
+  footer{margin-top:26px;font-size:12.5px;color:var(--ink-faint);
+    border-top:1px solid var(--hair);padding-top:14px;max-width:64ch;}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>k6-flamegraph metrics</h1>
+    <p class="sub">Each test scenario has its own charts of CPU instructions and peak memory per run. Click any point to open that run's flamegraph.</p>
+  </header>
+  <div class="legend" aria-hidden="true">
+    <span class="key"><span class="swatch coolwsd"></span> coolwsd + forkit</span>
+    <span class="key"><span class="swatch kit"></span> document kit</span>
+  </div>
+  <div id="scenarios"></div>
+  <footer>
+    Runs are grouped by their k6 test scenario. Two measures of different scale
+    get their own panel rather than a shared axis. Series colours are a fixed
+    colourblind-safe pair and every point is labelled, so identity and value
+    never rely on colour alone. Each point opens the flamegraph.svg from that
+    run's output directory.
+  </footer>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-head">
+      <strong id="modal-title">Flamegraph</strong>
+      <button id="modal-close" type="button">Close</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+const SCENARIOS = [{"name": "cool-load-document-test", "runs": [{"label": "profile-metrics-test", "instructions_g": {"coolwsd": 45.310469609, "kit": 309.847232797}, "peak_mem_mb": {"coolwsd": 538.8, "kit": 613.6}, "flamegraph": "profile-metrics-test/flamegraph.svg"}]}];
+const GROUPS = ["coolwsd", "kit"];
+const SVGNS = "http://www.w3.org/2000/svg";
+
+function esc(s){ return String(s).replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+function niceStep(max){
+  const raw = max/4, mag = Math.pow(10, Math.floor(Math.log10(raw))), n = raw/mag;
+  return (n<=1?1:n<=2?2:n<=5?5:10)*mag;
+}
+function el(name, attrs, text){
+  const e = document.createElementNS(SVGNS, name);
+  for(const k in attrs) e.setAttribute(k, attrs[k]);
+  if(text!=null) e.textContent = text;
+  return e;
+}
+function render(svg, sc, key, unit, fmt){
+  const runs = sc.runs;
+  const W=480, H=340, m={top:22,right:22,bottom:52,left:48};
+  const plotW=W-m.left-m.right, plotH=H-m.top-m.bottom, x0=m.left, y1=m.top+plotH;
+  const maxVal = Math.max(...runs.flatMap(r => GROUPS.map(g => r[key][g])));
+  const step = niceStep(maxVal), top = Math.ceil(maxVal/step)*step;
+  for(let v=0; v<=top+1e-9; v+=step){
+    const y = y1-(v/top)*plotH, t = el("g",{class:"tick"});
+    t.appendChild(el("line",{x1:x0,x2:x0+plotW,y1:y,y2:y}));
+    t.appendChild(el("text",{x:x0-8,y:y+3.5,"text-anchor":"end"},fmt(v)));
+    svg.appendChild(t);
+  }
+  svg.appendChild(el("line",{class:"baseline",x1:x0,x2:x0+plotW,y1:y1,y2:y1}));
+  const n=runs.length, pad = n>1?26:plotW/2;
+  const xAt = i => x0 + pad + (n>1 ? i*(plotW-2*pad)/(n-1) : 0);
+  const yAt = v => y1 - (v/top)*plotH;
+  GROUPS.forEach(g => {
+    const pts = runs.map((r,i)=>[xAt(i), yAt(r[key][g])]);
+    svg.appendChild(el("polyline",{class:"line "+g, points:pts.map(p=>p.join(",")).join(" ")}));
+    runs.forEach((r,i)=>{
+      const [px,py]=pts[i];
+      const dot = el("circle",{class:"dot "+g,cx:px,cy:py,r:4.5,tabindex:0,role:"button",
+        "aria-label":`${r.label} ${g} ${fmt(r[key][g])} ${unit}, open flamegraph`});
+      dot.appendChild(el("title",null,`${r.label} · ${g}: ${fmt(r[key][g])} ${unit} — click for flamegraph`));
+      dot.addEventListener("click",()=>openFlame(sc.name, r));
+      dot.addEventListener("keydown",ev=>{ if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();openFlame(sc.name,r);} });
+      svg.appendChild(dot);
+      svg.appendChild(el("text",{class:"vlab",x:px,y:py-9,"text-anchor":"middle"},fmt(r[key][g])));
+    });
+  });
+}
+
+// build one section per scenario, then draw its two charts
+const host = document.getElementById("scenarios");
+SCENARIOS.forEach((sc, si) => {
+  const sec = document.createElement("section");
+  sec.className = "scenario";
+  sec.innerHTML =
+    `<h2 class="scenario-title">${esc(sc.name)}<span class="count">${sc.runs.length} run(s)</span></h2>
+     <div class="panels">
+       <div class="panel"><h3>CPU instructions</h3><p class="unit">giga-instructions (retired)</p>
+         <svg class="chart" data-si="${si}" data-key="instructions_g" data-unit="G" viewBox="0 0 480 340" role="img"></svg></div>
+       <div class="panel"><h3>Peak resident memory</h3><p class="unit">megabytes (PSS)</p>
+         <svg class="chart" data-si="${si}" data-key="peak_mem_mb" data-unit="MB" viewBox="0 0 480 340" role="img"></svg></div>
+     </div>`;
+  host.appendChild(sec);
+});
+document.querySelectorAll("svg.chart").forEach(svg => {
+  const sc = SCENARIOS[+svg.dataset.si];
+  render(svg, sc, svg.dataset.key, svg.dataset.unit, v => String(Math.round(v)));
+});
+
+// flamegraph modal
+const modal = document.getElementById("modal");
+const modalBody = document.getElementById("modal-body");
+const modalTitle = document.getElementById("modal-title");
+function openFlame(scenario, run){
+  modalTitle.textContent = `${scenario} — ${run.label}`;
+  modalBody.innerHTML = "";
+  if(run.inlineSvg){
+    const w = document.createElement("div"); w.className = "flamewrap";
+    w.innerHTML = run.inlineSvg; modalBody.appendChild(w);
+  } else if(run.flamegraph){
+    const f = document.createElement("iframe");
+    f.src = run.flamegraph; f.loading = "lazy"; f.title = "flamegraph for " + run.label;
+    modalBody.appendChild(f);
+  } else {
+    modalBody.innerHTML = '<div class="msg">no flamegraph.svg found for this run</div>';
+  }
+  modal.hidden = false;
+  document.getElementById("modal-close").focus();
+}
+function closeFlame(){ modal.hidden = true; modalBody.innerHTML = ""; }
+document.getElementById("modal-close").addEventListener("click", closeFlame);
+modal.addEventListener("click", ev => { if(ev.target === modal) closeFlame(); });
+document.addEventListener("keydown", ev => { if(ev.key === "Escape" && !modal.hidden) closeFlame(); });
+</script>
+
+</body>
+</html>

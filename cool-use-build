@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""
+cool-use-build: install a kept-aside Collabora Online build into the online
+tree, so a past commit can be measured again without rebuilding it.
+
+A snapshot is a directory holding the three artifacts that decide what runs:
+
+    coolwsd        the server binary
+    instdir/       the engine (LibreOffice) runtime the kit loads
+    browser-dist/  the browser client bundle
+
+They have to be installed into the tree rather than run from the snapshot,
+because the engine path is baked into the binary at configure time (config.h
+LO_PATH), so the kit always loads <tree>/engine/instdir whatever the cwd is.
+
+Installing swaps the tree's current build out to its own snapshot first, so
+nothing is lost and you can swap back by id.
+
+    ./cool-use-build list                  what snapshots exist
+    ./cool-use-build status                what is installed in the tree now
+    ./cool-use-build save [id]             snapshot the tree's build (default: git HEAD)
+    ./cool-use-build use <id>              install a snapshot (saving the current one)
+    ./cool-use-build run-cmd               print a coolwsd command that skips make
+
+Then profile the installed build, labelling the runs with its commit:
+
+    COOL_CMD="$(./cool-use-build run-cmd)" \\
+      COOLWSD_DIR=<tree> ./browser-suite.py --flamegraphs --commit <id>
+
+COOL_CMD matters: `make run-one` depends on `all`, and a restored binary is
+older than the tree's current objects, so make would relink it and you would
+profile the current source instead of the snapshot. run-cmd prints the direct
+./coolwsd line that `make run-one` would have executed, read out of the tree's
+generated Makefile so it stays in step with it.
+
+Paths come from the environment, never hardcoded:
+    COOLWSD_DIR       the online checkout to install into (required)
+    COOL_BUILDS_DIR   where snapshots live (default: cool-builds beside the tree)
+"""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# snapshot name -> path inside the online tree
+ARTIFACTS = (
+    ("coolwsd", "coolwsd"),
+    ("instdir", "engine/instdir"),
+    ("browser-dist", "browser/dist"),
+)
+MARKER = ".cool-build-installed"
+
+
+def die(msg: str) -> None:
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def tree() -> Path:
+    d = os.environ.get("COOLWSD_DIR")
+    if not d:
+        die("COOLWSD_DIR is not set: point it at the online checkout to work on")
+    p = Path(d).expanduser().resolve()
+    if not (p / "Makefile").is_file():
+        die(f"{p} does not look like a configured online tree (no Makefile)")
+    return p
+
+
+def builds_dir() -> Path:
+    """Where snapshots live. Default is cool-builds beside the online tree,
+    rather than under $HOME: a sandboxed shell can have a different HOME while
+    the tree itself is bind-mounted at its real path."""
+    d = os.environ.get("COOL_BUILDS_DIR")
+    if d:
+        return Path(d).expanduser().resolve()
+    return tree().parent / "cool-builds"
+
+
+def head_commit(t: Path) -> str | None:
+    try:
+        out = subprocess.run(["git", "-C", str(t), "rev-parse", "--short=12", "HEAD"],
+                             capture_output=True, text=True, timeout=10)
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def marker_read(t: Path) -> dict:
+    try:
+        return json.loads((t / MARKER).read_text())
+    except Exception:
+        return {}
+
+
+def du_mb(p: Path) -> int:
+    try:
+        out = subprocess.run(["du", "-sm", str(p)], capture_output=True, text=True)
+        return int(out.stdout.split()[0])
+    except Exception:
+        return 0
+
+
+def free_mb(p: Path) -> int:
+    st = os.statvfs(p)
+    return int(st.f_bavail * st.f_frsize / 1048576)
+
+
+def copy(src: Path, dst: Path) -> None:
+    """Replace dst with a copy of src, keeping the old dst until it succeeds.
+
+    A merge (cp -aT onto an existing directory) would leave files behind that
+    the older build does not have, which is exactly the kind of mixed tree that
+    makes a measurement meaningless."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    aside = None
+    if dst.exists():
+        aside = dst.with_name(dst.name + f".swap-{int(time.time())}")
+        dst.rename(aside)
+    try:
+        subprocess.run(["cp", "-a", str(src), str(dst)], check=True)
+    except Exception:
+        if aside is not None:
+            if dst.exists():
+                shutil.rmtree(dst, ignore_errors=True)
+            aside.rename(dst)
+        raise
+    if aside is not None:
+        if aside.is_dir():
+            shutil.rmtree(aside, ignore_errors=True)
+        else:
+            aside.unlink(missing_ok=True)
+
+
+def touch_tree(p: Path) -> None:
+    """Make a restored artifact newer than every object in the tree.
+
+    Nothing here runs make, but a later `make run` in the same tree would
+    otherwise see an old binary against newer objects and relink it, quietly
+    replacing the snapshot with the current source."""
+    now = time.time()
+    os.utime(p, (now, now))
+    if p.is_dir():
+        for sub in p.rglob("*"):
+            try:
+                os.utime(sub, (now, now), follow_symlinks=False)
+            except OSError:
+                pass
+
+
+def snapshot_ok(d: Path) -> bool:
+    return d.is_dir() and all((d / name).exists() for name, _ in ARTIFACTS)
+
+
+def cmd_list() -> int:
+    b = builds_dir()
+    if not b.is_dir():
+        print(f"no snapshots: {b} does not exist")
+        return 0
+    rows = sorted(p for p in b.iterdir() if p.is_dir())
+    if not rows:
+        print(f"no snapshots under {b}")
+        return 0
+    installed = marker_read(tree()).get("id")
+    for p in rows:
+        state = "complete" if snapshot_ok(p) else "INCOMPLETE"
+        mark = "  <- installed" if p.name == installed else ""
+        print(f"{p.name:24s} {du_mb(p):6d} MB  {state}{mark}")
+    return 0
+
+
+def cmd_status() -> int:
+    t = tree()
+    m = marker_read(t)
+    head = head_commit(t)
+    print(f"tree:      {t}")
+    print(f"git HEAD:  {head or '(unknown)'}")
+    if m.get("id"):
+        print(f"installed: {m['id']} (snapshot, installed {m.get('installed_at', '?')})")
+        if head and m["id"] != head:
+            print("           the binaries are NOT the tree's HEAD: label runs with "
+                  f"--commit {m['id']}")
+    else:
+        print("installed: whatever the tree itself built (no snapshot installed)")
+    cw = t / "coolwsd"
+    if cw.exists():
+        print(f"coolwsd:   {cw.stat().st_size} bytes, "
+              f"mtime {time.strftime('%Y-%m-%d %H:%M', time.localtime(cw.stat().st_mtime))}")
+    return 0
+
+
+def cmd_save(argv: list[str]) -> int:
+    t = tree()
+    ident = argv[0] if argv else (marker_read(t).get("id") or head_commit(t))
+    if not ident:
+        die("no id given and the tree's HEAD is unknown: pass one explicitly")
+    dest = builds_dir() / ident
+    if snapshot_ok(dest):
+        print(f"snapshot {ident} already exists at {dest}, nothing to do")
+        return 0
+    need = sum(du_mb(t / rel) for _, rel in ARTIFACTS if (t / rel).exists())
+    dest.mkdir(parents=True, exist_ok=True)
+    have = free_mb(dest)
+    if have < need + 512:
+        die(f"not enough space in {dest.parent}: {need} MB needed, {have} MB free")
+    print(f"saving the tree's build as {ident} ({need} MB) ...")
+    for name, rel in ARTIFACTS:
+        src = t / rel
+        if not src.exists():
+            die(f"the tree has no {rel}: build it first, or nothing is worth saving")
+        print(f"  {rel} -> {dest.name}/{name}")
+        copy(src, dest / name)
+    (dest / "README.txt").write_text(
+        "Collabora Online build snapshot\n"
+        f"id:      {ident}\n"
+        f"saved:   {time.strftime('%Y-%m-%d %H:%M %Z')}\n"
+        f"source:  {t}\n\n"
+        "Contents:\n"
+        "  coolwsd        the server binary\n"
+        "  instdir/       engine (LibreOffice) runtime the kit loads\n"
+        "  browser-dist/  browser client bundle (browser/dist)\n\n"
+        "Install it with: COOLWSD_DIR=<tree> cool-use-build use " + ident + "\n")
+    print(f"saved to {dest}")
+    return 0
+
+
+def cmd_use(argv: list[str]) -> int:
+    if not argv:
+        die("usage: cool-use-build use <id>")
+    ident = argv[0]
+    src = builds_dir() / ident
+    if not snapshot_ok(src):
+        die(f"{src} is not a complete snapshot (needs "
+            + ", ".join(name for name, _ in ARTIFACTS) + ")")
+    t = tree()
+    current = marker_read(t).get("id")
+    if current == ident:
+        print(f"{ident} is already installed in {t}")
+        return 0
+    # Save what is in the tree before overwriting it, or the only copy of that
+    # build is gone and getting it back means a full rebuild.
+    # Never overwrite an unsaved build: if neither a marker nor git can name it,
+    # keep it under a timestamp rather than losing it to a rebuild.
+    keep = current or head_commit(t) or time.strftime("pre-%Y%m%dT%H%M%S")
+    if not snapshot_ok(builds_dir() / keep):
+        print(f"the tree's current build is not saved anywhere, saving it as {keep} first")
+        rc = cmd_save([keep])
+        if rc != 0:
+            return rc
+    print(f"installing {ident} into {t} ...")
+    for name, rel in ARTIFACTS:
+        print(f"  {name} -> {rel}")
+        copy(src / name, t / rel)
+        touch_tree(t / rel)
+    (t / MARKER).write_text(json.dumps({
+        "id": ident,
+        "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "from": str(src),
+        "coolwsd_size": (t / "coolwsd").stat().st_size,
+    }, indent=2) + "\n")
+    print(f"\n{ident} installed. The tree's git HEAD no longer describes these "
+          f"binaries, so label runs with --commit {ident}.")
+    print("Start it without make (make would relink the binary from the tree's "
+          "current objects):")
+    print(f'  COOL_CMD="$(./cool-use-build run-cmd)" COOLWSD_DIR={t} \\\n'
+          f'    ./browser-suite.py --flamegraphs --commit {ident}')
+    return 0
+
+
+def makefile_vars(t: Path, names: tuple[str, ...]) -> dict:
+    """Read variables out of the tree's generated Makefile, expanding the
+    ${abs_top_builddir} style references it uses for its own paths."""
+    text = (t / "Makefile").read_text(errors="replace")
+    out = {}
+    for name in names:
+        m = re.search(rf"^{re.escape(name)}\s*=\s*(.*)$", text, re.M)
+        if m:
+            out[name] = m.group(1).strip()
+    def expand(v: str, depth: int = 0) -> str:
+        if depth > 5:
+            return v
+        def sub(m):
+            return out.get(m.group(1), m.group(0))
+        new = re.sub(r"\$[{(]([A-Za-z_][A-Za-z0-9_]*)[})]", sub, v)
+        return new if new == v else expand(new, depth + 1)
+    return {k: expand(v) for k, v in out.items()}
+
+
+def cmd_run_cmd() -> int:
+    """Print the single-kit coolwsd command line that `make run-one` runs.
+
+    Taken from the tree's own Makefile (the run-one recipe plus COMMON_PARAMS)
+    rather than hardcoded, so it does not drift from it."""
+    t = tree()
+    v = makefile_vars(t, ("SYSTEMPLATE_PATH", "JAILS_PATH", "CACHE_PATH",
+                          "abs_top_srcdir", "abs_top_builddir",
+                          "FIND_FREE_PORT_PARAM"))
+    missing = [k for k in ("SYSTEMPLATE_PATH", "JAILS_PATH", "CACHE_PATH",
+                           "abs_top_srcdir") if not v.get(k)]
+    if missing:
+        die(f"could not read {', '.join(missing)} from {t}/Makefile: "
+            "is the tree configured?")
+    src = v["abs_top_srcdir"]
+    parts = [
+        "./coolwsd", v.get("FIND_FREE_PORT_PARAM", "--find-free-port"),
+        f'--o:sys_template_path={v["SYSTEMPLATE_PATH"]}',
+        f'--o:child_root_path={v["JAILS_PATH"]}',
+        f'--o:cache_files.path={v["CACHE_PATH"]}',
+        "--o:storage.filesystem[@allow]=true",
+        f"--o:ssl.cert_file_path={src}/etc/cert.pem",
+        f"--o:ssl.key_file_path={src}/etc/key.pem",
+        f"--o:ssl.ca_file_path={src}/etc/ca-chain.cert.pem",
+        "--o:admin_console.username=admin", "--o:admin_console.password=admin",
+        "--o:logging.file[@enable]=true", "--o:logging.level=trace",
+        "--o:logging_ui_cmd.file[@enable]=true",
+        "--singlekit",
+    ]
+    print(" ".join(parts))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    cmd = argv[0] if argv else "status"
+    rest = argv[1:]
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    if cmd == "list":
+        return cmd_list()
+    if cmd == "status":
+        return cmd_status()
+    if cmd == "save":
+        return cmd_save(rest)
+    if cmd == "use":
+        return cmd_use(rest)
+    if cmd == "run-cmd":
+        return cmd_run_cmd()
+    die(f"unknown command: {cmd}\nrun with --help for usage")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

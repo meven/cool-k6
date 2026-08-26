@@ -9,10 +9,31 @@ fi
 mkdir -p "$COOL_K6_SCREENSHOT_DIR"
 chmod o+w "$COOL_K6_SCREENSHOT_DIR"
 
-docker run -v $PWD:/app:Z \
+# Where tests write metrics.json. The container runs as a different user than
+# the host, so (like the screenshots dir) it must exist and be world-writable
+# for the bind-mounted output to be created. Keep it relative to the repo root
+# so it resolves under /app inside the container.
+if [ -z "$OUT_DIR" ]; then
+    OUT_DIR=results
+fi
+mkdir -p "$OUT_DIR"
+chmod o+w "$OUT_DIR"
+
+# Host networking so the container's localhost is the host's: COOL and the
+# WOPI host run on the host (localhost:9980 / :3000), and with the default
+# bridge network the container's 127.0.0.1 is itself, giving "connection
+# refused". Override with COOL_K6_DOCKER_NETWORK if you need a different setup.
+docker run --network "${COOL_K6_DOCKER_NETWORK:-host}" \
+       -v $PWD:/app:Z \
        -w /app --rm -i \
        -e WOPI_URL=$WOPI_URL \
        -e WOPI_HOST=$WOPI_HOST \
        -e COOL_K6_SCREENSHOT_DIR=$COOL_K6_SCREENSHOT_DIR \
+       -e OUT_DIR=$OUT_DIR \
+       -e USERS \
+       -e EDIT \
+       -e EDITS \
+       -e FILE_ID \
+       -e COMMIT \
        grafana/k6:1.7.1-with-browser \
        "$@"

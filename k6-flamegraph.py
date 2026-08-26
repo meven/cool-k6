@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import ssl
@@ -61,6 +62,29 @@ def env_default(name: str, default: str) -> str:
     return val if val else default
 
 
+def default_cool_cmd() -> str:
+    """The command that starts coolwsd when none was given.
+
+    A measurement must not run make: `make run-one` depends on `all`, so make
+    walks the tree first and relinks whatever is out of date, which both delays
+    the start past the point where this script looks for a listening port and
+    replaces the build being measured. cool-use-build prints the direct coolwsd
+    line read out of the tree's own makefile, so ask it, and fall back to
+    `make run-one` only when it cannot answer (no COOLWSD_DIR, or the script is
+    missing)."""
+    tool = SCRIPT_DIR / "cool-use-build"
+    if tool.is_file():
+        try:
+            out = subprocess.run([str(tool), "run-cmd"], cwd=str(SCRIPT_DIR),
+                                 capture_output=True, text=True, timeout=30)
+            cmd = out.stdout.strip()
+            if out.returncode == 0 and cmd:
+                return cmd
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return "make run-one"
+
+
 def env_bool(name: str, default: bool) -> bool:
     val = os.environ.get(name)
     if val is None or val == "":
@@ -89,8 +113,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--coolwsd-dir",
-        default=env_default("COOLWSD_DIR", "/home/meven/code/online"),
-        help="path to the online checkout (env COOLWSD_DIR)",
+        default=os.environ.get("COOLWSD_DIR") or None,
+        help="path to the online checkout (default: $COOLWSD_DIR)",
     )
     p.add_argument(
         "--coolwsd-url",
@@ -127,6 +151,18 @@ def parse_args() -> argparse.Namespace:
         help="TLS cert (default $COOLWSD_DIR/etc/cert.pem) (env WOPI_SSL_CRT)",
     )
     p.add_argument(
+        "--cool-cmd",
+        default=env_default("COOL_CMD", default_cool_cmd()),
+        help="command that starts coolwsd, run in the coolwsd directory "
+             "(default: the direct line cool-use-build run-cmd prints, or "
+             "'make run-one' when it cannot answer). Pass a direct ./coolwsd "
+             "command line to "
+             "profile a restored build snapshot: `make run-one` depends on `all`, "
+             "so make would relink the old binary from the tree's current objects "
+             "and you would profile the wrong commit. `cool-use-build run-cmd` "
+             "prints a suitable command (env COOL_CMD)",
+    )
+    p.add_argument(
         "--out-dir",
         default=env_default("OUT_DIR", "profile-out"),
         help="output directory (env OUT_DIR)",
@@ -154,6 +190,16 @@ def parse_args() -> argparse.Namespace:
              "survives the jail namespaces), no pid-chasing. Needs systemd-run "
              "and lowers perf_event_paranoid to 0. Falls back to --pid targeting "
              "if unavailable. (env COOL_K6_CGROUP=1/0)",
+    )
+    p.add_argument(
+        "--new-instance",
+        action=argparse.BooleanOptionalAction,
+        default=env_bool("COOL_K6_NEW_INSTANCE", False),
+        help="always launch a fresh single-kit coolwsd (make run-one, which "
+             "uses --find-free-port) instead of attaching to one already "
+             "running, and use the port it binds. Lets a profiling instance "
+             "coexist with a coolwsd already on the default port - each new "
+             "instance takes the next free port. (env COOL_K6_NEW_INSTANCE=1/0)",
     )
     p.add_argument(
         "--stop-coolwsd",
@@ -215,6 +261,37 @@ def wait_for(desc: str, max_seconds: int, check) -> None:
             pass
         time.sleep(1)
     die(f"timed out waiting for {desc}")
+
+
+def listening_ports() -> set:
+    """TCP ports in LISTEN state. The net namespace is shared, so this sees
+    every listener on the host regardless of who owns it."""
+    try:
+        out = subprocess.run(["ss", "-ltnH"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except Exception:
+        return set()
+    ports = set()
+    for line in out.splitlines():
+        cols = line.split()
+        if len(cols) >= 4:
+            m = re.search(r":(\d+)$", cols[3])  # Local Address:Port
+            if m:
+                ports.add(int(m.group(1)))
+    return ports
+
+
+def discover_new_cool_port(before: set, timeout: int = 60) -> int | None:
+    """Find the client port a freshly launched coolwsd bound. run-one uses
+    --find-free-port, so with the default port already taken it lands on the
+    next free one; diff the LISTEN sockets against `before` and pick the new
+    port that answers hosting/discovery over https. None if none appears."""
+    for _ in range(timeout):
+        for p in sorted(listening_ports() - before):
+            if http_ok(f"https://localhost:{p}/hosting/discovery"):
+                return p
+        time.sleep(1)
+    return None
 
 
 def sudo_needs_password() -> bool:
@@ -391,6 +468,9 @@ def main() -> int:
     runner = "k6"
     test_script = args.test_script or "dist/cool-load-document-test.js"
 
+    if not args.coolwsd_dir:
+        die("no online checkout given: set COOLWSD_DIR (or pass --coolwsd-dir) "
+            "to the online checkout to profile")
     coolwsd_dir = Path(args.coolwsd_dir)
     coolwsd_url = args.coolwsd_url
     wopi_port = args.wopi_port
@@ -483,23 +563,36 @@ def main() -> int:
                 wopi_proc.wait(timeout=10)
             except Exception:
                 wopi_proc.kill()
-        if (started_coolwsd and args.stop_coolwsd
-                and coolwsd_proc and coolwsd_proc.poll() is None):
-            # `make run` forks coolwsd; kill the process group.
+        if started_coolwsd and args.stop_coolwsd and coolwsd_proc:
+            # `make run` forks coolwsd, so signal the whole process group.
             # Default on so a follow-up run with different env (e.g.
-            # SAL_KIT_OPTIONS) gets a fresh kit; pass
+            # SAL_KIT_OPTIONS) gets a fresh kit, pass
             # --no-stop-coolwsd to keep it alive between runs.
-            try:
-                os.killpg(coolwsd_proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                coolwsd_proc.wait(timeout=15)
-            except Exception:
-                pass
+            #
+            # Deliberately not gated on coolwsd_proc.poll() being None: make can
+            # exit while the coolwsd it forked lives on, and a survivor holds its
+            # client port for the rest of the session. killpg still reaches the
+            # group through the leader's pid once the leader itself is gone, so
+            # escalate until the port stops answering.
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(coolwsd_proc.pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                try:
+                    coolwsd_proc.wait(timeout=15)
+                except Exception:
+                    pass
+                if not http_ok(f"{coolwsd_url}hosting/discovery"):
+                    break
             if scope_unit:
                 subprocess.run(["systemctl", "--user", "stop", scope_unit],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if http_ok(f"{coolwsd_url}hosting/discovery"):
+                print(f"WARNING: coolwsd at {coolwsd_url} still answers after "
+                      "SIGTERM and SIGKILL to its process group. It is leaked "
+                      "and holds that port: kill it before the next capture.",
+                      file=sys.stderr)
 
     def on_signal(*_a):
         cleanup()
@@ -508,29 +601,43 @@ def main() -> int:
     signal.signal(signal.SIGTERM, on_signal)
 
     try:
-        # coolwsd
-        if http_ok(f"{coolwsd_url}hosting/discovery"):
+        # coolwsd. With --new-instance we always launch our own (so a profiling
+        # instance can coexist with a coolwsd already on the default port);
+        # otherwise attach to one already running, else launch.
+        already = http_ok(f"{coolwsd_url}hosting/discovery")
+        if already and not args.new_instance:
             print(f"WARNING: coolwsd is already running at {coolwsd_url}; "
                   "attaching to it instead of launching one.", file=sys.stderr)
             print("  It is not controlled by this tool: it may be a multi-kit "
                   "'make run' whose kits spawn and unload during the run, not "
                   "the single stable kit a clean capture needs.", file=sys.stderr)
             print("  For a reliable, symbolised profile, stop it first "
-                  "(pkill -f coolwsd) and re-run so this tool launches its own "
-                  "single kit.", file=sys.stderr)
+                  "(pkill -f coolwsd) and re-run, or pass --new-instance to "
+                  "launch a separate single kit on its own port.", file=sys.stderr)
             if cgroup_mode:
                 print("  cgroup mode: with no dedicated scope, perf -G records "
                       "whatever cgroup it sits in (may include sibling "
                       "processes).", file=sys.stderr)
         else:
+            if already and args.new_instance:
+                print(f"--new-instance: a coolwsd is already on {coolwsd_url}; "
+                      "launching a separate single-kit one on its own free port.")
             print(f"starting coolwsd from {coolwsd_dir} ...")
+            before_ports = listening_ports()
             log = (out_dir / "coolwsd.log").open("w")
-            cmd = ["setsid", "make", "run-one"]
+            # No setsid wrapper here: start_new_session=True below already puts
+            # the launcher in its own session, and setsid forks when it is
+            # already a process group leader, so the tracked child would exit at
+            # once. That left coolwsd_proc dead with an unknown pgid, cleanup
+            # skipped the kill, and every run leaked its instance for the whole
+            # session.
+            cmd = shlex.split(args.cool_cmd)
             if cgroup_mode:
                 scope_unit = f"coolperf-{os.getpid()}.scope"
                 cmd = ["systemd-run", "--user", "--scope", "--collect",
                        f"--unit={scope_unit}", *cmd]
                 print(f"launching coolwsd in cgroup scope {scope_unit} ...")
+            print(f"coolwsd command: {args.cool_cmd}")
             coolwsd_proc = subprocess.Popen(
                 cmd,
                 cwd=str(coolwsd_dir),
@@ -538,8 +645,18 @@ def main() -> int:
                 start_new_session=True,
             )
             started_coolwsd = True
-            wait_for("coolwsd ready", 60,
-                     lambda: http_ok(f"{coolwsd_url}hosting/discovery"))
+            if args.new_instance:
+                # run-one bound the next free port; find which one and retarget.
+                port = discover_new_cool_port(before_ports)
+                if port is None:
+                    die("could not determine the port the new coolwsd bound "
+                        "(no new LISTEN socket answered hosting/discovery); "
+                        f"see {out_dir}/coolwsd.log")
+                coolwsd_url = f"https://localhost:{port}/"
+                print(f"new coolwsd bound port {port} -> {coolwsd_url}")
+            else:
+                wait_for("coolwsd ready", 60,
+                         lambda: http_ok(f"{coolwsd_url}hosting/discovery"))
 
         wopi_scheme = args.wopi_scheme
         wopi_key = args.wopi_key or str(coolwsd_dir / "etc" / "key.pem")

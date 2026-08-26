@@ -1,0 +1,7 @@
+# Dependencies for documents/gen-docs.py, which generates the browser-test
+# documents (blank + ~5 MB per application).
+# Install with: python3 -m pip install -r documents/requirements.txt
+odfpy
+Pillow
+matplotlib
+numpy
