@@ -371,6 +371,9 @@ the volume.
 
 ## Going further
 
+To run this suite from Jenkins on a dedicated VM, with per-document flamegraphs
+and a dashboard that survives the workspace, see CI-JENKINS.md.
+
 For a full reference of k6 flags and output formats, see the k6
 documentation. For Collabora Online server settings that affect
 performance, see the operator handbook for your version. For the

@@ -1,6 +1,49 @@
-# What is this?
+# perf-dashboard
 
-A K6 based test suite for Collabora Online
+Performance testing and performance CI for Collabora Online.
+
+Two layers live here:
+
+- a k6 based test suite that drives a real browser against a Collabora Online
+  server, with an embedded WOPI host so nothing external is needed. This half
+  comes from cool-k6 (https://github.com/hfiguiere/cool-k6), kept as the
+  `upstream` remote.
+- a performance CI on top of it: repeated runs over a corpus of documents,
+  per document flamegraphs and perf counters, and a dashboard built from the
+  run history so a regression is visible as a step in a chart.
+
+Start with `PERFORMANCE_TESTING.md` to run a test by hand, and with
+`CI-JENKINS.md` to run the suite from Jenkins on a dedicated VM.
+
+## The performance suite
+
+| Tool | What it does |
+| --- | --- |
+| `browser-suite.py` | runs the browser tests over a document corpus, records each run under `results/`, and builds `browser-dashboard.html` from the whole history |
+| `cool-ci` | the Jenkins entry point. Derives the coolwsd command line from the target tree instead of running make, so a job measures the build it was pointed at |
+| `cool-use-build` | installs a kept-aside build into an Online tree, and prints that coolwsd command line |
+| `k6-flamegraph.py` | one profiled run: starts the WOPI host and coolwsd, drives a k6 test, and renders a flamegraph scoped to the coolwsd and kit processes |
+| `cool-perf` | the same capture for an ad-hoc window against an already running server, including one in a container |
+| `plot-metrics.py` | charts from a single run's metrics |
+
+`cool-ci doctor` self-checks everything a run needs, and every tool takes
+`--help`.
+
+## Test documents
+
+The corpus is generated, not committed: `documents/gen-docs.py` builds the
+~5 MB Writer, Calc, Impress and Draw documents, then converts them to `.docx`,
+`.xlsx` and `.pptx`, so a format comparison measures the format rather than two
+different documents. The small `blank.od*` files are committed since they are a
+few kilobytes each.
+
+```shell
+python3 -m pip install -r documents/requirements.txt
+./documents/gen-docs.py
+```
+
+The conversion needs a system LibreOffice, and `--no-ooxml` skips it. An Online
+engine build refuses `--convert-to`.
 
 ## Adding test
 
