@@ -785,7 +785,7 @@ DASHBOARD = r"""<!doctype html>
     border-top:1px solid var(--hair);}
   .fg-missing code{font-family:ui-monospace,Menlo,monospace;}
   footer{margin-top:26px;font-size:12.5px;color:var(--ink-faint);border-top:1px solid var(--hair);
-    padding-top:14px;max-width:74ch;}
+    padding-top:14px;}
 </style></head><body>
 <div class="wrap">
   <h1>Collabora Online browser tests</h1>
