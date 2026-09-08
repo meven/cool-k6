@@ -96,6 +96,25 @@ dialect is ES6.
 A WOPI Host (server) is included in the `server` directory. It's in
 pure NodeJS. `npm run server` will start it bound to port 3000.
 
+The browser tests need it on https, because the host page refuses to submit to
+a Collabora Online of another scheme and the test then waits for a
+`Frame_Ready` that never arrives. The certificate is not in the repository, so
+generate one per checkout:
+
+```shell
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -keyout server/npm-server-key.pem -out server/npm-server-cert.pem \
+  -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+```
+
+```shell
+SSL_KEY_FILE=server/npm-server-key.pem SSL_CRT_FILE=server/npm-server-cert.pem \
+  NODE_TLS_REJECT_UNAUTHORIZED=0 npm run server
+```
+
+`cool-ci` and `browser-suite.py` expect the pair under those two names and
+start the host themselves.
+
 Running the server require Node 20.10 or later.
 
 ### Configuring WOPI files
