@@ -3,8 +3,9 @@
 
 For each Collabora Online application it writes two files under documents/:
   - a blank document (blank.odt / blank.ods / blank.odp / blank.odg), and
-  - a roughly 5 MB document filled with the content a user of that application
-    would typically have, so load and render times are realistic:
+  - a big document named after its size (writer-5mb.odt, writer-10mb.odt),
+    filled with the content a user of that application would typically have,
+    so load and render times are realistic:
       Writer   titles, paragraphs, tables and images
       Calc     several sheets of data tables plus rendered charts
       Impress  slides with titles, text, images and drawn shapes
@@ -18,6 +19,7 @@ Dependencies (see documents/requirements.txt):
     python3 -m pip install odfpy Pillow matplotlib numpy
 Run:
     python3 documents/gen-docs.py            # all apps, ~5 MB each
+    python3 documents/gen-docs.py --mb 10    # the 10 MB documents as well
     python3 documents/gen-docs.py --mb 2     # smaller, for a quick check
 """
 import argparse
@@ -50,6 +52,11 @@ RNG = random.Random(20260813)
 WORDS = ("document collaboration render layout paragraph table chart image "
          "spreadsheet presentation drawing heading section column formula "
          "review comment revision export import filter style template").split()
+
+
+def size_label(mb: float) -> str:
+    """The part of a big document's name that its size gives it: 5 -> "5mb"."""
+    return f"{mb:g}mb"
 
 
 def prose(n_words: int) -> str:
@@ -99,7 +106,7 @@ def frame(doc, png: bytes, w_cm: float, h_cm: float, **kw) -> Frame:
 
 # --------------------------------------------------------------------------
 
-def build_writer(target: int, blank: bool) -> None:
+def build_writer(target: int, blank: bool, label: str) -> None:
     doc = OpenDocumentText()
     h1 = Style(name="Heading 1", family="paragraph")
     h1.addElement(TextProperties(fontsize="20pt", fontweight="bold"))
@@ -129,10 +136,10 @@ def build_writer(target: int, blank: bool) -> None:
         doc.text.addElement(p)
         embedded += len(png)
         n += 1
-    doc.save(str(OUT / "writer-5mb.odt"))
+    doc.save(str(OUT / f"writer-{label}.odt"))
 
 
-def build_calc(target: int, blank: bool) -> None:
+def build_calc(target: int, blank: bool, label: str) -> None:
     doc = OpenDocumentSpreadsheet()
     if blank:
         doc.spreadsheet.addElement(Table(name="Sheet1"))
@@ -163,7 +170,7 @@ def build_calc(target: int, blank: bool) -> None:
             embedded += len(png)
         doc.spreadsheet.addElement(tbl)
         sheet += 1
-    doc.save(str(OUT / "calc-5mb.ods"))
+    doc.save(str(OUT / f"calc-{label}.ods"))
 
 
 def _draw_master(doc):
@@ -177,7 +184,7 @@ def _draw_master(doc):
     return master
 
 
-def build_impress(target: int, blank: bool) -> None:
+def build_impress(target: int, blank: bool, label: str) -> None:
     doc = OpenDocumentPresentation()
     _draw_master(doc)
     if blank:
@@ -205,10 +212,10 @@ def build_impress(target: int, blank: bool) -> None:
         doc.presentation.addElement(page)
         embedded += len(png)
         n += 1
-    doc.save(str(OUT / "impress-5mb.odp"))
+    doc.save(str(OUT / f"impress-{label}.odp"))
 
 
-def build_draw(target: int, blank: bool) -> None:
+def build_draw(target: int, blank: bool, label: str) -> None:
     doc = OpenDocumentDrawing()
     _draw_master(doc)
     if blank:
@@ -242,17 +249,17 @@ def build_draw(target: int, blank: bool) -> None:
         doc.drawing.addElement(page)
         embedded += len(png)
         n += 1
-    doc.save(str(OUT / "draw-5mb.odg"))
+    doc.save(str(OUT / f"draw-{label}.odg"))
 
 
 # The Microsoft format each application's big document is also written in. Draw has none, so
 # it has no OOXML document either.
-OOXML = {"writer": ("writer-5mb.odt", "docx"),
-         "calc": ("calc-5mb.ods", "xlsx"),
-         "impress": ("impress-5mb.odp", "pptx")}
+OOXML = {"writer": ("odt", "docx"),
+         "calc": ("ods", "xlsx"),
+         "impress": ("odp", "pptx")}
 
 
-def convert_to_ooxml(app: str) -> bool:
+def convert_to_ooxml(app: str, label: str) -> bool:
     """Write the big document of @p app again in the Microsoft format, by converting the one
     just written. Converting rather than building it again is what makes the two comparable:
     same content, two formats, so a difference in load time is the format's.
@@ -263,7 +270,8 @@ def convert_to_ooxml(app: str) -> bool:
     if app not in OOXML:
         return False
 
-    source, fmt = OOXML[app]
+    odf, fmt = OOXML[app]
+    source = f"{app}-{label}.{odf}"
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     if not soffice:
         print(f"{app}: no soffice on PATH, so no {fmt} document", file=sys.stderr)
@@ -288,7 +296,8 @@ def convert_to_ooxml(app: str) -> bool:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate browser-test documents.")
     ap.add_argument("--mb", type=float, default=5.0,
-                    help="approximate size of the non-blank documents (default 5)")
+                    help="approximate size of the big documents, which also names them "
+                         "(default 5, so writer-5mb.odt)")
     ap.add_argument("--apps", default="writer,calc,impress,draw",
                     help="comma-separated subset to generate")
     ap.add_argument("--ooxml", action=argparse.BooleanOptionalAction, default=True,
@@ -296,15 +305,16 @@ def main() -> None:
                          "converting them with a desktop LibreOffice")
     args = ap.parse_args()
     target = int(args.mb * 1024 * 1024 * 0.96)  # rest is xml/zip overhead
+    label = size_label(args.mb)
     builders = {"writer": build_writer, "calc": build_calc,
                 "impress": build_impress, "draw": build_draw}
     for app in [a.strip() for a in args.apps.split(",") if a.strip()]:
         build = builders[app]
-        build(target, blank=True)
-        build(target, blank=False)
+        build(target, blank=True, label=label)
+        build(target, blank=False, label=label)
         print(f"{app}: blank + ~{args.mb:g} MB document written to {OUT}")
         if args.ooxml:
-            convert_to_ooxml(app)
+            convert_to_ooxml(app, label)
 
 
 if __name__ == "__main__":
