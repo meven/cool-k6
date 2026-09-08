@@ -45,8 +45,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 K6_IMAGE = "grafana/k6:1.7.1-with-browser"
 # Writer, Calc and Impress each have a blank document, a big one and the same big one in the
-# Microsoft format; Draw has no such format, so it has the first two.
-DOC_COUNT = 11
+# Microsoft format; Draw has no such format, so it has the first two. Writer also has the
+# 10 MB document the service-level requirement is written about.
+DOC_COUNT = 12
 
 _SSL = ssl.create_default_context()
 _SSL.check_hostname = False

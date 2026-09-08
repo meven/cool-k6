@@ -20,6 +20,8 @@
     "17": { "path": "documents/blank.odg", "readonly": false },
     "18": { "path": "documents/draw-5mb.odg", "readonly": false },
 
+    "22": { "path": "documents/writer-10mb.odt", "readonly": false },
+
     "19": { "path": "documents/writer-5mb.docx", "readonly": false },
     "20": { "path": "documents/calc-5mb.xlsx", "readonly": false },
     "21": { "path": "documents/impress-5mb.pptx", "readonly": false }

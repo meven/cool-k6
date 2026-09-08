@@ -103,6 +103,14 @@ scripts default to one iteration unless stated otherwise.
   holds the page open for two seconds while the change propagates.
   Saves a screenshot on failure.
 
+- `cool-browser-<app>-<doc>-test.js`, the per-application suite
+  `browser-suite.py` runs: each opens one document of the generated corpus
+  and records `page_load_ms`, `frame_ready_ms` and the browser heap.
+  `cool-browser-writer-10mb-test.js` is the one that asserts rather than
+  only records: the 98th percentile of `frame_ready_ms` over a 5000 ms
+  budget, as a k6 threshold. `USERS`, `ITERATIONS` and `MAXDUR` set how many
+  opens it takes and how long it may take them.
+
 The image lists the bundled scripts when run with no argument:
 
 ```

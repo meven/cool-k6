@@ -40,10 +40,37 @@ few kilobytes each.
 ```shell
 python3 -m pip install -r documents/requirements.txt
 ./documents/gen-docs.py
+./documents/gen-docs.py --apps writer --mb 10 --no-ooxml
 ```
 
-The conversion needs a system LibreOffice, and `--no-ooxml` skips it. An Online
-engine build refuses `--convert-to`.
+The size names the document, so the second line writes `writer-10mb.odt`
+beside the 5 MB one rather than over it. The conversion needs a system
+LibreOffice, and `--no-ooxml` skips it. An Online engine build refuses
+`--convert-to`.
+
+## The service-level requirement
+
+One test asserts a service level rather than only recording numbers:
+
+> After clicking on a 10 MB Office document in the cloud storage, editing in
+> the WebOffice web client must be possible for at least 98% of all users
+> after a maximum of 5 seconds.
+
+`src/cool-browser-writer-10mb-test.js` opens `documents/writer-10mb.odt` and
+holds the 98th percentile of `frame_ready_ms` (the editor reporting
+`Frame_Ready`, which is when editing becomes possible) to 5000 ms. The budget
+is declared once in the test and is enforced twice: as a k6 threshold, so k6
+exits non-zero by itself, and as a verdict in that run's `metrics.json`, which
+`browser-suite.py` fails the run on and reports through `--junit`.
+
+A 98th percentile needs at least 50 opens to be one; below that it is simply
+the slowest open of the run. The suite's own 1u and 3u passes therefore report
+the requirement over a handful of opens, and the run that answers it properly
+is an explicit one:
+
+```shell
+USERS=10 ITERATIONS=100 MAXDUR=30m ./k6-run dist/cool-browser-writer-10mb-test.js
+```
 
 ## Adding test
 

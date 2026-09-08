@@ -11,8 +11,9 @@ the numbers attributable to one known commit. See
 
 ## What one run produces
 
-For each of the 8 test documents (writer, calc, impress, draw, each blank and
-5 MB):
+For each of the 12 test documents (writer, calc and impress each blank, 5 MB
+and 5 MB in the Microsoft format, draw blank and 5 MB, and the 10 MB Writer
+document the service-level requirement is written about):
 
 * page-load, frame-ready and edit times, plus the browser JS heap, from the k6
   browser test
@@ -27,7 +28,7 @@ and, over the accumulated history:
   times and memory across commits, where each run point opens its own capture
   inline and can put a second run beside it
 * `junit.xml`, one testcase per document, so Jenkins shows which document
-  regressed or failed to capture
+  regressed, failed to capture, or missed the service level it has to meet
 
 ## The pieces
 
@@ -251,6 +252,14 @@ not committed, and `doctor` fails without it.
 A thin or failed capture shows up as a failing JUnit testcase, which Jenkins
 reports as **unstable** rather than failed. The build only fails outright when
 every document failed, or when you pass `--strict`.
+
+The 10 MB Writer document also carries a service level: its 98th percentile of
+frame-ready has to stay under 5 seconds (see "The service-level requirement" in
+the README). A run that opens the document but misses that budget fails its
+testcase the same way, with the measured percentile in the message. A suite
+pass opens it a handful of times per user pool, which is too few for a 98th
+percentile to mean anything, so treat those as a smoke test and run the
+document explicitly for the answer.
 
 ## Exposing the results durably
 

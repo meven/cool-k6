@@ -19,7 +19,7 @@ peak of the coolwsd process that serves the client and caches the static files.
 Click a point for that run's detail.
 
 A document-process flamegraph can be captured per test document (--flamegraphs):
-for each of the 8 documents k6-flamegraph.py launches its own single-kit coolwsd
+for each document k6-flamegraph.py launches its own single-kit coolwsd
 (on its own free port, so it coexists with any COOL already running) and profiles
 the document kit. Each run's detail embeds its own capture, and can show a second
 run beside it to compare commits.
@@ -56,13 +56,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 APPS = ("writer", "calc", "impress", "draw")
-DOCS = ("blank", "5mb", "ooxml")
+DOCS = ("blank", "5mb", "10mb", "ooxml")
 
 # What each application has to open. "ooxml" is the same content as "5mb" in the Microsoft
 # format, so the two read as a comparison of the formats; Draw has no such format of its own,
-# so there is no document to open for it and no chart for it either.
+# so there is no document to open for it and no chart for it either. "10mb" is the document
+# the service-level requirement is written about, so only Writer has one.
 DOCS_BY_APP = {
-    "writer": ("blank", "5mb", "ooxml"),
+    "writer": ("blank", "5mb", "10mb", "ooxml"),
     "calc": ("blank", "5mb", "ooxml"),
     "impress": ("blank", "5mb", "ooxml"),
     "draw": ("blank", "5mb"),
@@ -244,7 +245,7 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
                         commit: str | None = None,
                         prune_perf_data: bool = False,
                         min_samples: int = 0) -> list[dict]:
-    """Capture one document-process flamegraph per test document (8) via
+    """Capture one document-process flamegraph per test document via
     k6-flamegraph.py. For each document it launches its own single-kit coolwsd
     (make run-one, on its own free port via --new-instance, so it coexists with
     any coolwsd already on the default port), opens that document with its
@@ -356,6 +357,8 @@ def run_suite(results_dir: Path, runid: str, users_list: list[int],
                 rel = (results_dir / runid / f"{app}-{doc}-{users}u").as_posix()
                 run_one(app, doc, users, rel, commit)
                 ok, why = measured(ROOT / rel)
+                if ok:
+                    ok, why = met_requirement(ROOT / rel)
                 if not ok:
                     print(f"  {app}-{doc} {users}u {why}", file=sys.stderr)
                 outcomes.append({"name": f"{app}-{doc}-{users}u", "ok": ok,
@@ -389,6 +392,28 @@ def measured(out: Path) -> tuple[bool, str | None]:
                        "See k6.log beside its metrics.json")
 
     return True, None
+
+
+def met_requirement(out: Path) -> tuple[bool, str | None]:
+    """Whether a run met the service level its test declares, and how it missed it.
+
+    Only the tests that carry a requirement write one (see
+    src/cool-browser-writer-10mb-test.js); for every other run this passes. The
+    verdict itself is reached in the test, so k6 and the suite cannot disagree
+    about it."""
+    try:
+        req = json.loads((out / "metrics.json").read_text()).get("requirement")
+    except Exception:
+        return True, None
+    if not isinstance(req, dict) or req.get("ok"):
+        return True, None
+
+    value = req.get("value")
+    return False, (
+        f"missed its requirement: {req.get('metric')} "
+        f"p({req.get('percentile')}) was "
+        f"{'not measured' if value is None else str(round(value)) + ' ms'}, "
+        f"budget {req.get('max_ms')} ms, over {req.get('samples')} open(s)")
 
 
 def write_junit(path: Path, suite_name: str, cases: list[dict]) -> None:
@@ -626,7 +651,7 @@ def demo_history() -> dict:
     scen: dict = {}
     for app, doc in documents():
             ai = APPS.index(app)
-            big = 2.3 if doc in ("5mb", "ooxml") else 1.0
+            big = {"5mb": 2.3, "ooxml": 2.3, "10mb": 3.6}.get(doc, 1.0)
             for users in (1, 3):
                 base_fr = (900 + ai * 350) * big * (1.6 if users == 3 else 1.0)
                 base_mem = (600 + ai * 120) * big * (1 + 0.5 * (users - 1))
@@ -826,7 +851,7 @@ const DATA = __DATA__;
 const SVGNS = "http://www.w3.org/2000/svg";
 const MS = [{m:"frame_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"}];
 const NAMES={frame_ready_ms:"frame ready",page_load_ms:"page load",edit_ms:"edit",cool_mem:"COOL memory",browser_mem:"browser heap",master_mem:"coolwsd peak"};
-const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","5mb","ooxml"];
+const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","5mb","10mb","ooxml"];
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
 function niceStep(s){if(s<=0)return 1;const r=s/4,m=Math.pow(10,Math.floor(Math.log10(r))),n=r/m;return (n<=1?1:n<=2?2:n<=5?5:10)*m;}
 function niceCeil(v){return Math.ceil(v/niceStep(v))*niceStep(v);}
@@ -1124,8 +1149,8 @@ def main() -> int:
                          "(default: $COOLWSD_DIR)")
     ap.add_argument("-o", "--out", default="browser-dashboard.html", help="dashboard output file")
     ap.add_argument("--flamegraphs", action="store_true",
-                    help="capture a document-process flamegraph per test document "
-                         "(8), each via k6-flamegraph.py launching its own "
+                    help=f"capture a document-process flamegraph per test document "
+                         f"({len(documents())}), each via k6-flamegraph.py launching its own "
                          "single-kit coolwsd on its own port; each run's detail then "
                          "embeds its own capture")
     ap.add_argument("--demo", action="store_true", help="use synthetic history instead of results/")
