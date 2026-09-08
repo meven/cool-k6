@@ -1,6 +1,8 @@
 /**
- * Browser test: open the ~10 MB Writer document and assert the service level
- * it has to meet.
+ * Browser test: open the ~10 MB Writer report and assert the service level it
+ * has to meet. The document is 46 sections over 47 pages, each with a table
+ * and a photograph, behind a table of contents (documents/gen-docs.py
+ * --report).
  *
  * The requirement: after clicking a 10 MB office document in cloud storage,
  * editing in the web client must be possible for at least 98% of users within

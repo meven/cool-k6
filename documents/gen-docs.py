@@ -13,13 +13,17 @@ For each Collabora Online application it writes two files under documents/:
 
 Size is driven by embedded raster images (ODF compresses text and cells well,
 so images are what make a file big), padded until the embedded-image bytes
-reach the target.
+reach the target. The padding is noise, which no encoder can shrink, so a
+target is reached in few images and few pages. --report pads the Writer
+document with photographs instead and gives it a table of contents, so 10 MB
+becomes dozens of sections over as many pages, which is what a document of
+that size holds.
 
 Dependencies (see documents/requirements.txt):
     python3 -m pip install odfpy Pillow matplotlib numpy
 Run:
     python3 documents/gen-docs.py            # all apps, ~5 MB each
-    python3 documents/gen-docs.py --mb 10    # the 10 MB documents as well
+    python3 documents/gen-docs.py --apps writer --mb 10 --report --no-ooxml
     python3 documents/gen-docs.py --mb 2     # smaller, for a quick check
 """
 import argparse
@@ -35,19 +39,27 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from PIL import Image as PILImage, ImageDraw
+from PIL import Image as PILImage, ImageDraw, ImageFilter
 
 from odf.opendocument import (OpenDocumentText, OpenDocumentSpreadsheet,
                               OpenDocumentPresentation, OpenDocumentDrawing)
 from odf.style import (Style, TextProperties, ParagraphProperties,
                        GraphicProperties, MasterPage, PageLayout,
-                       PageLayoutProperties)
-from odf.text import P, H
+                       PageLayoutProperties, TabStops, TabStop)
+from odf.text import (P, H, Tab, TableOfContent, TableOfContentSource,
+                      IndexTitleTemplate, TableOfContentEntryTemplate, IndexBody,
+                      IndexTitle, IndexEntryLinkStart, IndexEntryChapter,
+                      IndexEntryText, IndexEntryTabStop, IndexEntryPageNumber,
+                      IndexEntryLinkEnd)
 from odf.table import Table, TableColumn, TableRow, TableCell
 from odf.draw import Page, Frame, Image, Rect, Ellipse, Line, Polygon, TextBox
 
 OUT = Path(__file__).resolve().parent
 RNG = random.Random(20260813)
+
+# What one section of the report takes, for the page numbers the saved index carries.
+# A render of the 10 MB document puts section n on page n, its index sharing page 1.
+PAGES_PER_SECTION = 1
 
 WORDS = ("document collaboration render layout paragraph table chart image "
          "spreadsheet presentation drawing heading section column formula "
@@ -80,6 +92,35 @@ def photo_png(w: int = 900, h: int = 640) -> bytes:
     return buf.getvalue()
 
 
+def photo_jpeg(w: int = 1600, h: int = 1100, quality: int = 85) -> bytes:
+    """A photograph-like image: smooth colour fields, a few shapes and mild grain.
+
+    photo_png is noise, which no encoder can shrink, so a target size is reached in a
+    handful of huge images. A photograph compresses, so the same target takes dozens of
+    them, which is what a document of that size really holds."""
+    rng = np.random.default_rng(RNG.randrange(1 << 30))
+    y, x = np.mgrid[0:h, 0:w].astype(np.float32)
+    field = np.zeros((h, w, 3), dtype=np.float32)
+    for c in range(3):
+        field[:, :, c] = 128 + 40 * (
+            np.sin(x / rng.uniform(90, 260) + rng.uniform(0, 6))
+            + np.cos(y / rng.uniform(90, 260) + rng.uniform(0, 6))
+            + np.sin((x + y) / rng.uniform(140, 420)))
+    field += rng.normal(0, 6, size=(h, w, 3))
+    img = PILImage.fromarray(np.clip(field, 0, 255).astype(np.uint8), "RGB")
+    draw = ImageDraw.Draw(img)
+    for _ in range(14):
+        x0, y0 = RNG.randrange(w), RNG.randrange(h)
+        x1, y1 = RNG.randrange(w), RNG.randrange(h)
+        col = tuple(RNG.randrange(256) for _ in range(3))
+        draw.ellipse([min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)],
+                     outline=col, width=6)
+    img = img.filter(ImageFilter.GaussianBlur(0.6))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    return buf.getvalue()
+
+
 def chart_png(kind: str = "line") -> bytes:
     fig, ax = plt.subplots(figsize=(5.2, 3.2), dpi=130)
     x = np.arange(24)
@@ -97,16 +138,65 @@ def chart_png(kind: str = "line") -> bytes:
     return buf.getvalue()
 
 
-def frame(doc, png: bytes, w_cm: float, h_cm: float, **kw) -> Frame:
-    href = doc.addPictureFromString(png, "image/png")
+def frame(doc, picture: bytes, w_cm: float, h_cm: float, mime: str = "image/png",
+          **kw) -> Frame:
+    href = doc.addPictureFromString(picture, mime)
     f = Frame(width="%.1fcm" % w_cm, height="%.1fcm" % h_cm, **kw)
     f.addElement(Image(href=href))
     return f
 
 
+def table_of_contents(doc, headings: list[str]) -> TableOfContent:
+    """A table of contents over @p headings, entries and all.
+
+    The entries are written out, not left to the reader's application: an index in a saved
+    document holds the last rendering of itself, and one that opens empty until the reader
+    updates it costs no layout, which is the work worth measuring here. The page numbers are
+    an estimate for the same reason.
+    """
+    head = Style(name="Contents Heading", family="paragraph")
+    head.addElement(TextProperties(fontsize="16pt", fontweight="bold"))
+    doc.styles.addElement(head)
+
+    entry = Style(name="Contents 1", family="paragraph")
+    stops = TabStops()
+    stops.addElement(TabStop(position="17cm", type="right", leaderstyle="dotted",
+                             leadertext="."))
+    properties = ParagraphProperties()
+    properties.addElement(stops)
+    entry.addElement(properties)
+    doc.styles.addElement(entry)
+
+    toc = TableOfContent(name="Table of Contents1")
+    source = TableOfContentSource(outlinelevel=10)
+    title = IndexTitleTemplate(stylename=head)
+    title.addText("Table of Contents")
+    source.addElement(title)
+    template = TableOfContentEntryTemplate(outlinelevel=1, stylename=entry)
+    for part in (IndexEntryLinkStart(), IndexEntryChapter(), IndexEntryText(),
+                 IndexEntryTabStop(type="right", leaderchar="."),
+                 IndexEntryPageNumber(), IndexEntryLinkEnd()):
+        template.addElement(part)
+    source.addElement(template)
+    toc.addElement(source)
+
+    body = IndexBody()
+    index_title = IndexTitle(name="Table of Contents1_Head")
+    index_title.addElement(P(stylename=head, text="Table of Contents"))
+    body.addElement(index_title)
+    for n, heading in enumerate(headings):
+        line = P(stylename=entry)
+        line.addText(heading)
+        line.addElement(Tab())
+        line.addText(str(1 + n * PAGES_PER_SECTION))
+        body.addElement(line)
+    toc.addElement(body)
+    return toc
+
+
 # --------------------------------------------------------------------------
 
-def build_writer(target: int, blank: bool, label: str) -> None:
+def build_writer(target: int, blank: bool, label: str, report: bool = False) -> None:
     doc = OpenDocumentText()
     h1 = Style(name="Heading 1", family="paragraph")
     h1.addElement(TextProperties(fontsize="20pt", fontweight="bold"))
@@ -116,8 +206,11 @@ def build_writer(target: int, blank: bool, label: str) -> None:
         doc.save(str(OUT / "blank.odt"))
         return
     embedded, n = 0, 0
+    headings = []
     while embedded < target:
-        doc.text.addElement(H(outlinelevel=1, stylename=h1, text=f"Section {n + 1}"))
+        heading = f"Section {n + 1}"
+        headings.append(heading)
+        doc.text.addElement(H(outlinelevel=1, stylename=h1, text=heading))
         for _ in range(3):
             doc.text.addElement(P(text=prose(60)))
         tbl = Table(name=f"table{n}")
@@ -130,12 +223,16 @@ def build_writer(target: int, blank: bool, label: str) -> None:
                 row.addElement(cell)
             tbl.addElement(row)
         doc.text.addElement(tbl)
-        png = photo_png()
+        picture = photo_jpeg() if report else photo_png()
         p = P()
-        p.addElement(frame(doc, png, 14, 9, anchortype="paragraph"))
+        p.addElement(frame(doc, picture, 14, 9,
+                           mime="image/jpeg" if report else "image/png",
+                           anchortype="paragraph"))
         doc.text.addElement(p)
-        embedded += len(png)
+        embedded += len(picture)
         n += 1
+    if report:
+        doc.text.insertBefore(table_of_contents(doc, headings), doc.text.childNodes[0])
     doc.save(str(OUT / f"writer-{label}.odt"))
 
 
@@ -300,6 +397,11 @@ def main() -> None:
                          "(default 5, so writer-5mb.odt)")
     ap.add_argument("--apps", default="writer,calc,impress,draw",
                     help="comma-separated subset to generate")
+    ap.add_argument("--report", action="store_true",
+                    help="give the big Writer document the shape of a long report: a table "
+                         "of contents, and photographs rather than the noise the other "
+                         "documents pad with, so the size comes from dozens of images and "
+                         "the document runs to the page count that size implies")
     ap.add_argument("--ooxml", action=argparse.BooleanOptionalAction, default=True,
                     help="also write the big documents in the Microsoft formats, by "
                          "converting them with a desktop LibreOffice")
@@ -308,10 +410,12 @@ def main() -> None:
     label = size_label(args.mb)
     builders = {"writer": build_writer, "calc": build_calc,
                 "impress": build_impress, "draw": build_draw}
+    # Only Writer has a report shape, since only Writer has headings to index.
+    extras = {"writer": {"report": args.report}}
     for app in [a.strip() for a in args.apps.split(",") if a.strip()]:
         build = builders[app]
         build(target, blank=True, label=label)
-        build(target, blank=False, label=label)
+        build(target, blank=False, label=label, **extras.get(app, {}))
         print(f"{app}: blank + ~{args.mb:g} MB document written to {OUT}")
         if args.ooxml:
             convert_to_ooxml(app, label)

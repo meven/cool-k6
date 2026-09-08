@@ -40,13 +40,22 @@ few kilobytes each.
 ```shell
 python3 -m pip install -r documents/requirements.txt
 ./documents/gen-docs.py
-./documents/gen-docs.py --apps writer --mb 10 --no-ooxml
+./documents/gen-docs.py --apps writer --mb 10 --report --no-ooxml
 ```
 
 The size names the document, so the second line writes `writer-10mb.odt`
 beside the 5 MB one rather than over it. The conversion needs a system
 LibreOffice, and `--no-ooxml` skips it. An Online engine build refuses
 `--convert-to`.
+
+`--report` decides what the size is made of, and the 10 MB document needs it.
+The corpus documents pad to their size with images of random noise, which no
+encoder can shrink, so 10 MB arrives in 7 images and about ten pages. A report
+pads with photographs, which compress the way photographs do, so the same
+10 MB is 46 sections over 47 pages, each with a table and a photograph, behind
+a table of contents that lists all 46. That is the document the requirement
+below is written about, and it puts the load time where a real document puts
+it, in the layout rather than in seven bitmaps.
 
 ## The service-level requirement
 
@@ -56,9 +65,10 @@ One test asserts a service level rather than only recording numbers:
 > the WebOffice web client must be possible for at least 98% of all users
 > after a maximum of 5 seconds.
 
-`src/cool-browser-writer-10mb-test.js` opens `documents/writer-10mb.odt` and
-holds the 98th percentile of `frame_ready_ms` (the editor reporting
-`Frame_Ready`, which is when editing becomes possible) to 5000 ms. The budget
+`src/cool-browser-writer-10mb-test.js` opens `documents/writer-10mb.odt`, the
+report described above, and holds the 98th percentile of `frame_ready_ms` (the
+editor reporting `Frame_Ready`, which is when editing becomes possible) to
+5000 ms. The budget
 is declared once in the test and is enforced twice: as a k6 threshold, so k6
 exits non-zero by itself, and as a verdict in that run's `metrics.json`, which
 `browser-suite.py` fails the run on and reports through `--junit`.
