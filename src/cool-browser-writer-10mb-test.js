@@ -6,8 +6,10 @@
  *
  * The requirement: after clicking a 10 MB office document in cloud storage,
  * editing in the web client must be possible for at least 98% of users within
- * 5 seconds. Frame_Ready is that moment, so the assertion is the 98th
- * percentile of frame_ready_ms against a 5000 ms budget. It is a k6 threshold,
+ * 5 seconds. Document_Loaded is that moment, so the assertion is the 98th
+ * percentile of document_loaded_ms against a 5000 ms budget. Frame_Ready is
+ * the client shell coming up and reaches the same number for a blank document
+ * as for this one, so it answers nothing about a 10 MB document. It is a k6 threshold,
  * so k6 exits non-zero on its own, and it is written to metrics.json, so
  * browser-suite.py fails the run and CI reports which document missed.
  *
@@ -22,7 +24,7 @@ import { scenarioOptions, setupWopi, runDocScenario, makeSummary }
 
 const FILE_ID = Number(__ENV['FILE_ID'] || 22);  // documents/writer-10mb.odt
 
-const REQUIREMENT = { metric: 'frame_ready_ms', percentile: 98, max_ms: 5000 };
+const REQUIREMENT = { metric: 'document_loaded_ms', percentile: 98, max_ms: 5000 };
 
 export const options = scenarioOptions({ requirement: REQUIREMENT });
 export function setup() { setupWopi(); }

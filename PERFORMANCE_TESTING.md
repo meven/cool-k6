@@ -105,9 +105,10 @@ scripts default to one iteration unless stated otherwise.
 
 - `cool-browser-<app>-<doc>-test.js`, the per-application suite
   `browser-suite.py` runs: each opens one document of the generated corpus
-  and records `page_load_ms`, `frame_ready_ms` and the browser heap.
+  and records `page_load_ms`, `frame_ready_ms` (the client shell),
+  `document_loaded_ms` (the document open and editable) and the browser heap.
   `cool-browser-writer-10mb-test.js` is the one that asserts rather than
-  only records: the 98th percentile of `frame_ready_ms` over a 5000 ms
+  only records: the 98th percentile of `document_loaded_ms` over a 5000 ms
   budget, as a k6 threshold. `USERS`, `ITERATIONS` and `MAXDUR` set how many
   opens it takes and how long it may take them.
 

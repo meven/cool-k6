@@ -254,8 +254,8 @@ reports as **unstable** rather than failed. The build only fails outright when
 every document failed, or when you pass `--strict`.
 
 The 10 MB Writer document also carries a service level: its 98th percentile of
-frame-ready has to stay under 5 seconds (see "The service-level requirement" in
-the README). A run that opens the document but misses that budget fails its
+document-loaded has to stay under 5 seconds (see "The service-level
+requirement" in the README). A run that opens the document but misses that budget fails its
 testcase the same way, with the measured percentile in the message. A suite
 pass opens it a handful of times per user pool, which is too few for a 98th
 percentile to mean anything, so treat those as a smoke test and run the

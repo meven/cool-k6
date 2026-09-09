@@ -66,9 +66,17 @@ One test asserts a service level rather than only recording numbers:
 > after a maximum of 5 seconds.
 
 `src/cool-browser-writer-10mb-test.js` opens `documents/writer-10mb.odt`, the
-report described above, and holds the 98th percentile of `frame_ready_ms` (the
-editor reporting `Frame_Ready`, which is when editing becomes possible) to
-5000 ms. The budget
+report described above, and holds the 98th percentile of `document_loaded_ms`
+to 5000 ms. That is the editor reporting `App_LoadingStatus: Document_Loaded`,
+the moment the document is open and editable.
+
+`Frame_Ready`, which the other tests report, is the client shell coming up and
+says nothing about the document: measured here, a blank document reaches it in
+1258 ms and the 46-page report in 1134 ms, while `Document_Loaded` separates
+them properly at 1828 ms and 2666 ms. Every test records both, and the charts
+plot both.
+
+The budget
 is declared once in the test and is enforced twice: as a k6 threshold, so k6
 exits non-zero by itself, and as a verdict in that run's `metrics.json`, which
 `browser-suite.py` fails the run on and reports through `--junit`.
