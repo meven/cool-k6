@@ -139,12 +139,13 @@ def cool_cmd() -> str:
 # doctor
 # --------------------------------------------------------------------------- #
 
-def checks(publishing: bool = True) -> list[tuple[str, str, str]]:
+def checks(publishing: bool = True, flamegraphs: bool = True) -> list[tuple[str, str, str]]:
     """[(status, what, detail-or-hint)] for everything a run needs.
 
     @p publishing says whether the runs are going into the store afterwards. Measuring needs
     nothing but the workspace, so a store that cannot be written is only in the way of the
-    publishing half.
+    publishing half. @p flamegraphs says whether perf is going to be used at all: the timing
+    suite never calls it, so a machine that cannot profile can still measure.
     """
     res = []
 
@@ -201,22 +202,26 @@ def checks(publishing: bool = True) -> list[tuple[str, str, str]]:
             K6_IMAGE if img.returncode == 0
             else f"{K6_IMAGE} not pulled yet, the first run will fetch it")
 
-    # perf sampling permission. Unprivileged perf needs paranoid <= 1, and the
-    # harness falls back to sudo, which in a job must not prompt.
+    # perf sampling permission. The flamegraph pass records its own coolwsd
+    # processes by pid, which is unprivileged at perf_event_paranoid <= 2 (see
+    # prepare_perf in k6-flamegraph.py). Only a system-wide capture would need
+    # <= 0, and the suite never asks for one.
     try:
         paranoid = int(Path("/proc/sys/kernel/perf_event_paranoid").read_text().strip())
     except Exception:
         paranoid = None
     sudo_ok = run(["sudo", "-n", "true"]).returncode == 0 if shutil.which("sudo") else False
-    if paranoid is not None and paranoid <= 1:
-        add(OK, "perf permission", f"perf_event_paranoid={paranoid}")
+    if paranoid is not None and paranoid <= 2:
+        add(OK, "perf permission",
+            f"perf_event_paranoid={paranoid}, enough to record our own processes by pid")
     elif sudo_ok:
         add(WARN, "perf permission",
             f"perf_event_paranoid={paranoid}, falling back to passwordless sudo")
     else:
-        add(FAIL, "perf permission",
+        add(FAIL if flamegraphs else WARN, "perf permission",
             f"perf_event_paranoid={paranoid} and sudo would prompt: "
-            "set kernel.perf_event_paranoid=-1 (sysctl) or grant NOPASSWD perf")
+            "set kernel.perf_event_paranoid=2 (sysctl) or grant NOPASSWD perf"
+            + ("" if flamegraphs else ", which only the flamegraph pass needs"))
 
     # The kit runs in a jail built from user namespaces.
     unshare = run(["unshare", "-U", "true"]) if shutil.which("unshare") else None
@@ -278,7 +283,7 @@ def checks(publishing: bool = True) -> list[tuple[str, str, str]]:
 
 
 def cmd_doctor(args) -> int:
-    res = checks(getattr(args, "publish", True))
+    res = checks(getattr(args, "publish", True), getattr(args, "flamegraphs", True))
     width = max(len(w) for _, w, _ in res)
     for status, what, detail in res:
         mark = {OK: "ok  ", WARN: "warn", FAIL: "FAIL"}[status]
@@ -382,7 +387,8 @@ def stop_proc(proc: subprocess.Popen | None) -> None:
 
 
 def cmd_run(args) -> int:
-    rc = cmd_doctor(argparse.Namespace(strict=False, publish=args.publish))
+    rc = cmd_doctor(argparse.Namespace(strict=False, publish=args.publish,
+                                      flamegraphs=args.flamegraphs))
     if rc != 0:
         return rc
     label, how = build_label()
@@ -534,6 +540,8 @@ def main() -> int:
 
     d = sub.add_parser("doctor", help="check the machine can run the suite")
     d.add_argument("--strict", action="store_true", help="treat warnings as failures")
+    d.add_argument("--flamegraphs", action=argparse.BooleanOptionalAction, default=True,
+                   help="check what the flamegraph pass needs as well (default: yes)")
     d.set_defaults(func=cmd_doctor)
 
     r = sub.add_parser("run", help="doctor, run the suite, publish the results")

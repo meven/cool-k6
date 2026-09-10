@@ -66,12 +66,22 @@ systemctl enable --now docker
 
 ```
 # /etc/sysctl.d/90-cool-perf.conf
-kernel.perf_event_paranoid = -1
+kernel.perf_event_paranoid = 2
 ```
 
-`perf_event_paranoid` at `-1` lets the agent record without `sudo`. The
-alternative is a `NOPASSWD` sudoers entry for `perf`, which the harness will use
-if it finds one, but an interactive password prompt hangs a job.
+The flamegraph pass records its own coolwsd processes by pid, and that is
+unprivileged at `perf_event_paranoid <= 2`, so it needs no `sudo` and no
+`NOPASSWD` sudoers entry. Check what the machine actually has, since Ubuntu has
+shipped stricter defaults than upstream in the past:
+
+```
+sysctl kernel.perf_event_paranoid
+```
+
+Anything at 2 or below is enough. Only a system-wide capture would want `0` or
+less, and the suite never asks for one. `cool-ci doctor` reports this check as
+`ok` from 2 downwards, and a timing-only run (`--no-flamegraphs`) does not need
+perf at all.
 
 The document kit jails itself with unprivileged user namespaces. On kernels
 that restrict them, allow them:
