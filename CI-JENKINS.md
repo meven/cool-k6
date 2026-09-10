@@ -48,8 +48,14 @@ not let the job run concurrently with itself.
 
 ### Packages
 
+Written for Ubuntu 26.04 LTS (Resolute Raccoon), which is what the agent runs.
+There, `linux-perf` carries `/usr/bin/perf` itself, so none of the
+`linux-tools-$(uname -r)` juggling older releases needed; `nodejs` is 22.22,
+above the 20.10 the WOPI host asks for; python is 3.14 and the tooling here is
+standard library only.
+
 ```
-# Debian/Ubuntu
+# Ubuntu 26.04 (Resolute) and Debian
 apt install docker.io linux-perf nodejs npm python3 iproute2 git
 # Arch
 pacman -S docker perf nodejs npm python iproute2 git
@@ -88,7 +94,8 @@ that restrict them, allow them:
 
 ```
 kernel.unprivileged_userns_clone = 1                  # where present
-kernel.apparmor_restrict_unprivileged_userns = 0      # Ubuntu 24.04 and later
+kernel.apparmor_restrict_unprivileged_userns = 0      # Ubuntu 24.04 and later,
+                                                      # still the default on 26.04
 ```
 
 `./cool-ci doctor` checks all of this, including an actual `unshare -U`.
