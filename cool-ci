@@ -124,11 +124,17 @@ def build_label() -> tuple[str | None, str]:
     return None, "the tree has no snapshot marker and no git HEAD"
 
 
-def cool_cmd() -> str:
-    """The coolwsd command line to start, from cool-use-build run-cmd."""
+def cool_cmd(single_kit: bool = False) -> str:
+    """The coolwsd command line to start, from cool-use-build run-cmd.
+
+    @p single_kit is for a one-document capture, where coolwsd is meant to go
+    away with its document. The suite's own server must not have it: it hosts
+    every scenario in turn, and a debug build exits when the last document
+    closes."""
     if env("COOL_CMD"):
         return env("COOL_CMD")
-    out = run([sys.executable, str(ROOT / "cool-use-build"), "run-cmd"])
+    out = run([sys.executable, str(ROOT / "cool-use-build"), "run-cmd"]
+              + (["--singlekit"] if single_kit else []))
     if out.returncode != 0 or not out.stdout.strip():
         raise SystemExit("could not derive the coolwsd command line:\n"
                          + (out.stderr or out.stdout))
@@ -431,7 +437,7 @@ def cmd_run(args) -> int:
         # and falls back (cpu_core, cpu_atom, task-clock) when it captures
         # nothing, which is what a hybrid CPU or a VM without a PMU needs.
         suite_env.setdefault("PERF_EVENT", env("PERF_EVENT", "cycles"))
-        suite_env["COOL_CMD"] = cool_cmd()
+        suite_env["COOL_CMD"] = cool_cmd(single_kit=True)
 
         cmd = [sys.executable, str(ROOT / "browser-suite.py"),
                "--results", "results", "--commit", label or "unknown",

@@ -21,6 +21,7 @@ nothing is lost and you can swap back by id.
     ./cool-use-build save [id]             snapshot the tree's build (default: git HEAD)
     ./cool-use-build use <id>              install a snapshot (saving the current one)
     ./cool-use-build run-cmd               print a coolwsd command that skips make
+    ./cool-use-build run-cmd --singlekit   the same, for a one-document capture
 
 Then profile the installed build, labelling the runs with its commit:
 
@@ -289,7 +290,7 @@ def makefile_vars(t: Path, names: tuple[str, ...]) -> dict:
     return {k: expand(v) for k, v in out.items()}
 
 
-def cmd_run_cmd() -> int:
+def cmd_run_cmd(single_kit: bool = False) -> int:
     """Print the single-kit coolwsd command line that `make run-one` runs.
 
     Taken from the tree's own Makefile (the run-one recipe plus COMMON_PARAMS)
@@ -316,8 +317,14 @@ def cmd_run_cmd() -> int:
         "--o:admin_console.username=admin", "--o:admin_console.password=admin",
         "--o:logging.file[@enable]=true", "--o:logging.level=trace",
         "--o:logging_ui_cmd.file[@enable]=true",
-        "--singlekit",
     ]
+    # --singlekit is what the Makefile's run-one recipe passes, and in a debug
+    # build coolwsd shuts itself down when the last document closes
+    # (COOLWSD.cpp, "No more docs left in single-kit mode"). That suits a
+    # single-document capture and kills a suite: every scenario after the first
+    # gets a connection refused. Opt in, do not inherit it.
+    if single_kit:
+        parts.append("--singlekit")
     print(" ".join(parts))
     return 0
 
@@ -337,7 +344,7 @@ def main(argv: list[str]) -> int:
     if cmd == "use":
         return cmd_use(rest)
     if cmd == "run-cmd":
-        return cmd_run_cmd()
+        return cmd_run_cmd("--singlekit" in rest)
     die(f"unknown command: {cmd}\nrun with --help for usage")
 
 
