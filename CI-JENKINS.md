@@ -48,14 +48,13 @@ not let the job run concurrently with itself.
 
 ### Packages
 
-Written for Ubuntu 26.04 LTS (Resolute Raccoon), which is what the agent runs.
-There, `linux-perf` carries `/usr/bin/perf` itself, so none of the
-`linux-tools-$(uname -r)` juggling older releases needed; `nodejs` is 22.22,
-above the 20.10 the WOPI host asks for; python is 3.14 and the tooling here is
-standard library only.
+Written for Debian 13 (trixie). Ubuntu 24.04 and later takes the same packages,
+and the differences that matter are called out where they arise. The tooling
+here is Python standard library only, so the packaged `python3` is enough on
+either.
 
 ```
-# Ubuntu 26.04 (Resolute) and Debian
+# Debian 13 (trixie), Ubuntu 24.04 and later
 apt install docker.io linux-perf nodejs npm python3 iproute2 git
 # Arch
 pacman -S docker perf nodejs npm python iproute2 git
@@ -68,6 +67,28 @@ usermod -aG docker jenkins        # the k6 tests run in a container
 systemctl enable --now docker
 ```
 
+Two Debian details decide whether the suite runs at all.
+
+**Node has to be 20.10 or newer**, which is what `server/index.js` asks for.
+Trixie ships the 20 series and bookworm ships 18, so on bookworm take Node from
+backports or from nodesource, or the WOPI host will not start and every
+scenario will time out waiting for a document:
+
+```
+node --version
+```
+
+**`perf` is a wrapper.** Debian's `linux-perf` installs `/usr/bin/perf`, which
+dispatches to the binary built for the running kernel. After a kernel upgrade
+with no reboot it has no exact match, warns, and can refuse to record. Reboot
+into the kernel the package was built for, and check what the capture will
+really use:
+
+```
+perf --version
+perf record -o /dev/null -- true && echo "perf records"
+```
+
 ### Kernel settings
 
 ```
@@ -77,8 +98,8 @@ kernel.perf_event_paranoid = 2
 
 The flamegraph pass records its own coolwsd processes by pid, and that is
 unprivileged at `perf_event_paranoid <= 2`, so it needs no `sudo` and no
-`NOPASSWD` sudoers entry. Check what the machine actually has, since Ubuntu has
-shipped stricter defaults than upstream in the past:
+`NOPASSWD` sudoers entry. Check what the machine actually has, since
+distributions have shipped stricter defaults than upstream in the past:
 
 ```
 sysctl kernel.perf_event_paranoid
@@ -89,13 +110,21 @@ less, and the suite never asks for one. `cool-ci doctor` reports this check as
 `ok` from 2 downwards, and a timing-only run (`--no-flamegraphs`) does not need
 perf at all.
 
-The document kit jails itself with unprivileged user namespaces. On kernels
-that restrict them, allow them:
+The document kit jails itself with unprivileged user namespaces. Debian allows
+them out of the box, so nothing is needed there unless the machine has been
+hardened. Where they are restricted, allow them:
 
 ```
 kernel.unprivileged_userns_clone = 1                  # where present
-kernel.apparmor_restrict_unprivileged_userns = 0      # Ubuntu 24.04 and later,
-                                                      # still the default on 26.04
+kernel.apparmor_restrict_unprivileged_userns = 0      # Ubuntu 24.04 and later
+```
+
+Add a line only for a key the kernel actually has. `sysctl --system` fails on an
+unknown key and stops there, so a stray AppArmor line on a Debian kernel without
+it costs you the `perf_event_paranoid` setting in the same file:
+
+```
+sysctl kernel.apparmor_restrict_unprivileged_userns   # silence means: leave it out
 ```
 
 `./cool-ci doctor` checks all of this, including an actual `unshare -U`.
