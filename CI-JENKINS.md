@@ -161,11 +161,56 @@ $COOLWSD_DIR/browser/dist       browser client bundle
 
 Typical arrangements:
 
+* `cool-build` builds the tree from main on this machine, which is what the
+  pipeline below does
 * an upstream build job on the same VM leaves its tree at a fixed path, and this
   job runs after it
 * the tree is built by hand for a measurement campaign and left in place
 * a **kept-aside build** is installed into the tree by `cool-use-build`, to
   measure an older commit without rebuilding it
+
+### Building from main on the agent
+
+```
+COOLWSD_DIR=/srv/online ./cool-build              # origin/main
+COOLWSD_DIR=/srv/online ./cool-build --ref v25.04 # any ref
+COOLWSD_DIR=/srv/online ./cool-build --engine     # the engine too, hours
+```
+
+It fetches, checks the ref out detached, runs `make build-nocheck`, snapshots
+the result under its commit, and marks the tree with the same id. The build
+then **is** the testing instance: `cool-ci run` measures the tree as it stands,
+and labels the run with the commit that was built.
+
+It refuses to start when the tree has uncommitted changes, since a build from
+main over someone's work in progress measures neither.
+
+**What it pulls.** The fetch asks for the one branch it is about to build and
+no tags, where a plain `git fetch origin` takes every branch the remote has and
+all 755 tags. Nothing in the build needs a tag: `configure.ac` and `Makefile.am`
+read `git log -1 --format=%h` for the version and nothing else, so a tagless
+tree still reports the right hash.
+
+When the tree does not exist, `COOL_SRC_URL` makes `cool-build` clone it
+blobless (`--filter=blob:none --no-tags --single-branch`): the history arrives
+without file contents and git fetches the blobs of the one commit checked out,
+a few hundred MB against 2.6 GB for the full pack. Later builds then fetch only
+what the new commits touch.
+
+`build-nocheck` is `all-am` without `check`, so the unit tests and the linters
+do not run. A measurement job wants the binaries; whether they pass their own
+tests is another job's question.
+
+The engine under `engine/instdir` is left alone unless `--engine` is given. It
+is a LibreOffice core build of several hours and it moves far less often than
+the server, so a nightly performance job should not rebuild it. When the engine
+does move, that run has to be read as a different baseline, not as a regression
+in the server.
+
+Each build snapshot is about 4 GB (`coolwsd`, `instdir/`, `browser-dist/`), so a
+job that builds every night fills a disk quickly. `cool-use-build list` shows
+what is kept and `--no-save` skips the snapshot for a build nobody will want to
+measure again.
 
 ### How runs are labelled
 
@@ -174,7 +219,7 @@ the binaries rather than the checkout:
 
 1. `COOL_PERF_LABEL`, if set
 2. the id in `$COOLWSD_DIR/.cool-build-installed`, written by `cool-use-build`
-   when it installs a snapshot
+   when it installs a snapshot, and by `cool-build` for a build it just made
 3. `git -C $COOLWSD_DIR rev-parse --short=12 HEAD`
 
 Step 2 exists because after installing a snapshot the tree's `HEAD` no longer
@@ -187,6 +232,7 @@ explicitly if the checkout can move under it.
 ```
 ./cool-use-build list                   # what snapshots exist
 ./cool-use-build save                   # snapshot the tree's build under its HEAD
+./cool-use-build mark <id>              # label the build already in the tree, copying nothing
 ./cool-use-build use 093eaf495c27       # install one (saving the current one first)
 ./cool-ci run                           # labels the runs 093eaf495c27 automatically
 ```
@@ -216,6 +262,9 @@ All environment, so the Jenkins job needs no arguments.
 | `COOL_PERF_USERS` | `1,3` | user counts for the timing suite |
 | `COOL_PERF_MIN_SAMPLES` | `30` | a capture with fewer perf samples counts as failed |
 | `COOL_BUILDS_DIR` | `cool-builds` beside the tree | where snapshots live |
+| `COOL_SRC_REF` | `origin/main` | what `cool-build` builds |
+| `COOL_BUILD_JOBS` | `nproc` | make parallelism for `cool-build` |
+| `COOL_SRC_URL` | (unset) | clone from here when the tree does not exist yet |
 | `COOL_CMD` | derived from the Makefile | command that starts coolwsd |
 | `PERF_EVENT` | `cycles` | sampling event, self-tested and downgraded if it captures nothing |
 | `HOST_IP` | auto-detected | address the k6 container reaches the host on |
@@ -259,12 +308,13 @@ pipeline {
 
   options {
     disableConcurrentBuilds()          // timings are only comparable alone on the box
-    timeout(time: 40, unit: 'MINUTES')
+    timeout(time: 180, unit: 'MINUTES')   // a build from main, then the suite
     buildDiscarder(logRotator(numToKeepStr: '100'))
   }
 
   environment {
-    COOLWSD_DIR     = '/srv/online'    // built by the upstream job
+    COOLWSD_DIR     = '/srv/online'    // the tree Build COOL builds into
+    COOL_SRC_REF    = 'origin/main'
     COOL_PERF_STORE = '/var/lib/cool-perf'
     COOL_PERF_KEEP  = '20'
   }
@@ -272,6 +322,7 @@ pipeline {
   stages {
     stage('Checkout')      { steps { checkout scm } }
     stage('Test bundles')  { steps { sh 'npm ci && npm run build' } }
+    stage('Build COOL')    { steps { sh './cool-build' } }
     stage('Doctor')        { steps { sh './cool-ci doctor' } }
     stage('Measure')       { steps { sh './cool-ci run' } }
   }
@@ -294,6 +345,87 @@ pipeline {
 
 `npm ci && npm run build` is needed in every workspace: `dist/` is generated and
 not committed, and `doctor` fails without it.
+
+### Two jobs: build upstream, measure downstream
+
+One job that builds and measures is the simple arrangement. Splitting it lets a
+build run without measuring, lets a measurement re-run without rebuilding, and
+gives each half its own history in Jenkins.
+
+Both jobs have to run on the same agent. The build is a 4 GB tree on that
+machine and the measurement reads it in place, so nothing is copied between
+them: the downstream job learns which commit it is measuring by reading
+`$COOLWSD_DIR/.cool-build-installed`, which `cool-build` wrote.
+
+The upstream job, `cool-build-main`:
+
+```groovy
+pipeline {
+  agent { label 'cool-perf-vm' }
+
+  options {
+    disableConcurrentBuilds()
+    lock('cool-perf-vm')               // never build while a measurement runs
+    timeout(time: 150, unit: 'MINUTES')
+  }
+
+  environment {
+    COOLWSD_DIR  = '/srv/online'
+    COOL_SRC_REF = 'origin/main'
+  }
+
+  stages {
+    stage('Checkout') { steps { checkout scm } }
+    stage('Build')    { steps { sh './cool-build' } }
+  }
+
+  post {
+    success {
+      // The commit that was built, for the build page and for anyone reading
+      // the job history later.
+      sh 'cat $COOLWSD_DIR/.cool-build-installed'
+      build job: 'cool-perf', wait: false
+    }
+  }
+}
+```
+
+The downstream job, `cool-perf`, is the pipeline above with the `Build COOL`
+stage removed and a trigger added:
+
+```groovy
+  options {
+    disableConcurrentBuilds()
+    lock('cool-perf-vm')               // the build waits while this runs
+    timeout(time: 40, unit: 'MINUTES')
+  }
+
+  triggers {
+    upstream(upstreamProjects: 'cool-build-main',
+             threshold: hudson.model.Result.SUCCESS)
+  }
+
+  stages {
+    stage('Checkout')      { steps { checkout scm } }
+    stage('Test bundles')  { steps { sh 'npm ci && npm run build' } }
+    stage('Doctor')        { steps { sh './cool-ci doctor' } }
+    stage('Measure')       { steps { sh './cool-ci run' } }
+  }
+```
+
+`lock` comes from the Lockable Resources plugin and it is the part that matters.
+Timings are only comparable when nothing else uses the machine, and a compile at
+`-j12` is the loudest neighbour there is, so the two jobs must never overlap.
+`disableConcurrentBuilds` alone does not give you that, since it only keeps a
+job from running beside itself.
+
+Keeping both the trigger and the explicit `build job:` call is deliberate
+belt and braces: either one alone starts the measurement, and Jenkins will not
+start it twice while the lock is held.
+
+The downstream job still runs on its own whenever you want, and then it measures
+whatever build is installed in the tree, labelled with the id in the marker.
+
 
 A thin or failed capture shows up as a failing JUnit testcase, which Jenkins
 reports as **unstable** rather than failed. The build only fails outright when

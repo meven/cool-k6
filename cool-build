@@ -1,0 +1,115 @@
+#!/bin/sh
+# Build Collabora Online from a branch and leave that build installed as the
+# one the performance suite measures.
+#
+#   COOLWSD_DIR=/srv/online ./cool-build                build origin/main
+#   COOLWSD_DIR=/srv/online ./cool-build --ref v25.04   build another ref
+#   ./cool-build --engine     rebuild the engine as well, which takes hours
+#   ./cool-build --no-save    do not snapshot the result
+#   ./cool-build --dry-run    print what it would run
+#
+# The checkout takes as little as it can: one branch, no tags, and a blobless
+# clone when the tree has to be created (COOL_SRC_URL).
+#
+# The build stays in the tree COOLWSD_DIR names. That tree is what cool-ci
+# measures, so a build here becomes the default testing instance: the script
+# snapshots it under its commit and labels the tree with the same id, which is
+# what puts the run on the dashboard under the commit it came from.
+#
+# The engine under engine/instdir is left alone unless --engine is given. It is
+# a LibreOffice core build, it takes hours, and it changes far less often than
+# the server does.
+set -e
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+TREE=${COOLWSD_DIR}
+REF=${COOL_SRC_REF:-origin/main}
+URL=${COOL_SRC_URL:-}
+JOBS=${COOL_BUILD_JOBS:-$(nproc 2>/dev/null || echo 4)}
+DRY=
+SAVE=1
+ENGINE=
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --ref) REF=$2; shift 2 ;;
+        --jobs|-j) JOBS=$2; shift 2 ;;
+        --engine) ENGINE=1; shift ;;
+        --no-save) SAVE=; shift ;;
+        --dry-run) DRY=echo; shift ;;
+        -h|--help) sed -n '2,22p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+# After the arguments, so --ref decides it too.
+BRANCH=${REF#origin/}
+
+[ -n "$TREE" ] || {
+    echo "COOLWSD_DIR is not set: point it at the online checkout to build" >&2
+    exit 2
+}
+if [ ! -d "$TREE/.git" ]; then
+    [ -n "$URL" ] || {
+        echo "$TREE is not a git checkout of online, and COOL_SRC_URL is not" >&2
+        echo "set, so there is nothing to clone from" >&2
+        exit 2
+    }
+    # A blobless clone takes the history without the file contents and fetches
+    # the blobs of the one commit it checks out, which is a few hundred MB
+    # against 2.6 GB for the whole pack. Everything the build reads from git is
+    # the tip hash (configure.ac reads git log -1), so no tag is needed either.
+    echo "=== cloning $BRANCH from $URL"
+    $DRY git clone --filter=blob:none --no-tags --single-branch \
+        --branch "$BRANCH" "$URL" "$TREE"
+fi
+
+# A build that throws away someone's work in progress is not worth the commit
+# it claims to measure.
+if [ -n "$(git -C "$TREE" status --porcelain --untracked-files=no)" ]; then
+    echo "$TREE has uncommitted changes, so a build from $REF would measure" >&2
+    echo "something other than $REF. Commit or stash them first." >&2
+    exit 1
+fi
+
+# One branch, no tags. A plain `git fetch origin` takes every branch the remote
+# has and all 755 tags; this asks for the one ref that is about to be built.
+echo "=== fetching $BRANCH"
+if $DRY git -C "$TREE" fetch --no-tags --quiet origin "$BRANCH"; then
+    TARGET=FETCH_HEAD
+else
+    # A sha the remote will not serve by name, or a ref that is not a branch.
+    echo "    $BRANCH is not a branch on origin, taking every branch instead"
+    $DRY git -C "$TREE" fetch --no-tags --quiet origin
+    TARGET=$REF
+fi
+
+echo "=== checking out $REF"
+$DRY git -C "$TREE" switch --detach "$TARGET"
+SHA=$(git -C "$TREE" rev-parse --short=12 HEAD)
+
+if [ -n "$ENGINE" ]; then
+    echo "=== building the engine (hours)"
+    $DRY make -C "$TREE/engine" -j"$JOBS"
+fi
+
+# build-nocheck is all-am without the check target, which runs the unit tests
+# and the linters. A measurement job wants the binaries, not a verdict on them.
+echo "=== building $SHA with -j$JOBS"
+$DRY make -C "$TREE" -j"$JOBS" build-nocheck
+
+if [ -n "$SAVE" ]; then
+    echo "=== snapshotting $SHA"
+    $DRY env COOLWSD_DIR="$TREE" "$HERE/cool-use-build" save "$SHA"
+fi
+
+# The build is already in the tree, so nothing is copied. Only the marker is
+# missing, and without it cool-ci labels the run from whatever was installed
+# before, which is how a run ends up named after binaries it did not measure.
+echo "=== labelling the tree"
+$DRY env COOLWSD_DIR="$TREE" "$HERE/cool-use-build" mark "$SHA"
+
+echo
+echo "$SHA is built and installed in $TREE."
+echo "cool-ci run measures it as it stands, no further step:"
+echo "  COOLWSD_DIR=$TREE $HERE/cool-ci run"

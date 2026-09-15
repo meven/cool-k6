@@ -20,6 +20,7 @@ nothing is lost and you can swap back by id.
     ./cool-use-build status                what is installed in the tree now
     ./cool-use-build save [id]             snapshot the tree's build (default: git HEAD)
     ./cool-use-build use <id>              install a snapshot (saving the current one)
+    ./cool-use-build mark [id]             label the build already in the tree (default: git HEAD)
     ./cool-use-build run-cmd               print a coolwsd command that skips make
     ./cool-use-build run-cmd --singlekit   the same, for a one-document capture
 
@@ -329,6 +330,28 @@ def cmd_run_cmd(single_kit: bool = False) -> int:
     return 0
 
 
+def cmd_mark(argv: list[str]) -> int:
+    """Record that the tree's build is <id>, copying nothing.
+
+    A build made in the tree is already installed, so `use` would copy 4 GB
+    onto the identical files. Only the marker is missing, and without it
+    cool-ci labels the run from a stale one."""
+    t = tree()
+    ident = argv[0] if argv else head_commit(t)
+    if not ident:
+        die("no id given and the tree's HEAD is unknown: pass one explicitly")
+    if not (t / "coolwsd").exists():
+        die(f"the tree has no coolwsd: {t} holds no build to mark")
+    (t / MARKER).write_text(json.dumps({
+        "id": ident,
+        "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "from": str(t),
+        "coolwsd_size": (t / "coolwsd").stat().st_size,
+    }, indent=2) + "\n")
+    print(f"the tree's build is now labelled {ident}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     cmd = argv[0] if argv else "status"
     rest = argv[1:]
@@ -343,6 +366,8 @@ def main(argv: list[str]) -> int:
         return cmd_save(rest)
     if cmd == "use":
         return cmd_use(rest)
+    if cmd == "mark":
+        return cmd_mark(rest)
     if cmd == "run-cmd":
         return cmd_run_cmd("--singlekit" in rest)
     die(f"unknown command: {cmd}\nrun with --help for usage")
