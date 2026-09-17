@@ -698,18 +698,18 @@ DASHBOARD = r"""<!doctype html>
 <style>
   :root{ --surface:#fcfcfb; --panel:#fff; --ink:#0b0b0b; --ink-soft:#52514e;
     --ink-faint:#8a8880; --grid:#e6e6e2; --hair:#dcdbd5; --accent:#2a78d6;
-    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#5a6b7a; --mem:#7a4fc0; --bmem:#d64f9a; --wmem:#b8860b; --ibar-wsd:#8fb8e0; --ibar-kit:#c9b3e6; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
+    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#5a6b7a; --s4:#d11a45; --s5:#0e8aa8; --mem:#7a4fc0; --bmem:#d64f9a; --wmem:#b8860b; --ibar-wsd:#8fb8e0; --ibar-kit:#c9b3e6; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
     --app-writer:#2a6cc9; --app-calc:#1a9e4b; --app-impress:#e8710a; --app-draw:#e0a80f;
     --shadow:0 1px 2px rgba(11,11,11,.06),0 8px 24px rgba(11,11,11,.05); }
   @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
     --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee; --ink-soft:#c3c2b7;
     --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35; --accent:#3987e5;
-    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --mem:#9f7be6; --bmem:#e07bb0; --wmem:#d8a72a; --ibar-wsd:#2f4f6e; --ibar-kit:#4a3a63; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
+    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --mem:#9f7be6; --bmem:#e07bb0; --wmem:#d8a72a; --ibar-wsd:#2f4f6e; --ibar-kit:#4a3a63; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
     --app-writer:#5a9bea; --app-calc:#35c46f; --app-impress:#ff9440; --app-draw:#f2c94c;
     --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35); }}
   :root[data-theme=dark]{ --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee;
     --ink-soft:#c3c2b7; --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35;
-    --accent:#3987e5; --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --mem:#9f7be6; --wmem:#d8a72a;
+    --accent:#3987e5; --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --mem:#9f7be6; --wmem:#d8a72a;
     --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35); }
   body{margin:0;background:var(--surface);color:var(--ink);line-height:1.5;
     font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;}
@@ -753,6 +753,7 @@ DASHBOARD = r"""<!doctype html>
   .line.document_loaded_ms{stroke:var(--s0);} .line.frame_ready_ms{stroke:var(--s3);}
   .line.page_load_ms{stroke:var(--s1);}
   .line.edit_ms{stroke:var(--s2);} .line.cool_mem{stroke:var(--mem);} .line.browser_mem{stroke:var(--bmem);}
+  .line.first_content_ms{stroke:var(--s4);} .line.js_ready_ms{stroke:var(--s5);}
   .line.master_mem{stroke:var(--wmem);stroke-dasharray:2 3;}
   .ibar{stroke:none;fill-opacity:.55;} .ibar.wsd{fill:var(--ibar-wsd);} .ibar.kit{fill:var(--ibar-kit);}
   .sbar{stroke:none;fill-opacity:.85;} .sbar.lib{fill:var(--st-lib);} .sbar.other{fill:var(--st-other);}
@@ -761,6 +762,7 @@ DASHBOARD = r"""<!doctype html>
   .dot.document_loaded_ms{fill:var(--s0);} .dot.frame_ready_ms{fill:var(--s3);}
   .dot.page_load_ms{fill:var(--s1);}
   .dot.edit_ms{fill:var(--s2);} .dot.cool_mem{fill:var(--mem);} .dot.browser_mem{fill:var(--bmem);}
+  .dot.first_content_ms{fill:var(--s4);} .dot.js_ready_ms{fill:var(--s5);}
   .dot.master_mem{fill:var(--wmem);}
   .dot:hover{r:6;} .dot:focus-visible{outline:2px solid var(--ink);outline-offset:1px;}
   /* a run captured under perf: ringed, since profiling inflates its own times */
@@ -821,9 +823,11 @@ DASHBOARD = r"""<!doctype html>
 </style></head><body>
 <div class="wrap">
   <h1>Collabora Online browser tests</h1>
-  <p class="sub">One chart per document and user pool, tracked across commits. Left axis: load and edit times (ms). Right axis: memory (MB), the document's own footprint, the browser heap, and the coolwsd process peak. Click a point for detail.</p>
+  <p class="sub">One chart per document and user pool, tracked across commits. Left axis: load, feedback and edit times (ms). Right axis: memory (MB), the document's own footprint, the browser heap, and the coolwsd process peak. Click a point for detail.</p>
   <div class="legend">
     <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s0)" stroke-width="2.5"/></svg> frame ready</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s4)" stroke-width="2.5"/></svg> first content</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s5)" stroke-width="2.5"/></svg> js ready</span>
     <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s1)" stroke-width="2.5"/></svg> page load</span>
     <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s2)" stroke-width="2.5"/></svg> edit</span>
     <span class="sep"></span>
@@ -856,8 +860,8 @@ the document, and is the figure a memory limit has to accommodate. The stacked b
 <script>
 const DATA = __DATA__;
 const SVGNS = "http://www.w3.org/2000/svg";
-const MS = [{m:"document_loaded_ms"},{m:"frame_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"}];
-const NAMES={document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",page_load_ms:"page load",edit_ms:"edit",cool_mem:"COOL memory",browser_mem:"browser heap",master_mem:"coolwsd peak"};
+const MS = [{m:"document_loaded_ms"},{m:"frame_ready_ms"},{m:"first_content_ms"},{m:"js_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"}];
+const NAMES={document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",cool_mem:"COOL memory",browser_mem:"browser heap",master_mem:"coolwsd peak"};
 const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","5mb","10mb","ooxml"];
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
 function niceStep(s){if(s<=0)return 1;const r=s/4,m=Math.pow(10,Math.floor(Math.log10(r))),n=r/m;return (n<=1?1:n<=2?2:n<=5?5:10)*m;}
