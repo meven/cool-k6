@@ -56,14 +56,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 APPS = ("writer", "calc", "impress", "draw")
-DOCS = ("blank", "5mb", "10mb", "ooxml")
+DOCS = ("blank", "5mb", "10mb", "ooxml", "image5mb")
 
 # What each application has to open. "ooxml" is the same content as "5mb" in the Microsoft
 # format, so the two read as a comparison of the formats; Draw has no such format of its own,
 # so there is no document to open for it and no chart for it either. "10mb" is the document
-# the service-level requirement is written about, so only Writer has one.
+# one service-level requirement is written about, and "image5mb" opens a blank text document
+# and inserts a 5 MB image into it, which is the other one, so only Writer has either.
 DOCS_BY_APP = {
-    "writer": ("blank", "5mb", "10mb", "ooxml"),
+    "writer": ("blank", "5mb", "10mb", "ooxml", "image5mb"),
     "calc": ("blank", "5mb", "ooxml"),
     "impress": ("blank", "5mb", "ooxml"),
     "draw": ("blank", "5mb"),
@@ -407,7 +408,21 @@ def met_requirement(out: Path) -> tuple[bool, str | None]:
         req = json.loads((out / "metrics.json").read_text()).get("requirement")
     except Exception:
         return True, None
-    if not isinstance(req, dict) or req.get("ok"):
+    if not isinstance(req, dict):
+        return True, None
+
+    # The sample count is read before the verdict, not after it. A run that
+    # recorded nothing is not a run that was fast, and an empty k6 trend reports
+    # zero for every statistic, which any budget accepts. Keep the two apart in
+    # a CI log: a budget missed is a regression, a budget never measured is a
+    # broken scenario, or a dist/ built before the counters existed.
+    if not req.get("samples"):
+        return False, (
+            f"recorded no {req.get('metric')} at all, so its "
+            f"{req.get('max_ms')} ms budget was never tested. A scenario that "
+            f"ended early does this, and so does a stale dist/ "
+            f"(npm run build)")
+    if req.get("ok"):
         return True, None
 
     value = req.get("value")
@@ -670,6 +685,8 @@ def demo_history() -> dict:
                          "browser_heap_mb": _stat(base_bh * drift * j())}
                     if users > 1:
                         m["edit_ms"] = _stat(190 * big * drift * j())
+                    if doc == "image5mb":
+                        m["image_displayed_ms"] = _stat(1400 * drift * j())
                     pts.append({
                         "commit": commit,
                         "ts": f"2026-08-{8 + i:02d}T09:00:00+00:00",
@@ -698,18 +715,18 @@ DASHBOARD = r"""<!doctype html>
 <style>
   :root{ --surface:#fcfcfb; --panel:#fff; --ink:#0b0b0b; --ink-soft:#52514e;
     --ink-faint:#8a8880; --grid:#e6e6e2; --hair:#dcdbd5; --accent:#2a78d6;
-    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#5a6b7a; --s4:#d11a45; --s5:#0e8aa8; --mem:#7a4fc0; --bmem:#d64f9a; --wmem:#b8860b; --ibar-wsd:#8fb8e0; --ibar-kit:#c9b3e6; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
+    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#5a6b7a; --s4:#d11a45; --s5:#0e8aa8; --s6:#a3199b; --mem:#7a4fc0; --bmem:#d64f9a; --wmem:#b8860b; --ibar-wsd:#8fb8e0; --ibar-kit:#c9b3e6; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
     --app-writer:#2a6cc9; --app-calc:#1a9e4b; --app-impress:#e8710a; --app-draw:#e0a80f;
     --shadow:0 1px 2px rgba(11,11,11,.06),0 8px 24px rgba(11,11,11,.05); }
   @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
     --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee; --ink-soft:#c3c2b7;
     --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35; --accent:#3987e5;
-    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --mem:#9f7be6; --bmem:#e07bb0; --wmem:#d8a72a; --ibar-wsd:#2f4f6e; --ibar-kit:#4a3a63; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
+    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --s6:#e36fd6; --mem:#9f7be6; --bmem:#e07bb0; --wmem:#d8a72a; --ibar-wsd:#2f4f6e; --ibar-kit:#4a3a63; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
     --app-writer:#5a9bea; --app-calc:#35c46f; --app-impress:#ff9440; --app-draw:#f2c94c;
     --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35); }}
   :root[data-theme=dark]{ --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee;
     --ink-soft:#c3c2b7; --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35;
-    --accent:#3987e5; --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --mem:#9f7be6; --wmem:#d8a72a;
+    --accent:#3987e5; --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --s6:#e36fd6; --mem:#9f7be6; --wmem:#d8a72a;
     --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35); }
   body{margin:0;background:var(--surface);color:var(--ink);line-height:1.5;
     font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;}
@@ -754,6 +771,7 @@ DASHBOARD = r"""<!doctype html>
   .line.page_load_ms{stroke:var(--s1);}
   .line.edit_ms{stroke:var(--s2);} .line.cool_mem{stroke:var(--mem);} .line.browser_mem{stroke:var(--bmem);}
   .line.first_content_ms{stroke:var(--s4);} .line.js_ready_ms{stroke:var(--s5);}
+  .line.image_displayed_ms{stroke:var(--s6);}
   .line.master_mem{stroke:var(--wmem);stroke-dasharray:2 3;}
   .ibar{stroke:none;fill-opacity:.55;} .ibar.wsd{fill:var(--ibar-wsd);} .ibar.kit{fill:var(--ibar-kit);}
   .sbar{stroke:none;fill-opacity:.85;} .sbar.lib{fill:var(--st-lib);} .sbar.other{fill:var(--st-other);}
@@ -763,6 +781,7 @@ DASHBOARD = r"""<!doctype html>
   .dot.page_load_ms{fill:var(--s1);}
   .dot.edit_ms{fill:var(--s2);} .dot.cool_mem{fill:var(--mem);} .dot.browser_mem{fill:var(--bmem);}
   .dot.first_content_ms{fill:var(--s4);} .dot.js_ready_ms{fill:var(--s5);}
+  .dot.image_displayed_ms{fill:var(--s6);}
   .dot.master_mem{fill:var(--wmem);}
   .dot:hover{r:6;} .dot:focus-visible{outline:2px solid var(--ink);outline-offset:1px;}
   /* a run captured under perf: ringed, since profiling inflates its own times */
@@ -860,9 +879,9 @@ the document, and is the figure a memory limit has to accommodate. The stacked b
 <script>
 const DATA = __DATA__;
 const SVGNS = "http://www.w3.org/2000/svg";
-const MS = [{m:"document_loaded_ms"},{m:"frame_ready_ms"},{m:"first_content_ms"},{m:"js_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"}];
-const NAMES={document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",cool_mem:"COOL memory",browser_mem:"browser heap",master_mem:"coolwsd peak"};
-const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","5mb","10mb","ooxml"];
+const MS = [{m:"document_loaded_ms"},{m:"frame_ready_ms"},{m:"first_content_ms"},{m:"js_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"},{m:"image_displayed_ms"}];
+const NAMES={document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",image_displayed_ms:"image displayed",cool_mem:"COOL memory",browser_mem:"browser heap",master_mem:"coolwsd peak"};
+const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","5mb","10mb","ooxml","image5mb"];
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
 function niceStep(s){if(s<=0)return 1;const r=s/4,m=Math.pow(10,Math.floor(Math.log10(r))),n=r/m;return (n<=1?1:n<=2?2:n<=5?5:10)*m;}
 function niceCeil(v){return Math.ceil(v/niceStep(v))*niceStep(v);}

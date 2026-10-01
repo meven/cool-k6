@@ -107,10 +107,14 @@ scripts default to one iteration unless stated otherwise.
   `browser-suite.py` runs: each opens one document of the generated corpus
   and records `page_load_ms`, `frame_ready_ms` (the client shell),
   `document_loaded_ms` (the document open and editable) and the browser heap.
-  `cool-browser-writer-10mb-test.js` is the one that asserts rather than
-  only records: the 98th percentile of `document_loaded_ms` over a 5000 ms
-  budget, as a k6 threshold. `USERS`, `ITERATIONS` and `MAXDUR` set how many
-  opens it takes and how long it may take them.
+  Two of them assert rather than only record, each as a k6 threshold:
+  `cool-browser-writer-10mb-test.js` holds the 98th percentile of
+  `document_loaded_ms` to 5000 ms, and `cool-browser-writer-image5mb-test.js`
+  opens a blank text document, inserts a 5 MB image from the local file system
+  through the Insert > Image file input, and holds the 98th percentile of
+  `image_displayed_ms`, the wait until the document shows the image, to
+  2000 ms. `USERS`, `ITERATIONS` and `MAXDUR` set how many opens or inserts
+  each takes and how long it may take them.
 
 The image lists the bundled scripts when run with no argument:
 

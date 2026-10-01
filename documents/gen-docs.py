@@ -21,8 +21,11 @@ that size holds.
 
 Dependencies (see documents/requirements.txt):
     python3 -m pip install odfpy Pillow matplotlib numpy
+It also writes one standalone image of the same size (image-5mb.png), which the
+insert-image test inserts into an open document from the local file system.
+
 Run:
-    python3 documents/gen-docs.py            # all apps, ~5 MB each
+    python3 documents/gen-docs.py            # all apps, ~5 MB each, plus the image
     python3 documents/gen-docs.py --apps writer --mb 10 --report --no-ooxml
     python3 documents/gen-docs.py --mb 2     # smaller, for a quick check
 """
@@ -356,6 +359,29 @@ OOXML = {"writer": ("odt", "docx"),
          "impress": ("odp", "pptx")}
 
 
+def build_image(target: int, label: str) -> None:
+    """A single photograph of about the target size, for the insert-image test.
+
+    That test inserts a file from the local file system, so what has to be right is
+    the size of the file on disk. Noise is what no encoder can shrink, so the
+    encoded PNG lands close to the target, and each pass corrects the pixel count
+    from what the encoder actually produced.
+    """
+    data = b""
+    pixels = target / 3.05  # random RGB costs about that many bytes per pixel as PNG
+    for _ in range(4):
+        width = max(64, round((pixels * 1.4) ** 0.5))  # 1.4:1, a landscape photograph
+        height = max(64, round(width / 1.4))
+        data = photo_png(width, height)
+        if abs(len(data) - target) <= target * 0.02:
+            break
+        pixels *= target / len(data)
+    path = OUT / f"image-{label}.png"
+    path.write_bytes(data)
+    print(f"image: {path.name} written to {OUT} "
+          f"({len(data) / (1024 * 1024):.1f} MB, {width}x{height})")
+
+
 def convert_to_ooxml(app: str, label: str) -> bool:
     """Write the big document of @p app again in the Microsoft format, by converting the one
     just written. Converting rather than building it again is what makes the two comparable:
@@ -402,6 +428,9 @@ def main() -> None:
                          "of contents, and photographs rather than the noise the other "
                          "documents pad with, so the size comes from dozens of images and "
                          "the document runs to the page count that size implies")
+    ap.add_argument("--image", action=argparse.BooleanOptionalAction, default=True,
+                    help="also write a standalone image of that size (image-5mb.png), "
+                         "which the insert-image test inserts from the local file system")
     ap.add_argument("--ooxml", action=argparse.BooleanOptionalAction, default=True,
                     help="also write the big documents in the Microsoft formats, by "
                          "converting them with a desktop LibreOffice")
@@ -419,6 +448,8 @@ def main() -> None:
         print(f"{app}: blank + ~{args.mb:g} MB document written to {OUT}")
         if args.ooxml:
             convert_to_ooxml(app, label)
+    if args.image:
+        build_image(target, label)
 
 
 if __name__ == "__main__":
