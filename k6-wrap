@@ -37,5 +37,6 @@ docker run --network "${COOL_K6_DOCKER_NETWORK:-host}" \
        -e EDITS \
        -e FILE_ID \
        -e COMMIT \
+       -e FEEDBACK_SLA_MS \
        grafana/k6:1.7.1-with-browser \
        "$@"
