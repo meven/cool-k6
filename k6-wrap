@@ -35,6 +35,7 @@ docker run --network "${COOL_K6_DOCKER_NETWORK:-host}" \
        -e MAXDUR \
        -e EDIT \
        -e EDITS \
+       -e DUPLICATES \
        -e FILE_ID \
        -e COMMIT \
        -e FEEDBACK_SLA_MS \
