@@ -6,9 +6,11 @@ import bodyParser from 'body-parser';
 import indexRouter from './routes/index.js';
 import wopiRouter from './routes/wopi.js';
 
-// maximum request body size handled by the bodyParser package
-// increase it if you need to handle larger files
-const maxDocumentSize = '100kb';
+// Maximum request body size handled by the bodyParser package, which bounds
+// the document a save (PutFile) may carry. A save that is refused makes
+// coolwsd switch every session on that document to read-only, so this has to
+// be above the biggest document in the corpus, the 10 MB report with room.
+const maxDocumentSize = '200mb';
 
 let app = express();
 export default app;

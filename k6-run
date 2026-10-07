@@ -6,7 +6,7 @@ p=`dirname $0`
 SKIP_TLS_VERIFY=0
 # This is used by Node. If it is set to "0" we'll disable TLS
 # verification. This insecure mode allow using test environments.
-if test "$NODE_TLS_REJECT_UNAUTHORIZED" == "0"; then
+if test "$NODE_TLS_REJECT_UNAUTHORIZED" = "0"; then
     SKIP_TLS_VERIFY=1
 fi
 
