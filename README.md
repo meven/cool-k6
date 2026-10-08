@@ -43,6 +43,10 @@ python3 -m pip install -r documents/requirements.txt
 ./documents/gen-docs.py --apps writer --mb 10 --report --no-ooxml
 ```
 
+`gen-docs.py` also writes one standalone image of the same size,
+`image-5mb.png`, which the insert-image test inserts into an open document.
+`--no-image` skips it.
+
 The size names the document, so the second line writes `writer-10mb.odt`
 beside the 5 MB one rather than over it. The conversion needs a system
 LibreOffice, and `--no-ooxml` skips it. An Online engine build refuses
@@ -57,9 +61,11 @@ a table of contents that lists all 46. That is the document the requirement
 below is written about, and it puts the load time where a real document puts
 it, in the layout rather than in seven bitmaps.
 
-## The service-level requirement
+## The service-level requirements
 
-One test asserts a service level rather than only recording numbers:
+Two tests assert a service level rather than only recording numbers.
+
+### Opening a 10 MB document
 
 > After clicking on a 10 MB Office document in the cloud storage, editing in
 > the WebOffice web client must be possible for at least 98% of all users
@@ -89,6 +95,42 @@ is an explicit one:
 ```shell
 USERS=10 ITERATIONS=100 MAXDUR=30m ./k6-run dist/cool-browser-writer-10mb-test.js
 ```
+
+### Inserting a 5 MB image
+
+> After inserting a 5 MB image from the local file system into a text document
+> that has already been fully loaded in WebOffice, the inserted image must be
+> displayed in the WebOffice document within a maximum of 2 seconds for at
+> least 98% of all users.
+
+`src/cool-browser-writer-image5mb-test.js` opens `documents/blank.odt`, waits
+until it is loaded and the page has stopped changing, inserts
+`documents/image-5mb.png` through the file input behind Insert > Image, and
+holds the 98th percentile of `image_displayed_ms` to 2000 ms.
+
+The image is read from the local file system by the test and handed to that
+input, which is the path a person takes through the file picker, so the number
+covers what a person waits for: the upload of the file, the insert in core, and
+the tile that comes back. The clock runs from the input's `change` event, the
+moment the client holds the picked file, to the first animation frame in which
+the document canvas shows it, both taken in the page.
+
+This test opens the document directly rather than through the WOPI host page,
+because it reads the client's own page: the file input and the document canvas.
+Nested in the host page the client is a frame of another origin, where neither
+is reachable. The client posts no `App_LoadingStatus` to a host it does not
+have, so this test's `document_loaded_ms` is the document being open and still
+rather than the `Document_Loaded` message the other tests take it from.
+
+The same percentile arithmetic applies, so the run that answers it properly is
+again an explicit one:
+
+```shell
+USERS=10 ITERATIONS=100 MAXDUR=30m ./k6-run dist/cool-browser-writer-image5mb-test.js
+```
+
+`IMAGE` names another file to insert and `FILE_ID` another document to insert
+it into, both relative to the WOPI host's table in `server/routes/files.json`.
 
 ## Adding test
 
