@@ -10,6 +10,9 @@ For each Collabora Online application it writes two files under documents/:
       Calc     several sheets of data tables plus rendered charts
       Impress  slides with titles, text, images and drawn shapes
       Draw     pages of drawn shapes (rectangles, ellipses, lines) and images
+  - for Impress also impress-duplicate.odp, the deck the slide-duplication
+    requirement is measured on: every slide carries formatted text, a
+    photograph and five drawing objects (arrows, a circle, rectangles).
 
 Size is driven by embedded raster images (ODF compresses text and cells well,
 so images are what make a file big), padded until the embedded-image bytes
@@ -49,13 +52,14 @@ from odf.opendocument import (OpenDocumentText, OpenDocumentSpreadsheet,
 from odf.style import (Style, TextProperties, ParagraphProperties,
                        GraphicProperties, MasterPage, PageLayout,
                        PageLayoutProperties, TabStops, TabStop)
-from odf.text import (P, H, Tab, TableOfContent, TableOfContentSource,
+from odf.text import (P, H, Span, Tab, TableOfContent, TableOfContentSource,
                       IndexTitleTemplate, TableOfContentEntryTemplate, IndexBody,
                       IndexTitle, IndexEntryLinkStart, IndexEntryChapter,
                       IndexEntryText, IndexEntryTabStop, IndexEntryPageNumber,
                       IndexEntryLinkEnd)
 from odf.table import Table, TableColumn, TableRow, TableCell
-from odf.draw import Page, Frame, Image, Rect, Ellipse, Line, Polygon, TextBox
+from odf.draw import (Page, Frame, Image, Rect, Ellipse, Line, Polygon, TextBox,
+                      CustomShape, EnhancedGeometry)
 
 OUT = Path(__file__).resolve().parent
 RNG = random.Random(20260813)
@@ -315,6 +319,101 @@ def build_impress(target: int, blank: bool, label: str) -> None:
     doc.save(str(OUT / f"impress-{label}.odp"))
 
 
+# The deck the slide-duplication requirement is measured on. It is not sized: what matters is
+# what one slide holds, which the requirement spells out as formatted text, a photo and five
+# drawing objects such as arrows, circles and rectangles. Every slide is built the same way,
+# so whichever slide is current when the test duplicates it, it duplicates that.
+DUPLICATE_SLIDES = 12
+
+
+def _text_style(doc, name: str, **props) -> Style:
+    st = Style(name=name, family="text")
+    st.addElement(TextProperties(**props))
+    doc.automaticstyles.addElement(st)
+    return st
+
+
+def _graphic_style(doc, name: str, **props) -> Style:
+    st = Style(name=name, family="graphic")
+    st.addElement(GraphicProperties(**props))
+    doc.automaticstyles.addElement(st)
+    return st
+
+
+def build_impress_duplicate() -> None:
+    doc = OpenDocumentPresentation()
+    _draw_master(doc)
+
+    bold = _text_style(doc, "TBold", fontweight="bold")
+    italic = _text_style(doc, "TItalic", fontstyle="italic")
+    red = _text_style(doc, "TRed", color="#c9211e", fontweight="bold")
+    blue = _text_style(doc, "TBlue", color="#2a6099", textunderlinestyle="solid",
+                       textunderlinewidth="auto", textunderlinecolor="font-color")
+    big = Style(name="PTitle", family="paragraph")
+    big.addElement(TextProperties(fontsize="32pt", fontweight="bold"))
+    doc.automaticstyles.addElement(big)
+    body = Style(name="PBody", family="paragraph")
+    body.addElement(TextProperties(fontsize="18pt"))
+    doc.automaticstyles.addElement(body)
+
+    # One graphic style per drawing object, so each is its own colour, the way a hand-drawn
+    # slide is.
+    # Text frames are plain, so the fill a default graphic style would give them does not
+    # read as a sixth drawing object.
+    plain = _graphic_style(doc, "GText", fill="none", stroke="none")
+    fills = ["#3465a4", "#e8a202", "#77bc65", "#ff6d6d", "#8e86ae"]
+    shapes = [_graphic_style(doc, f"GShape{i}", fill="solid", fillcolor=c, stroke="solid",
+                             strokecolor="#1c1c1c", strokewidth="0.05cm")
+              for i, c in enumerate(fills)]
+
+    def arrow(kind: str, style: Style, **kw) -> CustomShape:
+        shape = CustomShape(stylename=style, **kw)
+        shape.addElement(EnhancedGeometry(type=kind))
+        return shape
+
+    for n in range(DUPLICATE_SLIDES):
+        page = Page(masterpagename="Standard")
+
+        title = Frame(stylename=plain, width="24cm", height="2.5cm", x="2cm", y="0.8cm")
+        tb = TextBox()
+        head = P(stylename=big)
+        head.addText(f"Slide {n + 1}: ")
+        head.addElement(Span(stylename=red, text=prose(2).rstrip(".")))
+        tb.addElement(head)
+        title.addElement(tb)
+        page.addElement(title)
+
+        text = Frame(stylename=plain, width="12cm", height="9cm", x="2cm", y="4cm")
+        tb = TextBox()
+        for _ in range(3):
+            para = P(stylename=body)
+            para.addElement(Span(stylename=bold, text=prose(3) + " "))
+            para.addText(prose(6) + " ")
+            para.addElement(Span(stylename=italic, text=prose(4) + " "))
+            para.addElement(Span(stylename=blue, text=prose(3)))
+            tb.addElement(para)
+        text.addElement(tb)
+        page.addElement(text)
+
+        page.addElement(frame(doc, photo_jpeg(1200, 800), 11, 7.3, mime="image/jpeg",
+                              x="15cm", y="4cm"))
+
+        # The five drawing objects: two arrows, a circle, two rectangles.
+        page.addElement(arrow("right-arrow", shapes[0], width="4cm", height="1.6cm",
+                              x="2cm", y="16.6cm"))
+        page.addElement(arrow("left-arrow", shapes[1], width="4cm", height="1.6cm",
+                              x="7cm", y="16.6cm"))
+        page.addElement(Ellipse(stylename=shapes[2], width="3cm", height="3cm",
+                                x="12cm", y="15.9cm"))
+        page.addElement(Rect(stylename=shapes[3], width="4.5cm", height="2.5cm",
+                             x="16cm", y="16.1cm"))
+        page.addElement(Rect(stylename=shapes[4], width="4.5cm", height="2.5cm",
+                             x="21.5cm", y="16.1cm"))
+        doc.presentation.addElement(page)
+
+    doc.save(str(OUT / "impress-duplicate.odp"))
+
+
 def build_draw(target: int, blank: bool, label: str) -> None:
     doc = OpenDocumentDrawing()
     _draw_master(doc)
@@ -448,6 +547,9 @@ def main() -> None:
         print(f"{app}: blank + ~{args.mb:g} MB document written to {OUT}")
         if args.ooxml:
             convert_to_ooxml(app, label)
+        if app == "impress":
+            build_impress_duplicate()
+            print(f"impress: {DUPLICATE_SLIDES}-slide impress-duplicate.odp written to {OUT}")
     if args.image:
         build_image(target, label)
 

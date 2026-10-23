@@ -11,10 +11,11 @@ the numbers attributable to one known commit. See
 
 ## What one run produces
 
-For each of the 13 test scenarios (writer, calc and impress each blank, 5 MB
+For each of the 14 test scenarios (writer, calc and impress each blank, 5 MB
 and 5 MB in the Microsoft format, draw blank and 5 MB, the 10 MB Writer
-document one service-level requirement is written about, and the 5 MB image
-insert the other one is written about):
+document the load-time requirement is written about, the 5 MB image insert
+the second requirement is written about, and the Impress deck the
+slide-duplication requirement is measured on):
 
 * page-load, frame-ready and edit times, plus the browser JS heap, from the k6
   browser test
@@ -432,13 +433,15 @@ A thin or failed capture shows up as a failing JUnit testcase, which Jenkins
 reports as **unstable** rather than failed. The build only fails outright when
 every document failed, or when you pass `--strict`.
 
-Two scenarios also carry a service level (see "The service-level requirements"
-in the README): the 10 MB Writer document, whose 98th percentile of
-document-loaded has to stay under 5 seconds, and the 5 MB image insert, whose
-98th percentile of image-displayed has to stay under 2 seconds. A run that
-completes but misses its budget fails its testcase the same way, with the
-measured percentile in the message. A suite pass runs each a handful of times
-per user pool, which is too few for a 98th percentile to mean anything, so
+Three scenarios also carry a service level (see "The service-level
+requirements" in the README): the 10 MB Writer document, whose 98th percentile
+of document-loaded has to stay under 5 seconds, the 5 MB image insert, whose
+98th percentile of image-displayed has to stay under 2 seconds, and the Impress
+deck, in which duplicating a slide has to be painted on the canvas within
+1 second at the 98th percentile. A run that completes but misses its budget
+fails its testcase the same way, with the measured percentile in the message.
+A suite pass runs each a handful of times per user pool (and duplicates five
+slides per open), which is too few for a 98th percentile to mean anything, so
 treat those as a smoke test and run the scenario explicitly for the answer.
 
 ## Exposing the results durably

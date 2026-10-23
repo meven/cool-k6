@@ -107,7 +107,7 @@ scripts default to one iteration unless stated otherwise.
   `browser-suite.py` runs: each opens one document of the generated corpus
   and records `page_load_ms`, `frame_ready_ms` (the client shell),
   `document_loaded_ms` (the document open and editable) and the browser heap.
-  Two of them assert rather than only record, each as a k6 threshold:
+  Three of them assert rather than only record, each as a k6 threshold:
   `cool-browser-writer-10mb-test.js` holds the 98th percentile of
   `document_loaded_ms` to 5000 ms, and `cool-browser-writer-image5mb-test.js`
   opens a blank text document, inserts a 5 MB image from the local file system
@@ -115,6 +115,10 @@ scripts default to one iteration unless stated otherwise.
   `image_displayed_ms`, the wait until the document shows the image, to
   2000 ms. `USERS`, `ITERATIONS` and `MAXDUR` set how many opens or inserts
   each takes and how long it may take them.
+  `cool-browser-impress-duplicate-test.js` (file ID `23`) asserts the third:
+  once its deck is open and settled it duplicates the current slide
+  `DUPLICATES` times (default 5) and holds the 98th percentile of
+  `slide_duplicated_ms`, the new slide painted on the canvas, to 1000 ms.
 
 The image lists the bundled scripts when run with no argument:
 

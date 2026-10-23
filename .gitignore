@@ -23,6 +23,7 @@ __pycache__/
 # formats converted from it, about 60 MB in all. The blank documents are small
 # enough to commit and are tracked.
 documents/*mb.*
+documents/impress-duplicate.odp
 
 # The WOPI host's TLS pair, generated per checkout (see the README). A browser
 # test needs the host on https, since the host page refuses to submit to a COOL

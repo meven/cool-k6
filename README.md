@@ -34,8 +34,9 @@ Start with `PERFORMANCE_TESTING.md` to run a test by hand, and with
 The corpus is generated, not committed: `documents/gen-docs.py` builds the
 ~5 MB Writer, Calc, Impress and Draw documents, then converts them to `.docx`,
 `.xlsx` and `.pptx`, so a format comparison measures the format rather than two
-different documents. The small `blank.od*` files are committed since they are a
-few kilobytes each.
+different documents. For Impress it also builds `impress-duplicate.odp`, the
+deck the slide-duplication requirement is measured on. The small `blank.od*`
+files are committed since they are a few kilobytes each.
 
 ```shell
 python3 -m pip install -r documents/requirements.txt
@@ -63,7 +64,7 @@ it, in the layout rather than in seven bitmaps.
 
 ## The service-level requirements
 
-Two tests assert a service level rather than only recording numbers.
+Three tests assert a service level rather than only recording numbers.
 
 ### Opening a 10 MB document
 
@@ -131,6 +132,42 @@ USERS=10 ITERATIONS=100 MAXDUR=30m ./k6-run dist/cool-browser-writer-image5mb-te
 
 `IMAGE` names another file to insert and `FILE_ID` another document to insert
 it into, both relative to the WOPI host's table in `server/routes/files.json`.
+
+### Duplicating a slide
+
+> Duplicating a slide (formatted text, a photo, five drawing objects such as
+> arrows, circles, rectangles) from a presentation file that has already been
+> fully loaded into WebOffice is completed after 1 second for 98% of all
+> users.
+
+`src/cool-browser-impress-duplicate-test.js` opens
+`documents/impress-duplicate.odp`, a deck whose every slide holds exactly
+that, waits for the document to settle, duplicates the current slide
+`DUPLICATES` times (default 5), and holds the 98th percentile of
+`slide_duplicated_ms` to 1000 ms. Collabora Online sends no "done" for
+`.uno:DuplicatePage`, so completion is read off the client, from inside its
+frame: `slide_duplicated_ms` is the new slide painted on the main canvas, the
+view switched to it and every visible tile of it drawn. That is the moment the
+user sees the duplicate. The signals on the way there are recorded beside it:
+`slide_confirmed_ms` (the server's status message with one more slide),
+`slide_shown_ms` (the view switched), `slide_thumbnail_ms` (the slide sorter
+shows its thumbnail, absent when the sorter does not show that slide) and
+`slide_status_ms` (the status bar says so, which trails the rest by hundreds of
+milliseconds because core coalesces state changes). `lib/duplicate_slide_probe.js`
+documents each one.
+
+The suite's multi-user pass has every user in the same document, so each
+one's duplicates land in everyone's deck. The probe therefore follows the new
+slide by identity, not by position, and the deck grows through a run. That is
+why the count per open is kept small and the requirement run takes its samples
+from many opens:
+
+```shell
+USERS=5 ITERATIONS=20 MAXDUR=30m ./k6-run dist/cool-browser-impress-duplicate-test.js
+```
+
+Measured here against a local build: 55 to 70 ms per duplicate with one user,
+100 to 270 ms with three users in the same deck.
 
 ## Adding test
 

@@ -21,6 +21,7 @@
     "18": { "path": "documents/draw-5mb.odg", "readonly": false },
 
     "22": { "path": "documents/writer-10mb.odt", "readonly": false },
+    "23": { "path": "documents/impress-duplicate.odp", "readonly": false },
 
     "19": { "path": "documents/writer-5mb.docx", "readonly": false },
     "20": { "path": "documents/calc-5mb.xlsx", "readonly": false },
