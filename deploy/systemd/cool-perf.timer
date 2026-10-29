@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Collabora Online performance run
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+# A night missed while the machine was off runs once at the next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

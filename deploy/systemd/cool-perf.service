@@ -1,0 +1,19 @@
+[Unit]
+Description=Build Collabora Online main and measure it with the performance suite
+Documentation=file://@REPO@/DEPLOY-VM.md
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+EnvironmentFile=/etc/cool-perf.env
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/deploy/nightly
+# An incremental engine build, the server build and the suite. The first night
+# after a large engine change can take a few hours.
+TimeoutStartSec=6h
+# Stop coolwsd, its kits and the WOPI host with the job.
+KillMode=control-group
