@@ -215,7 +215,12 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
                 "peak_doc_mem_mb": round(peak_doc / 1048576, 1) if peak_doc else None,
                 "peak_total_mem_mb": round(peak_total / 1048576, 1) if peak_total else None,
             }
-            mj.write_text(json.dumps(d, indent=2))
+            # metrics.json belongs to the k6 container's user, so opening it
+            # for writing here fails: write a file of our own and rename it
+            # over, which the run directory's own permissions allow.
+            tmp = mj.with_name(mj.name + ".tmp")
+            tmp.write_text(json.dumps(d, indent=2))
+            os.replace(tmp, mj)
         except Exception as exc:
             print(f"could not add memory to {mj}: {exc}", file=sys.stderr)
 
