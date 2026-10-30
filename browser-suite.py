@@ -662,9 +662,31 @@ def collect(results_dir: Path) -> dict:
             "flamegraph": flame, "profiled": profiled,
             "file": d.get("file") or files.get(f"{app}|{doc}"),
         })
-    for pts in scen.values():
-        pts.sort(key=lambda p: p["ts"])
+    for key, pts in scen.items():
+        scen[key] = _merge_profiled(pts)
+        scen[key].sort(key=lambda p: p["ts"])
     return scen
+
+
+def _merge_profiled(pts: list[dict]) -> list[dict]:
+    """Fold each profiled point into the plain point of the same run.
+
+    The plain point keeps its own times on the chart. The times measured under
+    perf move to profiled_metrics, for the run detail. Instructions and, when
+    the plain run has none, memory come from the capture. A profiled point with
+    no plain point in its run stays on the chart as it is."""
+    plain = {p["runid"]: p for p in pts if p["runid"] and not p["profiled"]}
+    out = []
+    for p in pts:
+        host = plain.get(p["runid"]) if p["profiled"] else None
+        if host is None:
+            out.append(p)
+            continue
+        host["profiled_metrics"] = p["metrics"]
+        host["instructions"] = host["instructions"] or p["instructions"]
+        host["cool_memory"] = host["cool_memory"] or p["cool_memory"]
+        host["flamegraph"] = host["flamegraph"] or p["flamegraph"]
+    return out
 
 
 def demo_history() -> dict:
@@ -817,6 +839,7 @@ DASHBOARD = r"""<!doctype html>
   th,td{text-align:right;padding:6px 12px;border-bottom:1px solid var(--hair);
     font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,monospace;}
   th:first-child,td:first-child{text-align:left;font-family:system-ui,sans-serif;}
+  tr.prof td{color:var(--ink-soft);}
   thead th{color:var(--ink-soft);font-weight:600;}
   #tip{position:fixed;z-index:60;pointer-events:none;background:var(--panel);color:var(--ink);
     border:1px solid var(--hair);border-radius:6px;padding:4px 8px;font-size:12px;box-shadow:var(--shadow);
@@ -888,7 +911,7 @@ the document, and is the figure a memory limit has to accommodate. The stacked b
     executed, the server on the left of a point and the document kit on the right, on their own
     scale since instructions share no axis with times or memory. They count only the window perf
     was attached for, which opens after the server is up, so they describe the test and not a whole
-    process life, and they move a lot from run to run. A rising line across commits is a regression. A ringed point was itself captured under perf, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
+    process life, and they move a lot from run to run. A rising line across commits is a regression. When a run was also captured under perf, its point shows the plain times and the run detail lists the times under perf beside them. A ringed point is a capture with no plain run beside it, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
 </div>
 <div id="tip" role="tooltip" hidden></div>
 <div class="modal" id="modal" hidden><div class="modal-card" id="mcard" role="dialog" aria-modal="true">
@@ -1105,6 +1128,9 @@ function openDetail(runs,i){
   let h='<table><thead><tr><th>metric</th>'+cols.map(c=>`<th>${c}</th>`).join("")+'</tr></thead><tbody>';
   Object.keys(r.metrics).forEach(name=>{const s=r.metrics[name]||{};
     h+=`<tr><td>${name.replace(/_ms$/,"")} (ms)</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
+  // the same test run again under perf for the flamegraph, slower by nature
+  Object.keys(r.profiled_metrics||{}).forEach(name=>{const s=r.profiled_metrics[name]||{};
+    h+=`<tr class="prof"><td>${name.replace(/_ms$/,"")} under perf (ms)</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
   const cm=r.cool_memory;
   const asMb=v=>v==null?null:Math.round(v);
   if(cm){
