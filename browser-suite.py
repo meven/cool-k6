@@ -651,12 +651,16 @@ def collect(results_dir: Path) -> dict:
         users = int(d.get("users", 1))
         ts = d.get("ts") or datetime.fromtimestamp(mj.stat().st_mtime,
                                                    timezone.utc).isoformat()
+        # k6 reports a trend with no samples as all zeros, and its count of 0 is the only
+        # sign of it, so such a trend is left out like a metric that was never written.
+        metrics = {k: v for k, v in d.get("metrics", {}).items()
+                   if not (isinstance(v, dict) and v.get("count") == 0)}
         # Absolute path here, write_dashboard makes it relative to the html.
         flame, profiled = _flamegraph_for(mj, results_dir, app, doc)
         scen.setdefault(f"{app}|{doc}|{users}", []).append({
             "commit": d.get("commit"), "ts": ts,
             "runid": _runid_of(mj, results_dir),
-            "metrics": d.get("metrics", {}),
+            "metrics": metrics,
             "cool_memory": d.get("cool_memory") or _capture_memory(mj),
             "instructions": d.get("instructions") or _capture_instructions(mj),
             "flamegraph": flame, "profiled": profiled,
