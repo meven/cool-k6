@@ -1,5 +1,5 @@
 #!/bin/bash
-# One night: update the test bundles if this checkout moved, build origin/main,
+# One run: update the test bundles if this checkout moved, build origin/main,
 # measure it and publish the run. cool-perf.service runs it; to run it by hand,
 # start the service, so the run gets the same user and environment:
 #
@@ -41,6 +41,22 @@ if [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$head" ]; then
     npm ci --no-audit --no-fund
     npm run build
     echo "$head" > "$stamp"
+fi
+
+# cool-ci labels a run with the 12-character sha of the commit that it measured,
+# and last-run.json holds the label of the last published run. When the branch
+# has not moved since that run, there is nothing new to build or measure.
+if [ "${COOL_PERF_SKIP_UNCHANGED:-1}" = 1 ]; then
+    ref=${COOL_SRC_REF:-origin/main}
+    if git -C "$COOLWSD_DIR" fetch --no-tags --quiet origin "${ref#origin/}"; then
+        tip=$(git -C "$COOLWSD_DIR" rev-parse --short=12 FETCH_HEAD)
+        last=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("label", ""))' \
+            "${COOL_PERF_STORE:-/var/lib/cool-perf}/last-run.json" 2>/dev/null || true)
+        if [ "$tip" = "$last" ]; then
+            echo "$ref is still at $tip, the commit of the last published run"
+            exit 0
+        fi
+    fi
 fi
 
 build_args=()

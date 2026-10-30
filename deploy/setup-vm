@@ -1,6 +1,6 @@
 #!/bin/bash
 # Prepare an Ubuntu 26.04 machine to build Collabora Online main and measure
-# it every night. See DEPLOY-VM.md for the whole procedure.
+# each new commit, every hour. See DEPLOY-VM.md for the whole procedure.
 #
 #   sudo deploy/setup-vm                  every step below
 #   sudo deploy/setup-vm --no-packages    skip apt, the slow step
@@ -166,7 +166,7 @@ for unit in cool-perf.service cool-perf.timer; do
         "$REPO/deploy/systemd/$unit" > "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload
-# Enabled, not started: the timer waits for its first night, and until
+# Enabled, not started: the timer waits for its first hour, and until
 # deploy/bootstrap has built the tree a run could only fail.
 systemctl enable cool-perf.timer
 systemctl start cool-perf.timer
@@ -183,5 +183,5 @@ systemctl reload-or-restart nginx
 echo
 echo "Machine ready. Next, as $SVC_USER (hours, the first time):"
 echo "    sudo -iu $SVC_USER $REPO/deploy/bootstrap"
-echo "The timer then runs every night:"
+echo "The timer then runs every hour:"
 echo "    systemctl list-timers cool-perf.timer"

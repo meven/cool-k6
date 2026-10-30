@@ -1,9 +1,9 @@
 [Unit]
-Description=Nightly Collabora Online performance run
+Description=Collabora Online performance run every hour
 
 [Timer]
-OnCalendar=*-*-* 02:00:00
-# A night missed while the machine was off runs once at the next boot.
+OnCalendar=hourly
+# A run missed while the machine was off runs once at the next boot.
 Persistent=true
 
 [Install]

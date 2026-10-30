@@ -1,7 +1,7 @@
 # Deploying the performance suite on a VM
 
 This sets up one Ubuntu 26.04 machine that builds Collabora Online `main` every
-night, runs the performance suite against that build, and serves the dashboard
+hour when it has a new commit, runs the performance suite against that build, and serves the dashboard
 over HTTP. No Jenkins is involved: a systemd timer starts the run. To drive the
 same suite from Jenkins instead, see `CI-JENKINS.md`, which describes the same
 tools.
@@ -26,7 +26,7 @@ Everything after that runs by itself.
 | `/home/collabora/online/` | the online tree that is built and measured, with the engine in `engine/` |
 | `/var/lib/cool-perf/` | the results store: every published run, and `index.html`, the dashboard |
 | `/etc/cool-perf.env` | the configuration, see [Configuration](#configuration) |
-| `/etc/systemd/system/cool-perf.{service,timer}` | the nightly job |
+| `/etc/systemd/system/cool-perf.{service,timer}` | the hourly job |
 | `/etc/nginx/sites-available/cool-perf.conf` | serves `/var/lib/cool-perf` on port 80 |
 | `/etc/sysctl.d/90-cool-perf.conf` | the two kernel settings the suite needs |
 | `/opt/FlameGraph/` | the scripts that turn perf output into flamegraphs |
@@ -37,7 +37,7 @@ change goes into the repository first, and then `setup-vm` is run again.
 ## The machine
 
 A VM, used for nothing else. Timings are only comparable when nothing else
-uses the machine. The nightly build runs before the measurement, never at the
+uses the machine. The build runs before the measurement, never at the
 same time.
 
 | resource | minimum | why |
@@ -109,13 +109,13 @@ sudo -iu collabora git -C /home/collabora/perf-dashboard pull /tmp/perf-dashboar
 ### From GitLab, with a deploy token
 
 A deploy token gives read access to this one repository and nothing else. Use
-it when the VM can reach gitlab.collabora.com and the nightly job should take
+it when the VM can reach gitlab.collabora.com and the hourly job should take
 the latest commit by itself.
 
 1. In GitLab, open the project, then Settings > Repository > Deploy tokens.
    Create a token with the `read_repository` scope only.
 2. On the VM, clone as the service user, and let git store the token, so
-   that the nightly `git pull` does not prompt:
+   that the `git pull` of each run does not prompt:
 
    ```
    sudo -iu collabora
@@ -190,7 +190,7 @@ Detach with Ctrl+B then D. Reattach with `tmux attach -t bootstrap`.
    the tree with the commit it built
 8. `cool-ci doctor`, which checks everything a run needs
 
-The nightly job refuses to run until `bootstrap` has finished. The two take
+The hourly job refuses to run until `bootstrap` has finished. The two take
 the same lock, so a timer run cannot start while `bootstrap` builds.
 
 When a step fails, fix the cause and run `bootstrap` again. Each step that is
@@ -201,7 +201,7 @@ already done is skipped.
 The last thing `bootstrap` prints is the `doctor` table. All lines should be
 `ok`. One `warn` is expected when the VM cannot sample on hardware counters.
 
-Then run the job once, rather than waiting for the night:
+Then run the job once, rather than waiting for the next hour:
 
 ```
 sudo systemctl start cool-perf.service
@@ -210,7 +210,7 @@ journalctl -u cool-perf.service -f
 
 `systemctl start` returns when the run is finished. The first run has
 nothing new to build, so it takes about 15 to 20 minutes. Check that the timer is waiting for
-its next night:
+its next hour:
 
 ```
 systemctl list-timers cool-perf.timer
@@ -280,11 +280,12 @@ as a copy of `deploy/cool-perf.env`, which explains each one:
 | --- | --- | --- |
 | `COOLWSD_DIR` | `/home/collabora/online` | the online tree that is built and measured |
 | `COOL_SRC_URL` | GitHub mirror of online | where the tree is cloned from the first time |
-| `COOL_SRC_REF` | `origin/main` | what each night builds |
+| `COOL_SRC_REF` | `origin/main` | what each run builds |
 | `COOL_PERF_STORE` | `/var/lib/cool-perf` | the published runs and the dashboard |
-| `COOL_PERF_KEEP` | `60` | how many runs the store keeps, so two months of nights |
-| `COOL_PERF_ENGINE` | `1` | rebuild the engine every night, see below |
-| `COOL_PERF_SAVE_BUILDS` | `0` | keep each night's build as a 4 GB snapshot |
+| `COOL_PERF_KEEP` | `240` | how many runs the store keeps, about 2 GB |
+| `COOL_PERF_SKIP_UNCHANGED` | `1` | skip the build and the measurement while `COOL_SRC_REF` is at the commit of the last published run |
+| `COOL_PERF_ENGINE` | `1` | rebuild the engine at each run, see below |
+| `COOL_PERF_SAVE_BUILDS` | `0` | keep each run's build as a 4 GB snapshot |
 | `COOL_BUILDS_DIR` | `/home/collabora/cool-builds` | where snapshots go |
 | `COOL_PERF_SELF_UPDATE` | `0` | `git pull` this checkout before each run |
 
@@ -302,10 +303,12 @@ sudo systemctl edit cool-perf.timer
 ```
 [Timer]
 OnCalendar=
-OnCalendar=*-*-* 04:30:00
+OnCalendar=*-*-* 02:00:00
 ```
 
-The empty `OnCalendar=` clears the 02:00 entry first.
+The empty `OnCalendar=` clears the hourly entry first. A run takes about 20
+minutes when the engine build is incremental. A run that is still going when
+the timer fires again holds the lock, so the new run exits at once.
 
 ## The build
 
@@ -327,11 +330,11 @@ configured, run `autogen.sh` in it by hand, or delete
 `/home/collabora/online/engine/config_host.mk` or `/home/collabora/online/Makefile`
 and run `bootstrap` again.
 
-**Why the engine is rebuilt every night.** The engine is in the same
+**Why the engine is rebuilt at each run.** The engine is in the same
 repository as the server, so a commit on `main` can change both. A server built
 against an older engine can crash the kit, and its numbers then measure a mix
-of two commits. The nightly engine build is incremental and goes through
-ccache, so on most nights it takes minutes. After a change to a header that
+of two commits. The engine build is incremental and goes through
+ccache, so it usually takes a minute or two. After a change to a header that
 many files include, it can take an hour or more. `COOL_PERF_ENGINE=0` skips
 it.
 
@@ -348,7 +351,7 @@ was measured.
 | follow a run | `journalctl -u cool-perf.service -f` |
 | the last runs | `journalctl -u cool-perf.service --since -3d` |
 | when it runs next | `systemctl list-timers cool-perf.timer` |
-| pause the nights | `sudo systemctl disable --now cool-perf.timer` |
+| pause the runs | `sudo systemctl disable --now cool-perf.timer` |
 | resume them | `sudo systemctl enable --now cool-perf.timer` |
 | check the machine | `sudo -iu collabora sh -c 'set -a; . /etc/cool-perf.env; ~/perf-dashboard/cool-ci doctor'` |
 | the last published run | `cat /var/lib/cool-perf/last-run.json` |
@@ -365,13 +368,13 @@ the checkout is at a new commit.
 
 **Measuring an older commit.** `cool-build --ref <commit>` builds it in the
 tree, and `cool-ci run` measures it. Run both as `collabora` with the
-environment loaded, as in the `doctor` line above. The next night builds
+environment loaded, as in the `doctor` line above. The next run builds
 `main` again.
 
-**Disk.** The store grows by about 8 MB a night up to `COOL_PERF_KEEP` runs.
+**Disk.** The store grows by about 8 MB a run up to `COOL_PERF_KEEP` runs.
 The compiler cache in `/home/collabora/.cache/ccache` grows up to its 30 GB
 limit. With
-`COOL_PERF_SAVE_BUILDS=1`, each night adds 4 GB under `COOL_BUILDS_DIR`, and
+`COOL_PERF_SAVE_BUILDS=1`, each run adds 4 GB under `COOL_BUILDS_DIR`, and
 nothing removes them, so delete old ones with `cool-use-build list` and `rm`.
 
 **Backups.** Only `/var/lib/cool-perf` holds results that cannot be rebuilt.
