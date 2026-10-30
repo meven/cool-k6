@@ -915,7 +915,7 @@ the document, and is the figure a memory limit has to accommodate. The stacked b
     executed, the server on the left of a point and the document kit on the right, on their own
     scale since instructions share no axis with times or memory. They count only the window perf
     was attached for, which opens after the server is up, so they describe the test and not a whole
-    process life, and they move a lot from run to run. A rising line across commits is a regression. When a run was also captured under perf, its point shows the plain times and the run detail lists the times under perf beside them. A ringed point is a capture with no plain run beside it, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
+    process life, and they move a lot from run to run. A rising line across commits is a regression. The run detail of each point gives the commits since the previous point, as a git log range and, for a GitHub source, a link that lists them. When a run was also captured under perf, its point shows the plain times and the run detail lists the times under perf beside them. A ringed point is a capture with no plain run beside it, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
 </div>
 <div id="tip" role="tooltip" hidden></div>
 <div class="modal" id="modal" hidden><div class="modal-card" id="mcard" role="dialog" aria-modal="true">
@@ -924,6 +924,7 @@ the document, and is the figure a memory limit has to accommodate. The stacked b
 </div></div>
 <script>
 const DATA = __DATA__;
+const COMPARE = __COMPARE__;
 const SVGNS = "http://www.w3.org/2000/svg";
 const MS = [{m:"document_loaded_ms"},{m:"frame_ready_ms"},{m:"first_content_ms"},{m:"js_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"},{m:"image_displayed_ms"},{m:"slide_duplicated_ms"}];
 const NAMES={document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",image_displayed_ms:"image displayed",slide_duplicated_ms:"slide duplicated",cool_mem:"COOL memory",browser_mem:"browser heap",master_mem:"coolwsd peak"};
@@ -938,6 +939,17 @@ function el(name,attrs,text){const e=document.createElementNS(SVGNS,name);for(co
 // first dash.
 function shortLabel(c){if(!c)return "";const i=c.indexOf("-");
   return i<0?c.slice(0,7):c.slice(0,Math.min(i,7))+c.slice(i);}
+function shaOf(c){const m=/^[0-9a-f]{7,40}/.exec(c||"");return m?m[0]:null;}
+// The commits that a run measured for the first time: after the newest earlier run of this chart
+// with another commit, up to the commit of this run.
+function commitRange(runs,i){
+  const to=shaOf(runs[i].commit);if(!to)return "";
+  for(let j=i-1;j>=0;j--){const from=shaOf(runs[j].commit);if(!from||from===to)continue;
+    const text=`${from}..${to}`;
+    const link=COMPARE?`<a href="${esc(COMPARE+from+"..."+to)}" target="_blank" rel="noopener">${esc(text)}</a>`:esc(text);
+    return `<br>commits since the previous run: ${link}  ·  <code>git log --oneline ${esc(text)}</code>`;}
+  return "<br>first commit measured in this chart";
+}
 // The document kit's resident memory in the layers it is made of, bottom-up.
 // The layers add up to what the process has resident, so the top of the stack is
 // the figure a machine actually has to hold for that document.
@@ -1127,6 +1139,7 @@ function openDetail(runs,i){
   let meta=`commit ${esc(r.commit||"(unknown)")}  ·  ${esc(r.ts||"")}`;
   if(r.file)meta+=`  ·  ${esc(r.file)}`;
   if(r.runid)meta+=`  ·  run ${esc(r.runid)}`;
+  meta+=commitRange(runs,i);
   mmeta.innerHTML=meta;
   const cols=["avg","min","med","p90","p95","max"];
   let h='<table><thead><tr><th>metric</th>'+cols.map(c=>`<th>${c}</th>`).join("")+'</tr></thead><tbody>';
@@ -1223,6 +1236,14 @@ def _svg_aspect(path: Path) -> float | None:
     return round(hv / wv, 4)
 
 
+def compare_url_base() -> str:
+    """The GitHub page that lists the commits between two others, for the repository in
+    COOL_SRC_URL, or "" when that is not a GitHub https URL."""
+    m = re.match(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$",
+                 os.environ.get("COOL_SRC_URL", ""))
+    return f"https://github.com/{m.group(1)}/{m.group(2)}/compare/" if m else ""
+
+
 def write_dashboard(scen: dict, out: str) -> None:
     # Flamegraph paths are stored absolute; rewrite them relative to the html
     # file's directory so the links work from wherever the dashboard is opened.
@@ -1235,7 +1256,8 @@ def write_dashboard(scen: dict, out: str) -> None:
                 p["fg_aspect"] = _svg_aspect(Path(fg))
                 p["flamegraph"] = os.path.relpath(fg, out_dir).replace(os.sep, "/")
                 flames += 1
-    Path(out).write_text(DASHBOARD.replace("__DATA__", json.dumps(scen)))
+    Path(out).write_text(DASHBOARD.replace("__DATA__", json.dumps(scen))
+                          .replace("__COMPARE__", json.dumps(compare_url_base())))
     runs = sum(len(v) for v in scen.values())
     print(f"wrote {out}  ({len(scen)} chart(s), {runs} run(s), {flames} flamegraph link(s))")
 
