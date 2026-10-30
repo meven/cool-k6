@@ -31,8 +31,9 @@ ENGINE_AUTOGEN_ARGS=${ENGINE_AUTOGEN_ARGS:---with-distro=CPLinux-LOKit --without
 # The server needs --enable-debug: cool-ci starts coolwsd with
 # --find-free-port, and the flamegraph pass adds --singlekit, and coolwsd only
 # accepts both options in a debug build. -O2 keeps the code optimised, where
-# --enable-developer would compile it at -O0.
-ONLINE_AUTOGEN_ARGS=${ONLINE_AUTOGEN_ARGS:-"--enable-debug --disable-cypress CFLAGS='-O2 -g' CXXFLAGS='-O2 -g'"}
+# --enable-developer would compile it at -O0. The engine configure finds ccache
+# by itself, and the server configure only uses it through CC and CXX.
+ONLINE_AUTOGEN_ARGS=${ONLINE_AUTOGEN_ARGS:-"--enable-debug --disable-cypress CC='ccache gcc' CXX='ccache g++' CFLAGS='-O2 -g' CXXFLAGS='-O2 -g'"}
 
 step() { echo; echo "=== $*"; }
 
