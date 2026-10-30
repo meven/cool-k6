@@ -230,6 +230,17 @@ incus list cool-perf -c n4
 
 Open `http://<that address>/` in a browser on the host.
 
+When the VM's only network device is on a macvlan network, the host cannot
+reach it: macvlan does not pass traffic between a host and its own guests.
+Give the VM a second device on a bridge, and use the address it gets there:
+
+```
+incus config device add cool-perf eth1 nic network=incusbr0
+```
+
+`incus network list` names the bridges. Restart the VM if `ip -4 addr` in the
+VM shows no address on the new device.
+
 **From another machine, through the host.** If you can ssh to the incus host,
 forward a local port:
 
@@ -381,6 +392,7 @@ Copy it elsewhere now and then, for example with
 | the run fails in `git pull` | `COOL_PERF_SELF_UPDATE=1`, but the checkout has no remote that it can read without a prompt. Store the deploy token (step 1), or set it back to 0 |
 | every document fails, `coolwsd.log` ends at the banner | the k6 container cannot reach the WOPI host. See the same row in `CI-JENKINS.md` |
 | the run stops at `the first build is not done` | `bootstrap` has not finished yet. Run it to the end, it writes `~/.local/state/cool-perf/bootstrapped` |
+| `No route to host` from the incus host, while `curl http://127.0.0.1/` in the VM answers | the VM is on a macvlan network, which the host cannot reach. Add a bridge device, see [Seeing the dashboard](#seeing-the-dashboard) |
 | the dashboard is an empty file list | no run was published yet. Run the job once |
 
 More rows for the suite itself are in the troubleshooting section of
