@@ -764,6 +764,13 @@ DASHBOARD = r"""<!doctype html>
   .chart h2::before{content:"";width:9px;height:9px;border-radius:2px;flex:0 0 auto;
     background:var(--app,var(--ink-faint));}
   svg{width:100%;height:auto;display:block;}
+  .fullbtn{margin-left:6px;font:inherit;font-size:11px;font-weight:500;text-transform:none;
+    cursor:pointer;border:1px solid var(--hair);border-radius:999px;padding:1px 8px;
+    background:var(--surface);color:var(--ink-soft);}
+  .fullbtn:hover{color:var(--ink);}
+  .chart.full{position:fixed;inset:12px;z-index:40;max-width:none;display:flex;flex-direction:column;}
+  .chart.full svg[data-key]{flex:1 1 auto;min-height:0;height:100%;}
+  body.has-full::before{content:"";position:fixed;inset:0;z-index:39;background:rgba(11,11,11,.55);}
   .tick line{stroke:var(--grid);stroke-width:1;}
   .tick text,.xlab,.axtitle{fill:var(--ink-faint);font-size:10px;
     font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;}
@@ -916,8 +923,9 @@ function memOf(pt){const m=pt.cool_memory;if(!m)return null;
   if(m.peak_total_mem_mb!=null)return m.peak_total_mem_mb;
   return m.peak_pss_mb!=null?m.peak_pss_mb:(m.peak_rss_mb!=null?m.peak_rss_mb:null);}
 
-function render(svg, runs){
-  const W=520,H=300,m={top:14,right:52,bottom:46,left:50};
+function render(svg, runs, W=520, H=300){
+  const m={top:14,right:52,bottom:46,left:50};
+  svg.replaceChildren();svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
   const pW=W-m.left-m.right,pH=H-m.top-m.bottom,x0=m.left,x1=x0+pW,y1=m.top+pH;
   let msMax=0,memMax=0;
   const heapOf=r=>{const x=r.metrics.browser_heap_mb;return x?x.avg:null;};
@@ -984,7 +992,7 @@ function render(svg, runs){
   plot("cool_mem mem",yMem,memOf);
   plot("browser_mem mem",yMem,heapOf);
   // x labels: short commit, thinned if crowded
-  const everyk=Math.ceil(n/6);
+  const everyk=Math.ceil(n/Math.max(6,Math.floor(pW/75)));
   runs.forEach((r,i)=>{if(i%everyk)return;svg.appendChild(el("text",{class:"xlab",x:xAt(i),y:y1+15,"text-anchor":"middle"},r.commit?shortLabel(r.commit):("#"+i)));});
 }
 
@@ -1003,12 +1011,33 @@ Object.keys(DATA).sort((a,b)=>{const A=a.split("|"),B=b.split("|");
   // the document under test, from the newest run that recorded one
   const file=(runs.filter(r=>r.file).pop()||{}).file;
   const sec=document.createElement("section");sec.className="chart a-"+app;
-  sec.innerHTML=`<h2>${esc(app)} &middot; ${esc(doc)} &middot; ${esc(users)} user${users==="1"?"":"s"}${cov}</h2>
+  sec.innerHTML=`<h2>${esc(app)} &middot; ${esc(doc)} &middot; ${esc(users)} user${users==="1"?"":"s"}${cov}<button class="fullbtn" type="button" aria-pressed="false">full view</button></h2>
     ${file?`<p class="fname" title="the document this test opens">${esc(file)}</p>`:""}
     <svg data-key="${esc(key)}" viewBox="0 0 520 300" role="img" aria-label="${esc(key)}${file?" of "+esc(file):""} over commits"></svg>`;
   host.appendChild(sec);
 });
 document.querySelectorAll("svg[data-key]").forEach(svg=>render(svg,DATA[svg.dataset.key]));
+
+// One chart at a time fills the window. It is drawn again at the size of the window, so the text
+// keeps its size and the axis has room for more commit labels.
+let fullChart=null;
+function drawFull(){const svg=fullChart.querySelector("svg[data-key]");
+  const box=svg.getBoundingClientRect();
+  render(svg,DATA[svg.dataset.key],Math.max(520,Math.round(box.width)),Math.max(300,Math.round(box.height)));}
+function setFull(sec){
+  if(fullChart){const old=fullChart;fullChart=null;old.classList.remove("full");
+    old.querySelector(".fullbtn").textContent="full view";
+    old.querySelector(".fullbtn").setAttribute("aria-pressed","false");
+    const svg=old.querySelector("svg[data-key]");render(svg,DATA[svg.dataset.key]);}
+  document.body.classList.toggle("has-full",!!sec);
+  if(!sec)return;
+  fullChart=sec;sec.classList.add("full");
+  sec.querySelector(".fullbtn").textContent="close";
+  sec.querySelector(".fullbtn").setAttribute("aria-pressed","true");
+  drawFull();}
+host.addEventListener("click",e=>{const b=e.target.closest(".fullbtn");if(!b)return;
+  const sec=b.closest(".chart");setFull(fullChart===sec?null:sec);});
+window.addEventListener("resize",()=>{if(fullChart)drawFull();});
 
 // document flamegraph: link the header to the most recent run that has one
 (function(){let best=null;
@@ -1107,7 +1136,8 @@ function openDetail(runs,i){
 function close(){modal.hidden=true;}
 document.getElementById("mc").addEventListener("click",close);
 modal.addEventListener("click",e=>{if(e.target===modal)close();});
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!modal.hidden)close();});
+document.addEventListener("keydown",e=>{if(e.key!=="Escape")return;
+  if(!modal.hidden)close();else if(fullChart)setFull(null);});
 
 // instant hover tooltip (no native <title> delay)
 const tip=document.getElementById("tip");
