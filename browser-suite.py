@@ -664,12 +664,25 @@ def collect(results_dir: Path) -> dict:
             "cool_memory": d.get("cool_memory") or _capture_memory(mj),
             "instructions": d.get("instructions") or _capture_instructions(mj),
             "flamegraph": flame, "profiled": profiled,
+            "machine": _machine_of(mj, results_dir),
             "file": d.get("file") or files.get(f"{app}|{doc}"),
         })
     for key, pts in scen.items():
         scen[key] = _merge_profiled(pts)
         scen[key].sort(key=lambda p: p["ts"])
     return scen
+
+
+def _machine_of(mj: Path, results_dir: Path) -> dict | None:
+    """The machine.json of the run that @p mj belongs to: the probe times and the steal time
+    during the run, and whether the machine was busy."""
+    runid = _runid_of(mj, results_dir)
+    if not runid:
+        return None
+    try:
+        return json.loads((results_dir / runid / "machine.json").read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def _merge_profiled(pts: list[dict]) -> list[dict]:
@@ -829,6 +842,7 @@ DASHBOARD = r"""<!doctype html>
   .dot:hover{r:6;} .dot:focus-visible{outline:2px solid var(--ink);outline-offset:1px;}
   /* a run captured under perf: ringed, since profiling inflates its own times */
   .dot.prof{stroke:var(--ink);stroke-width:2;}
+  .dot.busy{opacity:.4;}
   .modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;
     padding:24px;background:rgba(11,11,11,.55);} .modal[hidden]{display:none;}
   .modal-card{background:var(--panel);border:1px solid var(--hair);border-radius:12px;
@@ -915,7 +929,7 @@ the document, and is the figure a memory limit has to accommodate. The stacked b
     executed, the server on the left of a point and the document kit on the right, on their own
     scale since instructions share no axis with times or memory. They count only the window perf
     was attached for, which opens after the server is up, so they describe the test and not a whole
-    process life, and they move a lot from run to run. A rising line across commits is a regression. The run detail of each point gives the commits since the previous point, as a git log range and, for a GitHub source, a link that lists them. When a run was also captured under perf, its point shows the plain times and the run detail lists the times under perf beside them. A ringed point is a capture with no plain run beside it, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
+    process life, and they move a lot from run to run. A rising line across commits is a regression. A faded point was measured on a busy machine: a fixed probe ran slower than usual during the run, or the hypervisor took CPU time from the VM, so its times are not comparable. The run detail of each point gives the commits since the previous point, as a git log range and, for a GitHub source, a link that lists them. When a run was also captured under perf, its point shows the plain times and the run detail lists the times under perf beside them. A ringed point is a capture with no plain run beside it, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
 </div>
 <div id="tip" role="tooltip" hidden></div>
 <div class="modal" id="modal" hidden><div class="modal-card" id="mcard" role="dialog" aria-modal="true">
@@ -1023,11 +1037,14 @@ function render(svg, runs, W=520, H=300){
   function plot(cls,scale,getv){
     const pts=[];runs.forEach((r,i)=>{const v=getv(r);if(v!=null)pts.push([i,xAt(i),scale(v),v]);});
     if(!pts.length)return;
-    if(pts.length>1)svg.appendChild(el("polyline",{class:"line "+cls,points:pts.map(p=>p[1]+","+p[2]).join(" ")}));
+    // the line joins the runs of a quiet machine, and a busy run stays a faded dot beside it
+    const quiet=pts.filter(p=>!(runs[p[0]].machine&&runs[p[0]].machine.busy));
+    if(quiet.length>1)svg.appendChild(el("polyline",{class:"line "+cls,points:quiet.map(p=>p[1]+","+p[2]).join(" ")}));
     pts.forEach(p=>{const r=runs[p[0]];
-      const dot=el("circle",{class:"dot "+cls.split(" ")[0]+(r.profiled?" prof":""),cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
+      const busy=r.machine&&r.machine.busy;
+      const dot=el("circle",{class:"dot "+cls.split(" ")[0]+(r.profiled?" prof":"")+(busy?" busy":""),cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
       const short=cls.split(" ")[0],unit=cls.indexOf("mem")>=0?"MB":"ms";
-      const label=`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${Math.round(p[3])} ${unit}`+(r.profiled?" · profiled":"");
+      const label=`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${Math.round(p[3])} ${unit}`+(r.profiled?" · profiled":"")+(busy?" · busy machine":"");
       dot.setAttribute("data-tip",label);dot.setAttribute("aria-label",label);
       dot.addEventListener("click",()=>openDetail(runs,p[0]));svg.appendChild(dot);});
   }
@@ -1173,6 +1190,13 @@ function openDetail(runs,i){
     h+=`<tr><td>kit memory (MB)</td><td colspan="6" style="text-align:left">`+
       STACK.filter(([k])=>ds[k]!=null).map(([k,,name])=>`${name} ${Math.round(ds[k])}`).join(", ")+
       `, resident ${Math.round(tot)}</td></tr>`;}
+  const mc=r.machine;
+  if(mc){const bits=[];const pr=mc.probe_ms;
+    if(pr)bits.push(`probe ${Math.round(pr.med)} ms median, ${Math.round(pr.p90)} ms p90`+
+      (mc.probe_ratio!=null?` (${mc.probe_ratio.toFixed(2)} times the usual)`:""));
+    if(mc.steal_pct!=null)bits.push(`steal ${mc.steal_pct.toFixed(1)}%`);
+    if(mc.busy)bits.push("<b>busy machine</b>");
+    if(bits.length)h+=`<tr><td>machine</td><td colspan="6" style="text-align:left">${bits.join(", ")}</td></tr>`;}
   const ins=r.instructions;
   if(ins){h+=`<tr><td>instructions (G)</td><td colspan="6" style="text-align:left">`+
     (ins.master!=null?`coolwsd ${(ins.master/1e9).toFixed(1)}`:"")+

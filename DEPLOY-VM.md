@@ -283,6 +283,9 @@ as a copy of `deploy/cool-perf.env`, which explains each one:
 | `COOL_SRC_REF` | `origin/main` | what each run builds |
 | `COOL_PERF_STORE` | `/var/lib/cool-perf` | the published runs and the dashboard |
 | `COOL_PERF_KEEP` | `240` | how many runs the store keeps, about 2 GB |
+| `COOL_PERF_PROBE_MAX` | `1.2` | a run is busy when the machine probe is slower than usual by this factor |
+| `COOL_PERF_STEAL_MAX` | `2` | a run is busy when the hypervisor took more than this percentage of the CPU time |
+| `COOL_PERF_BUSY_RETRIES` | `3` | busy runs of a commit that are not published before one is published with a busy mark |
 | `COOL_PERF_SKIP_UNCHANGED` | `1` | skip the build and the measurement while `COOL_SRC_REF` is at the commit of the last published run |
 | `COOL_PERF_ENGINE` | `1` | rebuild the engine at each run, see below |
 | `COOL_PERF_SAVE_BUILDS` | `0` | keep each run's build as a 4 GB snapshot |
@@ -329,6 +332,20 @@ every number, but costs it the same way in every run.
 configured, run `autogen.sh` in it by hand, or delete
 `/home/collabora/online/engine/config_host.mk` or `/home/collabora/online/Makefile`
 and run `bootstrap` again.
+
+**Busy runs.** On a host that runs other work, a whole run can be slower than
+usual, and every chart then has a spike at the same commit. During the run a
+probe does a fixed amount of work every 20 seconds, and the run reads the CPU
+steal time of the VM. Both go in `machine.json` in the run directory, and the
+run detail of the dashboard shows them. A busy run is not published, so the
+next hour measures the same commit again. Pinning the VM to its own cores on
+one NUMA node of the host makes busy runs rare:
+
+```
+incus config set cool-perf limits.cpu=<cores of one node, both threads of each>
+incus config set cool-perf limits.cpu.nodes=<that node>
+incus restart cool-perf
+```
 
 **Why the engine is rebuilt at each run.** The engine is in the same
 repository as the server, so a commit on `main` can change both. A server built
