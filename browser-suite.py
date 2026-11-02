@@ -615,6 +615,47 @@ def _capture_memory(mj: Path) -> dict | None:
     return out
 
 
+def _capture_browser_memory(mj: Path) -> dict | None:
+    """The memory of the Chromium processes during this run's capture, or None.
+
+    browser_heap_mb is the JavaScript heap of the page alone. The renderer
+    process also holds the DOM, the decoded images and the canvas pixels of the
+    tiles, and the GPU process holds the compositor's buffers. The capture samples
+    these processes from /proc. They belong to the k6 container's user, so only
+    /proc/<pid>/status can be read: the resident size, its anonymous, file and
+    shared memory parts, and the high-water mark. Shared memory is counted in each
+    process that maps it, so the sum over processes is an upper bound."""
+    try:
+        d = json.loads((mj.parent.parent / "metrics.json").read_text())
+    except (OSError, ValueError):
+        return None
+    mem = d.get("memory")
+    if not isinstance(mem, dict):
+        return None
+    out: dict = {}
+    for label, key in (("browser_renderer", "renderer"), ("browser_gpu", "gpu"),
+                       ("browser_other", "other")):
+        entry = mem.get(label)
+        if not isinstance(entry, dict):
+            continue
+        fields = {"peak_rss_mb": "rss", "peak_rss_hwm_mb": "hwm",
+                  "peak_rss_anon_mb": "anon", "peak_rss_shmem_mb": "shmem",
+                  "peak_pss_mb": "pss", "max_pids": "pids"}
+        out[key] = {name: entry[f] for f, name in fields.items() if entry.get(f) is not None}
+    if not out:
+        return None
+    # The largest sum over the sample times, not the sum of the peaks, which
+    # would count moments that never happened together.
+    by_time: dict = {}
+    for label in ("browser_renderer", "browser_gpu", "browser_other"):
+        entry = mem.get(label)
+        for sample in entry.get("samples", []) if isinstance(entry, dict) else []:
+            by_time[sample["t_s"]] = by_time.get(sample["t_s"], 0.0) + sample.get("rss_mb", 0.0)
+    if by_time:
+        out["peak_total_rss_mb"] = round(max(by_time.values()), 1)
+    return out
+
+
 def _flamegraph_for(mj: Path, results_dir: Path,
                     app: str, doc: str) -> tuple[str | None, bool]:
     """(absolute path to this run's flamegraph or None, was this run profiled).
@@ -665,6 +706,7 @@ def collect(results_dir: Path) -> dict:
             "runid": _runid_of(mj, results_dir),
             "metrics": metrics,
             "cool_memory": d.get("cool_memory") or _capture_memory(mj),
+            "browser_memory": _capture_browser_memory(mj),
             "instructions": d.get("instructions") or _capture_instructions(mj),
             "flamegraph": flame, "profiled": profiled,
             "machine": _machine_of(mj, results_dir),
@@ -705,6 +747,7 @@ def _merge_profiled(pts: list[dict]) -> list[dict]:
         host["profiled_metrics"] = p["metrics"]
         host["instructions"] = host["instructions"] or p["instructions"]
         host["cool_memory"] = host["cool_memory"] or p["cool_memory"]
+        host["browser_memory"] = host["browser_memory"] or p["browser_memory"]
         host["flamegraph"] = host["flamegraph"] or p["flamegraph"]
     return out
 
@@ -765,13 +808,13 @@ DASHBOARD = r"""<!doctype html>
 <style>
   :root{ --surface:#fcfcfb; --panel:#fff; --ink:#0b0b0b; --ink-soft:#52514e;
     --ink-faint:#8a8880; --grid:#e6e6e2; --hair:#dcdbd5; --accent:#2a78d6;
-    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#5a6b7a; --s4:#d11a45; --s5:#0e8aa8; --s6:#a3199b; --s7:#b5651d; --mem:#7a4fc0; --bmem:#d64f9a; --wmem:#b8860b; --ibar-wsd:#8fb8e0; --ibar-kit:#c9b3e6; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
+    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#5a6b7a; --s4:#d11a45; --s5:#0e8aa8; --s6:#a3199b; --s7:#b5651d; --mem:#7a4fc0; --bmem:#d64f9a; --tmem:#8e2f63; --wmem:#b8860b; --ibar-wsd:#8fb8e0; --ibar-kit:#c9b3e6; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
     --app-writer:#2a6cc9; --app-calc:#1a9e4b; --app-impress:#e8710a; --app-draw:#e0a80f;
     --shadow:0 1px 2px rgba(11,11,11,.06),0 8px 24px rgba(11,11,11,.05); }
   @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
     --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee; --ink-soft:#c3c2b7;
     --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35; --accent:#3987e5;
-    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --s6:#e36fd6; --s7:#d9893a; --mem:#9f7be6; --bmem:#e07bb0; --wmem:#d8a72a; --ibar-wsd:#2f4f6e; --ibar-kit:#4a3a63; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
+    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --s6:#e36fd6; --s7:#d9893a; --mem:#9f7be6; --bmem:#e07bb0; --tmem:#f0a6cf; --wmem:#d8a72a; --ibar-wsd:#2f4f6e; --ibar-kit:#4a3a63; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
     --app-writer:#5a9bea; --app-calc:#35c46f; --app-impress:#ff9440; --app-draw:#f2c94c;
     --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35); }}
   :root[data-theme=dark]{ --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee;
@@ -831,6 +874,7 @@ DASHBOARD = r"""<!doctype html>
   .line.image_displayed_ms{stroke:var(--s6);}
   .line.slide_duplicated_ms{stroke:var(--s7);}
   .line.master_mem{stroke:var(--wmem);stroke-dasharray:2 3;}
+  .line.tab_mem{stroke:var(--tmem);stroke-dasharray:8 3;}
   .ibar{stroke:none;fill-opacity:.55;} .ibar.wsd{fill:var(--ibar-wsd);} .ibar.kit{fill:var(--ibar-kit);}
   .sbar{stroke:none;fill-opacity:.85;} .sbar.lib{fill:var(--st-lib);} .sbar.other{fill:var(--st-other);}
   .sbar.inh{fill:var(--st-inh);} .sbar.own{fill:var(--st-own);}
@@ -841,7 +885,7 @@ DASHBOARD = r"""<!doctype html>
   .dot.first_content_ms{fill:var(--s4);} .dot.js_ready_ms{fill:var(--s5);}
   .dot.image_displayed_ms{fill:var(--s6);}
   .dot.slide_duplicated_ms{fill:var(--s7);}
-  .dot.master_mem{fill:var(--wmem);}
+  .dot.master_mem{fill:var(--wmem);} .dot.tab_mem{fill:var(--tmem);}
   .dot:hover{r:6;} .dot:focus-visible{outline:2px solid var(--ink);outline-offset:1px;}
   /* a run captured under perf: ringed, since profiling inflates its own times */
   .dot.prof{stroke:var(--ink);stroke-width:2;}
@@ -903,7 +947,7 @@ DASHBOARD = r"""<!doctype html>
 </style></head><body>
 <div class="wrap">
   <h1>Collabora Online browser tests</h1>
-  <p class="sub">One chart per document and user pool, tracked across commits. Left axis: load, feedback and edit times (ms). Right axis: memory (MB), the document's own footprint, the browser heap, and the coolwsd process peak. Click a point for detail.</p>
+  <p class="sub">One chart per document and user pool, tracked across commits. Left axis: load, feedback and edit times (ms). Right axis: memory (MB), the document's own footprint, the browser heap, the page process, and the coolwsd process peak. Click a point for detail.</p>
   <div class="legend">
     <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s0)" stroke-width="2.5"/></svg> frame ready</span>
     <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s4)" stroke-width="2.5"/></svg> first content</span>
@@ -915,13 +959,14 @@ DASHBOARD = r"""<!doctype html>
     <span class="sep"></span>
     <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--mem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> COOL doc memory (MB, right)</span>
     <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--bmem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> browser heap (MB, right)</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--tmem)" stroke-width="2.5" stroke-dasharray="8 3"/></svg> page process, resident (MB, right)</span>
     <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--wmem)" stroke-width="2.5" stroke-dasharray="2 3"/></svg> coolwsd peak (MB, right)</span>
     <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><rect x="2" y="1" width="7" height="6" fill="var(--ibar-wsd)"/><rect x="12" y="1" width="7" height="6" fill="var(--ibar-kit)"/></svg> instructions, coolwsd and document kit (bars)</span>
     <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><rect x="0" y="1" width="5" height="6" fill="var(--st-lib)"/><rect x="5.5" y="1" width="5" height="6" fill="var(--st-other)"/><rect x="11" y="1" width="5" height="6" fill="var(--st-inh)"/><rect x="16.5" y="1" width="5" height="6" fill="var(--st-own)"/></svg> kit memory stacked: libraries, other files, inherited, own (MB, right)</span>
     <a id="fglink" class="fg-link" target="_blank" rel="noopener" hidden>document flamegraph &#8599;</a>
   </div>
   <div id="charts"></div>
-  <footer>Each point is one run (one COOL commit) of the document named under the chart title, which is the file that test opens through the WOPI host. Times are ms averaged over the run (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint on a plain run, or the document kit's proportional set size sampled from /proc when the point comes from a flamegraph capture, which runs its own COOL, and browser heap is the page's JS heap. The coolwsd peak is that process's
+  <footer>Each point is one run (one COOL commit) of the document named under the chart title, which is the file that test opens through the WOPI host. Times are ms averaged over the run (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint on a plain run, or the document kit's proportional set size sampled from /proc when the point comes from a flamegraph capture, which runs its own COOL, and browser heap is the page's JS heap. The page process is the resident size of the Chromium renderer that runs the page, sampled from /proc during the flamegraph capture: on top of the JS heap it holds the DOM, the decoded images and the canvas pixels of the tiles. The coolwsd peak is that process's
 resident high-water mark (VmHWM), which is set by its own startup rather than by
 the document, and is the figure a memory limit has to accommodate. The stacked bar beside each point breaks the document kit's resident memory into
     the engine libraries it maps, other mapped files, what the fork handed it (mostly the
@@ -944,7 +989,7 @@ const DATA = __DATA__;
 const COMPARE = __COMPARE__;
 const SVGNS = "http://www.w3.org/2000/svg";
 const MS = [{m:"document_loaded_ms"},{m:"frame_ready_ms"},{m:"first_content_ms"},{m:"js_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"},{m:"image_displayed_ms"},{m:"slide_duplicated_ms"}];
-const NAMES={document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",image_displayed_ms:"image displayed",slide_duplicated_ms:"slide duplicated",cool_mem:"COOL memory",browser_mem:"browser heap",master_mem:"coolwsd peak"};
+const NAMES={document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",image_displayed_ms:"image displayed",slide_duplicated_ms:"slide duplicated",cool_mem:"COOL memory",browser_mem:"browser heap",tab_mem:"page process",master_mem:"coolwsd peak"};
 const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","5mb","10mb","duplicate","ooxml","image5mb"];
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
 function niceStep(s){if(s<=0)return 1;const r=s/4,m=Math.pow(10,Math.floor(Math.log10(r))),n=r/m;return (n<=1?1:n<=2?2:n<=5?5:10)*m;}
@@ -979,6 +1024,8 @@ function stackOf(pt){const m=pt.cool_memory,d=m&&m.doc_stack;if(!d)return null;
   return parts.length?{parts,total}:null;}
 function masterOf(pt){const m=pt.cool_memory;
   return m&&m.peak_master_hwm_mb!=null?m.peak_master_hwm_mb:null;}
+function tabOf(pt){const b=pt.browser_memory,r=b&&b.renderer;
+  return r&&r.rss!=null?r.rss:null;}
 function memOf(pt){const m=pt.cool_memory;if(!m)return null;
   if(m.peak_doc_mem_mb!=null)return m.peak_doc_mem_mb;
   if(m.peak_total_mem_mb!=null)return m.peak_total_mem_mb;
@@ -994,7 +1041,8 @@ function render(svg, runs, W=520, H=300){
     const mm=memOf(r);if(mm!=null&&mm>memMax)memMax=mm;
     const wm=masterOf(r);if(wm!=null&&wm>memMax)memMax=wm;
     const sk=stackOf(r);if(sk&&sk.total>memMax)memMax=sk.total;
-    const bh=heapOf(r);if(bh!=null&&bh>memMax)memMax=bh;});
+    const bh=heapOf(r);if(bh!=null&&bh>memMax)memMax=bh;
+    const tb=tabOf(r);if(tb!=null&&tb>memMax)memMax=tb;});
   const msTop=niceCeil(msMax)||1, memTop=niceCeil(memMax)||1;
   const yMs=v=>y1-(v/msTop)*pH, yMem=v=>y1-(v/memTop)*pH;
   const step=niceStep(msTop);
@@ -1055,6 +1103,7 @@ function render(svg, runs, W=520, H=300){
   plot("master_mem mem",yMem,masterOf);
   plot("cool_mem mem",yMem,memOf);
   plot("browser_mem mem",yMem,heapOf);
+  plot("tab_mem mem",yMem,tabOf);
   // x labels: short commit, thinned if crowded
   const everyk=Math.ceil(n/Math.max(6,Math.floor(pW/75)));
   runs.forEach((r,i)=>{if(i%everyk)return;svg.appendChild(el("text",{class:"xlab",x:xAt(i),y:y1+15,"text-anchor":"middle"},r.commit?shortLabel(r.commit):("#"+i)));});
@@ -1193,6 +1242,21 @@ function openDetail(runs,i){
     h+=`<tr><td>kit memory (MB)</td><td colspan="6" style="text-align:left">`+
       STACK.filter(([k])=>ds[k]!=null).map(([k,,name])=>`${name} ${Math.round(ds[k])}`).join(", ")+
       `, resident ${Math.round(tot)}</td></tr>`;}
+  const bm=r.browser_memory;
+  if(bm){
+    // Read from /proc/<pid>/status: shared memory counts once per process that
+    // maps it, so the total is an upper bound.
+    const part=(name,g)=>{if(!g)return null;const b=[];
+      if(g.rss!=null)b.push(`resident ${asMb(g.rss)}`);
+      if(g.hwm!=null)b.push(`peak ${asMb(g.hwm)}`);
+      if(g.anon!=null)b.push(`anonymous ${asMb(g.anon)}`);
+      if(g.shmem!=null)b.push(`shared memory ${asMb(g.shmem)}`);
+      if(g.pss!=null)b.push(`proportional ${asMb(g.pss)}`);
+      if(g.pids)b.push(`${g.pids} process${g.pids>1?"es":""}`);
+      return b.length?`${name}: ${b.join(", ")}`:null;};
+    const rows=[part("page (renderer)",bm.renderer),part("GPU",bm.gpu),part("browser and utility",bm.other)].filter(Boolean);
+    if(bm.peak_total_rss_mb!=null)rows.push(`all Chromium processes: resident ${asMb(bm.peak_total_rss_mb)}`);
+    if(rows.length)h+=`<tr><td>browser (MB)</td><td colspan="6" style="text-align:left">${rows.join("<br>")}</td></tr>`;}
   const mc=r.machine;
   if(mc){const bits=[];const pr=mc.probe_ms;
     if(pr)bits.push(`probe ${Math.round(pr.med)} ms median, ${Math.round(pr.p90)} ms p90`+

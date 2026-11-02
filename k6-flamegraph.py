@@ -32,6 +32,7 @@ from pathlib import Path
 
 from pylib.perfutils import (
     MemorySampler,
+    browser_pids,
     collect_perf,
     collect_workload,
     document_kit_pids,
@@ -922,7 +923,14 @@ def main() -> int:
         # runs, so the JSON carries a time series and a true concurrent peak.
         # coolwsd's and forkit's pids are stable for the run, so resolve once.
         mem_wsd_pids = sorted(set(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"])))
-        mem_sampler = MemorySampler({"coolwsd": mem_wsd_pids, "kit": kit_pids})
+        # The browser runs in the k6 container and starts its processes as the
+        # page needs them, so those groups are looked up again at each sample.
+        mem_sampler = MemorySampler({
+            "coolwsd": mem_wsd_pids, "kit": kit_pids,
+            "browser_renderer": lambda: browser_pids()["renderer"],
+            "browser_gpu": lambda: browser_pids()["gpu"],
+            "browser_other": lambda: browser_pids()["other"],
+        })
 
         mem_sampler.sample()
         while True:
