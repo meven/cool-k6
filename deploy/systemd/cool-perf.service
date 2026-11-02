@@ -17,3 +17,5 @@ ExecStart=@REPO@/deploy/nightly
 TimeoutStartSec=6h
 # Stop coolwsd, its kits and the WOPI host with the job.
 KillMode=control-group
+# k6-flamegraph.py --cgroup creates a cgroup for its coolwsd under this one.
+Delegate=yes

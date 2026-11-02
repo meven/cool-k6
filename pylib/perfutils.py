@@ -423,10 +423,90 @@ def proc_cgroup(pid: str) -> str | None:
     return None
 
 
-def coolwsd_cgroup() -> str | None:
-    """cgroup of the running coolwsd (fallback when no kit is found)."""
-    pids = pgrep(["-x", "coolwsd"])
-    return proc_cgroup(pids[0]) if pids else None
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+def make_capture_cgroup(name: str, root: Path = CGROUP_ROOT) -> Path | None:
+    """Create <own cgroup>/<name>/{wsd,kit} and return <own cgroup>/<name>.
+
+    None when this process may not create cgroups under its own: a service
+    without Delegate=yes, or no cgroup v2 at root."""
+    own = proc_cgroup("self")
+    if own is None or not (root / "cgroup.controllers").exists():
+        return None
+    base = root / own / name
+    created: list[Path] = []
+    try:
+        for d in (base, base / "wsd", base / "kit"):
+            d.mkdir()
+            created.append(d)
+    except OSError:
+        for d in reversed(created):
+            d.rmdir()
+        return None
+    return base
+
+
+def _is_kit_comm(comm: str) -> bool:
+    """forkit (coolforkit-* before it renames itself) and the processes it
+    forks: kit_spare_*, kitbroker_*, kitbgsv_*."""
+    return comm == "forkit" or comm.startswith("coolforkit") or comm.startswith("kit")
+
+
+def move_kit_processes(base: Path, timeout_s: float = 15.0,
+                       comm_of=None) -> tuple[list[str], bool]:
+    """Move forkit and the kits it already forked from base/wsd to base/kit.
+
+    A kit forked while forkit is still in wsd starts in wsd, so scan until
+    forkit was seen and three passes in a row moved nothing.
+    Returns (moved pids, forkit seen)."""
+    if comm_of is None:
+        def comm_of(pid: str) -> str:
+            return Path(f"/proc/{pid}/comm").read_text().strip()
+    moved: list[str] = []
+    forkit_seen = False
+    quiet = 0
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        found = False
+        for pid in (base / "wsd" / "cgroup.procs").read_text().split():
+            try:
+                comm = comm_of(pid)
+                if not _is_kit_comm(comm):
+                    continue
+                (base / "kit" / "cgroup.procs").write_text(pid)
+            except OSError:
+                continue  # the process exited meanwhile
+            moved.append(pid)
+            found = True
+            if comm == "forkit" or comm.startswith("coolforkit"):
+                forkit_seen = True
+        quiet = 0 if (found or not forkit_seen) else quiet + 1
+        if quiet >= 3:
+            break
+        time.sleep(0.2)
+    return moved, forkit_seen
+
+
+def remove_capture_cgroup(base: Path, timeout_s: float = 10.0) -> bool:
+    """Kill what is left under base (cgroup.kill), then remove base/kit,
+    base/wsd and base. False if a directory is still there at the timeout."""
+    kill = base / "cgroup.kill"
+    if kill.exists():
+        try:
+            kill.write_text("1")
+        except OSError:
+            pass
+    deadline = time.monotonic() + timeout_s
+    for d in (base / "kit", base / "wsd", base):
+        while d.exists():
+            try:
+                d.rmdir()
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.2)
+    return True
 
 
 def collect_workload(browser_log: Path) -> dict:

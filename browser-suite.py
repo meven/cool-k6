@@ -282,9 +282,12 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
     for app, doc in documents():
             out_rel = (results_dir / runid / "flamegraph" / f"{app}-{doc}").as_posix()
             print(f"flamegraph {app}-{doc}: own single-kit cool -> {out_rel} ...")
+            # --cgroup counts and records the instance by cgroup from before
+            # the document opens. pid mode attaches only once the kit is
+            # found, so its counts miss a varying part of the load.
             cmd = [sys.executable, "k6-flamegraph.py", test_script(app, doc),
                    "--out-dir", out_rel, "--coolwsd-dir", coolwsd_dir,
-                   "--new-instance"]
+                   "--new-instance", "--cgroup"]
             # Tee the harness output into the run directory. Without this a
             # failed document left only coolwsd.log behind, which says nothing
             # about why the harness itself gave up.

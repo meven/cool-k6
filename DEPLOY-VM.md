@@ -150,8 +150,9 @@ It does the following, and prints a heading for each step:
   of the corpus
 - installs FlameGraph in `/opt/FlameGraph`
 - writes `/etc/sysctl.d/90-cool-perf.conf` and applies it:
-  `kernel.perf_event_paranoid = 2` lets perf record the suite's own processes,
-  and `kernel.apparmor_restrict_unprivileged_userns = 0` lets the document kit
+  `kernel.perf_event_paranoid = 0` lets perf count and record the cgroup of
+  the suite's coolwsd, `kernel.perf_event_mlock_kb = 32768` gives the dwarf
+  call graphs their ring buffer, and `kernel.apparmor_restrict_unprivileged_userns = 0` lets the document kit
   build its jail. Ubuntu restricts both by default
 - adds the `collabora` user to the `docker` group, because the k6 browser
   tests run in a container. It creates the user if it does not exist yet

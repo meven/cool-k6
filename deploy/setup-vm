@@ -116,8 +116,10 @@ step "kernel settings"
 conf=/etc/sysctl.d/90-cool-perf.conf
 {
     echo "# Written by perf-dashboard/deploy/setup-vm."
-    echo "# perf may record processes of the same user by pid."
-    echo "kernel.perf_event_paranoid = 2"
+    echo "# perf may count and record a cgroup on every CPU (perf -a -G)."
+    echo "kernel.perf_event_paranoid = 0"
+    echo "# perf record --call-graph dwarf needs a larger ring buffer."
+    echo "kernel.perf_event_mlock_kb = 32768"
     # Only a key the kernel has: sysctl --system stops at an unknown one and
     # would drop the line above with it.
     if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then

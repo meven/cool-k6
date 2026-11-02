@@ -216,25 +216,24 @@ def checks(publishing: bool = True, flamegraphs: bool = True) -> list[tuple[str,
             K6_IMAGE if img.returncode == 0
             else f"{K6_IMAGE} not pulled yet, the first run will fetch it")
 
-    # perf sampling permission. The flamegraph pass records its own coolwsd
-    # processes by pid, which is unprivileged at perf_event_paranoid <= 2 (see
-    # prepare_perf in k6-flamegraph.py). Only a system-wide capture would need
-    # <= 0, and the suite never asks for one.
+    # perf sampling permission. The flamegraph pass counts and records its own
+    # coolwsd by cgroup (k6-flamegraph.py --cgroup), which uses CPU-wide events
+    # and needs perf_event_paranoid <= 0 (see prepare_perf in k6-flamegraph.py).
     try:
         paranoid = int(Path("/proc/sys/kernel/perf_event_paranoid").read_text().strip())
     except Exception:
         paranoid = None
     sudo_ok = run(["sudo", "-n", "true"]).returncode == 0 if shutil.which("sudo") else False
-    if paranoid is not None and paranoid <= 2:
+    if paranoid is not None and paranoid <= 0:
         add(OK, "perf permission",
-            f"perf_event_paranoid={paranoid}, enough to record our own processes by pid")
+            f"perf_event_paranoid={paranoid}, enough to count and record a cgroup")
     elif sudo_ok:
         add(WARN, "perf permission",
             f"perf_event_paranoid={paranoid}, falling back to passwordless sudo")
     else:
         add(FAIL if flamegraphs else WARN, "perf permission",
             f"perf_event_paranoid={paranoid} and sudo would prompt: "
-            "set kernel.perf_event_paranoid=2 (sysctl) or grant NOPASSWD perf"
+            "set kernel.perf_event_paranoid=0 (sysctl) or grant NOPASSWD perf"
             + ("" if flamegraphs else ", which only the flamegraph pass needs"))
 
     # The kit runs in a jail built from user namespaces.
