@@ -33,6 +33,7 @@ from pathlib import Path
 from pylib.perfutils import (
     MemorySampler,
     browser_pids,
+    descendant_pids,
     collect_perf,
     collect_workload,
     document_kit_pids,
@@ -791,8 +792,8 @@ def main() -> int:
         def start_perf_stat_groups() -> list[subprocess.Popen]:
             """pid mode: start one perf stat per process group. coolwsd/forkit
             are the WSD side; kitbroker_* is the document kit (LibreOfficeKit
-            work). pgrep also matches any other coolwsd on the machine."""
-            wsd_pids = sorted(set(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"])))
+            work)."""
+            wsd_pids = sorted(set(ours(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"]))))
             groups = [("coolwsd", wsd_pids), ("kit", kit_pids)]
             return [p for label, pids in groups
                     if (p := start_perf_stat_group(label, pids)) is not None]
@@ -830,13 +831,26 @@ def main() -> int:
         #    before attaching (and its pid is what resolves the jailed symbols).
         kit_pids: list[str] = []
 
+        def ours(pids: list[str]) -> list[str]:
+            """pids without the processes of a coolwsd this tool did not launch,
+            such as the instance already serving port 9980. A process outside
+            every coolwsd tree is kept."""
+            if not (started_coolwsd and coolwsd_proc):
+                return pids
+            own = descendant_pids([str(coolwsd_proc.pid)])
+            others = [p for p in pgrep(["-x", "coolwsd"]) if p not in own]
+            if not others:
+                return pids
+            theirs = descendant_pids(others)
+            return [p for p in pids if p not in theirs]
+
         def launch_and_wait_for_kit() -> tuple[float, subprocess.Popen, list[str]]:
             start = time.monotonic()
             proc = build_runner()
             print("waiting for the document kit (kitbroker_*) to spawn ...")
             pids: list[str] = []
             for i in range(30):
-                pids = document_kit_pids()
+                pids = ours(document_kit_pids())
                 if pids:
                     print(f"document kit pid(s): {','.join(pids)}")
                     break
@@ -877,7 +891,7 @@ def main() -> int:
             # for the kit, then attach.
             runner_start, runner_proc, kit_pids = launch_and_wait_for_kit()
             cool_pids = sorted(set(
-                pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"]) + kit_pids))
+                ours(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"])) + kit_pids))
             if not cool_pids:
                 print("no coolwsd processes found; perf will record system-wide (-a)")
                 target = ["-a"]
@@ -922,7 +936,7 @@ def main() -> int:
         # Sample resident memory every couple of seconds while the workload
         # runs, so the JSON carries a time series and a true concurrent peak.
         # coolwsd's and forkit's pids are stable for the run, so resolve once.
-        mem_wsd_pids = sorted(set(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"])))
+        mem_wsd_pids = sorted(set(ours(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"]))))
         # The browser runs in the k6 container and starts its processes as the
         # page needs them, so those groups are looked up again at each sample.
         mem_sampler = MemorySampler({

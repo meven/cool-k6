@@ -219,6 +219,38 @@ def pgrep(args: list[str]) -> list[str]:
     return [p for p in res.stdout.split() if p]
 
 
+def descendant_pids(roots: list[str], proc: Path = Path("/proc")) -> set[str]:
+    """The pids in roots and every process below them, from the parent pid in
+    /proc/<pid>/stat. A process in the session of a root counts as below it,
+    which keeps a process whose parent exited and that init adopted."""
+    children: dict[str, list[str]] = {}
+    sessions: dict[str, list[str]] = {}
+    for d in proc.iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            stat = (d / "stat").read_text()
+        except OSError:
+            continue
+        # The command name is in parentheses and may hold spaces, and the
+        # parent pid is the second field after it.
+        fields = stat[stat.rfind(")") + 1:].split()
+        if len(fields) > 3:
+            children.setdefault(fields[1], []).append(d.name)
+            sessions.setdefault(fields[3], []).append(d.name)
+    found = set(roots)
+    todo = list(roots)
+    for root in roots:
+        todo.extend(p for p in sessions.get(root, []) if p not in found)
+        found.update(sessions.get(root, []))
+    while todo:
+        for child in children.get(todo.pop(), []):
+            if child not in found:
+                found.add(child)
+                todo.append(child)
+    return found
+
+
 def document_kit_pids() -> list[str]:
     """Live kit processes serving a document. The doc kit's comm is
     kitbroker_<hash> (see wsd/AdminModel.cpp), and its lokit_runloop thread runs
