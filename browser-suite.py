@@ -1212,11 +1212,13 @@ function openDetail(runs,i){
   mmeta.innerHTML=meta;
   const cols=["avg","min","med","p90","p95","max"];
   let h='<table><thead><tr><th>metric</th>'+cols.map(c=>`<th>${c}</th>`).join("")+'</tr></thead><tbody>';
-  Object.keys(r.metrics).forEach(name=>{const s=r.metrics[name]||{};
-    h+=`<tr><td>${name.replace(/_ms$/,"")} (ms)</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
+  // a metric name ends in its unit: _ms for times, _mb for the browser heap
+  const metricLabel=name=>/_mb$/.test(name)?[name.replace(/_mb$/,""),"MB"]:[name.replace(/_ms$/,""),"ms"];
+  Object.keys(r.metrics).forEach(name=>{const s=r.metrics[name]||{};const [label,unit]=metricLabel(name);
+    h+=`<tr><td>${label} (${unit})</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
   // the same test run again under perf for the flamegraph, slower by nature
-  Object.keys(r.profiled_metrics||{}).forEach(name=>{const s=r.profiled_metrics[name]||{};
-    h+=`<tr class="prof"><td>${name.replace(/_ms$/,"")} under perf (ms)</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
+  Object.keys(r.profiled_metrics||{}).forEach(name=>{const s=r.profiled_metrics[name]||{};const [label,unit]=metricLabel(name);
+    h+=`<tr class="prof"><td>${label} under perf (${unit})</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
   const cm=r.cool_memory;
   const asMb=v=>v==null?null:Math.round(v);
   if(cm){
