@@ -384,15 +384,21 @@ def browser_pids(proc: Path = Path("/proc")) -> dict[str, list[str]]:
     browser process, the zygote and the utility processes).
 
     A Chromium process is one whose program is named chrom* or headless_shell and
-    which runs in a docker cgroup. Its kind is its --type= argument."""
+    which runs in a docker cgroup. Its kind is its --type= argument. The
+    processes forked from the zygote rewrite their command line as one string
+    with spaces between the arguments, so a single entry is split on spaces."""
     out: dict[str, list[str]] = {"renderer": [], "gpu": [], "other": []}
     for d in proc.iterdir():
         if not d.name.isdigit():
             continue
         try:
-            argv = (d / "cmdline").read_bytes().split(b"\0")
+            argv = [a for a in (d / "cmdline").read_bytes().split(b"\0") if a]
             cgroup = (d / "cgroup").read_text()
         except OSError:
+            continue
+        if len(argv) == 1:
+            argv = argv[0].split(b" ")
+        if not argv:
             continue
         program = argv[0].decode(errors="replace").rsplit("/", 1)[-1]
         if not (program.startswith("chrom") or program == "headless_shell"):
