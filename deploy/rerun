@@ -1,0 +1,73 @@
+#!/bin/bash
+# Build the commits of past runs again, measure them, and replace the old runs
+# in the store with the new ones.
+#
+# Stop cool-perf.timer as root, then run it as the service user:
+#
+#   deploy/rerun 20261102T121359Z-e6aa2e06e7ec 20261102T130552Z-2678f352ec69 ...
+#
+# and start the timer again when it is done.
+#
+# Give the run ids oldest first. The dashboard orders points by the time they
+# were measured, so this order keeps the commits in order on the charts, and
+# each build is an incremental one on top of the previous commit.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+cd "$REPO"
+[ $# -gt 0 ] || { echo "usage: $0 <runid>..." >&2; exit 2; }
+
+set -a; . /etc/cool-perf.env; set +a
+: "${COOLWSD_DIR:?not set in /etc/cool-perf.env}"
+STORE=${COOL_PERF_STORE:-/var/lib/cool-perf}
+
+# The same lock as deploy/nightly, so a timer run cannot start in between.
+STATE=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
+exec 9>"$STATE/lock"
+flock -n 9 || { echo "a nightly run is running; stop cool-perf.timer and wait" >&2; exit 1; }
+
+# The test bundles, rebuilt when the checkout moved, as deploy/nightly does.
+head=$(git rev-parse HEAD)
+if [ ! -f dist/.built-from ] || [ "$(cat dist/.built-from)" != "$head" ]; then
+    npm ci --no-audit --no-fund
+    npm run build
+    echo "$head" > dist/.built-from
+fi
+
+build_args=()
+[ "${COOL_PERF_ENGINE:-1}" = 1 ] && build_args+=(--engine)
+[ "${COOL_PERF_SAVE_BUILDS:-0}" = 1 ] || build_args+=(--no-save)
+
+failed=()
+for runid in "$@"; do
+    sha=${runid#*-}
+    echo "=== $runid: building $sha"
+    if ! ./cool-build "${build_args[@]}" --ref "$sha"; then
+        echo "the build of $sha failed; keeping $runid" >&2
+        failed+=("$runid")
+        continue
+    fi
+    pkill -u "$(id -u)" -x coolwsd || true
+    echo "=== $runid: measuring $sha"
+    # Publish even a busy run: a retry here would measure the same build again.
+    if ! COOL_PERF_BUSY_RETRIES=0 ./cool-ci run; then
+        echo "cool-ci run failed for $sha" >&2
+    fi
+    new=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["runid"])' \
+        "$STORE/last-run.json")
+    if [ "$new" != "$runid" ] && [ "${new#*-}" = "$sha" ]; then
+        echo "=== replacing $runid with $new"
+        rm -rf "${STORE:?}/results/$runid" "$STORE/junit/$runid.xml"
+    else
+        echo "no new run of $sha was published; keeping $runid" >&2
+        failed+=("$runid")
+    fi
+done
+
+python3 browser-suite.py --results "$STORE/results" -o "$STORE/index.html"
+
+if [ ${#failed[@]} -gt 0 ]; then
+    echo "not replaced: ${failed[*]}" >&2
+    exit 1
+fi
+echo "all ${#} runs replaced"

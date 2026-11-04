@@ -19,6 +19,15 @@ fi
 mkdir -p "$OUT_DIR"
 chmod o+w "$OUT_DIR"
 
+# Without enable-precise-memory-info Chromium rounds performance.memory and
+# can return a cached value, so browser_heap_mb would not follow the page.
+# k6 passes each comma-separated entry to Chromium as a --flag. Setting the
+# variable replaces the image's own K6_BROWSER_ARGS=no-sandbox, and Chromium
+# aborts at launch in the container without no-sandbox, so keep it here.
+if [ -z "$K6_BROWSER_ARGS" ]; then
+    K6_BROWSER_ARGS=no-sandbox,enable-precise-memory-info
+fi
+
 # Host networking so the container's localhost is the host's: COOL and the
 # WOPI host run on the host (localhost:9980 / :3000), and with the default
 # bridge network the container's 127.0.0.1 is itself, giving "connection
@@ -39,5 +48,6 @@ docker run --network "${COOL_K6_DOCKER_NETWORK:-host}" \
        -e FILE_ID \
        -e COMMIT \
        -e FEEDBACK_SLA_MS \
+       -e K6_BROWSER_ARGS="$K6_BROWSER_ARGS" \
        grafana/k6:1.7.1-with-browser \
        "$@"

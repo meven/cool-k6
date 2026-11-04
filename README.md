@@ -14,6 +14,8 @@ Two layers live here:
 
 Start with `PERFORMANCE_TESTING.md` to run a test by hand, and with
 `CI-JENKINS.md` to run the suite from Jenkins on a dedicated VM.
+`DEPLOY-VM.md` sets up a VM that builds main and measures it every night
+with a systemd timer, without Jenkins.
 
 ## The performance suite
 

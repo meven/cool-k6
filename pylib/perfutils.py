@@ -219,6 +219,38 @@ def pgrep(args: list[str]) -> list[str]:
     return [p for p in res.stdout.split() if p]
 
 
+def descendant_pids(roots: list[str], proc: Path = Path("/proc")) -> set[str]:
+    """The pids in roots and every process below them, from the parent pid in
+    /proc/<pid>/stat. A process in the session of a root counts as below it,
+    which keeps a process whose parent exited and that init adopted."""
+    children: dict[str, list[str]] = {}
+    sessions: dict[str, list[str]] = {}
+    for d in proc.iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            stat = (d / "stat").read_text()
+        except OSError:
+            continue
+        # The command name is in parentheses and may hold spaces, and the
+        # parent pid is the second field after it.
+        fields = stat[stat.rfind(")") + 1:].split()
+        if len(fields) > 3:
+            children.setdefault(fields[1], []).append(d.name)
+            sessions.setdefault(fields[3], []).append(d.name)
+    found = set(roots)
+    todo = list(roots)
+    for root in roots:
+        todo.extend(p for p in sessions.get(root, []) if p not in found)
+        found.update(sessions.get(root, []))
+    while todo:
+        for child in children.get(todo.pop(), []):
+            if child not in found:
+                found.add(child)
+                todo.append(child)
+    return found
+
+
 def document_kit_pids() -> list[str]:
     """Live kit processes serving a document. The doc kit's comm is
     kitbroker_<hash> (see wsd/AdminModel.cpp), and its lokit_runloop thread runs
@@ -245,14 +277,17 @@ def read_proc_mem(pid: str) -> dict[str, int]:
     private for the pages a kit goes on to write. Shared_Clean is mostly the
     mapped engine libraries."""
     out: dict[str, int] = {}
+    status_keys = {"VmRSS": "rss_kb", "VmHWM": "hwm_kb", "RssAnon": "rss_anon_kb",
+                   "RssFile": "rss_file_kb", "RssShmem": "rss_shmem_kb"}
     try:
         for line in Path(f"/proc/{pid}/status").read_text().splitlines():
-            if line.startswith("VmRSS:"):
-                out["rss_kb"] = int(line.split()[1])
-            elif line.startswith("VmHWM:"):
-                out["hwm_kb"] = int(line.split()[1])
+            key = line.split(":", 1)[0]
+            if key in status_keys:
+                out[status_keys[key]] = int(line.split()[1])
     except (OSError, ValueError):
         return {}
+    if "rss_kb" not in out:
+        return {}  # a kernel thread, or a process that is exiting
     wanted = {"Pss": "pss_kb", "Private_Dirty": "private_dirty_kb",
               "Private_Clean": "private_clean_kb", "Shared_Dirty": "shared_dirty_kb",
               "Shared_Clean": "shared_clean_kb"}
@@ -317,6 +352,7 @@ def group_mem(pids: list[str]) -> dict[str, int]:
     the sum of those over a group tells how much base each member carries, not
     how much memory the group holds."""
     agg: dict[str, int] = {"rss_kb": 0, "hwm_kb": 0}
+    status_keys = ("rss_anon_kb", "rss_file_kb", "rss_shmem_kb")
     smaps_keys = ("pss_kb", "private_dirty_kb", "private_clean_kb",
                   "shared_dirty_kb", "shared_clean_kb")
     split_keys = ("lib_rss_kb", "other_rss_kb", "anon_rss_kb",
@@ -328,6 +364,9 @@ def group_mem(pids: list[str]) -> dict[str, int]:
             continue
         agg["rss_kb"] += m.get("rss_kb", 0)
         agg["hwm_kb"] += m.get("hwm_kb", 0)
+        for key in status_keys:
+            if key in m:
+                agg[key] = agg.get(key, 0) + m[key]
         for key in smaps_keys:
             if key in m:
                 smaps[key] = smaps.get(key, 0) + m[key]
@@ -338,10 +377,50 @@ def group_mem(pids: list[str]) -> dict[str, int]:
     return agg
 
 
+def browser_pids(proc: Path = Path("/proc")) -> dict[str, list[str]]:
+    """The Chromium processes that k6 runs in its container, by kind:
+    "renderer" (the pages, frames of the same site share one), "gpu" (the
+    compositor, which rasterises in software when headless) and "other" (the
+    browser process, the zygote and the utility processes).
+
+    A Chromium process is one whose program is named chrom* or headless_shell and
+    which runs in a docker cgroup. Its kind is its --type= argument. The
+    processes forked from the zygote rewrite their command line as one string
+    with spaces between the arguments, so a single entry is split on spaces."""
+    out: dict[str, list[str]] = {"renderer": [], "gpu": [], "other": []}
+    for d in proc.iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            argv = [a for a in (d / "cmdline").read_bytes().split(b"\0") if a]
+            cgroup = (d / "cgroup").read_text()
+        except OSError:
+            continue
+        if len(argv) == 1:
+            argv = argv[0].split(b" ")
+        if not argv:
+            continue
+        program = argv[0].decode(errors="replace").rsplit("/", 1)[-1]
+        if not (program.startswith("chrom") or program == "headless_shell"):
+            continue
+        if "docker" not in cgroup:
+            continue
+        kind = "other"
+        for arg in argv[1:]:
+            if arg == b"--type=renderer":
+                kind = "renderer"
+            elif arg == b"--type=gpu-process":
+                kind = "gpu"
+        out[kind].append(d.name)
+    return out
+
+
 class MemorySampler:
     """Samples resident memory of named process groups over time.
 
-    Construct with a mapping of label to pid list, call sample() repeatedly
+    Construct with a mapping of label to pid list, or to a function that returns
+    the pid list at each sample for a group whose processes come and go. Call
+    sample() repeatedly
     while the workload runs, then summary() for the per-group peak and mean.
     The kernel high-water mark (VmHWM) is tracked at each sample rather than
     read once at the end, because the kit is unloaded soon after the workload
@@ -356,6 +435,8 @@ class MemorySampler:
     def sample(self) -> None:
         t = round(time.monotonic() - self._t0, 1)
         for label, pids in self._groups.items():
+            if callable(pids):
+                pids = pids()
             m = group_mem(pids)
             if not (m.get("rss_kb") or m.get("pss_kb")):
                 continue
@@ -366,6 +447,8 @@ class MemorySampler:
             rec = {"t_s": t, "rss_mb": round(m["rss_kb"] / 1024, 1),
                    "pids": len(pids)}
             for key, field in (("pss_kb", "pss_mb"),
+                               ("rss_anon_kb", "rss_anon_mb"),
+                               ("rss_shmem_kb", "rss_shmem_mb"),
                                ("lib_rss_kb", "lib_rss_mb"),
                                ("other_rss_kb", "other_rss_mb"),
                                ("anon_rss_kb", "anon_rss_mb"),
@@ -395,7 +478,8 @@ class MemorySampler:
                 entry["mean_pss_mb"] = round(sum(pss) / len(pss), 1)
             # The private figure is what this group costs on its own and the shared
             # ones are the base it inherited, so both peaks are worth keeping.
-            for field in ("private_dirty_mb", "private_clean_mb",
+            for field in ("rss_anon_mb", "rss_shmem_mb",
+                          "private_dirty_mb", "private_clean_mb",
                           "shared_dirty_mb", "shared_clean_mb",
                           "lib_rss_mb", "other_rss_mb", "anon_rss_mb",
                           "anon_shared_dirty_mb"):
@@ -423,10 +507,90 @@ def proc_cgroup(pid: str) -> str | None:
     return None
 
 
-def coolwsd_cgroup() -> str | None:
-    """cgroup of the running coolwsd (fallback when no kit is found)."""
-    pids = pgrep(["-x", "coolwsd"])
-    return proc_cgroup(pids[0]) if pids else None
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+def make_capture_cgroup(name: str, root: Path = CGROUP_ROOT) -> Path | None:
+    """Create <own cgroup>/<name>/{wsd,kit} and return <own cgroup>/<name>.
+
+    None when this process may not create cgroups under its own: a service
+    without Delegate=yes, or no cgroup v2 at root."""
+    own = proc_cgroup("self")
+    if own is None or not (root / "cgroup.controllers").exists():
+        return None
+    base = root / own / name
+    created: list[Path] = []
+    try:
+        for d in (base, base / "wsd", base / "kit"):
+            d.mkdir()
+            created.append(d)
+    except OSError:
+        for d in reversed(created):
+            d.rmdir()
+        return None
+    return base
+
+
+def _is_kit_comm(comm: str) -> bool:
+    """forkit (coolforkit-* before it renames itself) and the processes it
+    forks: kit_spare_*, kitbroker_*, kitbgsv_*."""
+    return comm == "forkit" or comm.startswith("coolforkit") or comm.startswith("kit")
+
+
+def move_kit_processes(base: Path, timeout_s: float = 15.0,
+                       comm_of=None) -> tuple[list[str], bool]:
+    """Move forkit and the kits it already forked from base/wsd to base/kit.
+
+    A kit forked while forkit is still in wsd starts in wsd, so scan until
+    forkit was seen and three passes in a row moved nothing.
+    Returns (moved pids, forkit seen)."""
+    if comm_of is None:
+        def comm_of(pid: str) -> str:
+            return Path(f"/proc/{pid}/comm").read_text().strip()
+    moved: list[str] = []
+    forkit_seen = False
+    quiet = 0
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        found = False
+        for pid in (base / "wsd" / "cgroup.procs").read_text().split():
+            try:
+                comm = comm_of(pid)
+                if not _is_kit_comm(comm):
+                    continue
+                (base / "kit" / "cgroup.procs").write_text(pid)
+            except OSError:
+                continue  # the process exited meanwhile
+            moved.append(pid)
+            found = True
+            if comm == "forkit" or comm.startswith("coolforkit"):
+                forkit_seen = True
+        quiet = 0 if (found or not forkit_seen) else quiet + 1
+        if quiet >= 3:
+            break
+        time.sleep(0.2)
+    return moved, forkit_seen
+
+
+def remove_capture_cgroup(base: Path, timeout_s: float = 10.0) -> bool:
+    """Kill what is left under base (cgroup.kill), then remove base/kit,
+    base/wsd and base. False if a directory is still there at the timeout."""
+    kill = base / "cgroup.kill"
+    if kill.exists():
+        try:
+            kill.write_text("1")
+        except OSError:
+            pass
+    deadline = time.monotonic() + timeout_s
+    for d in (base / "kit", base / "wsd", base):
+        while d.exists():
+            try:
+                d.rmdir()
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.2)
+    return True
 
 
 def collect_workload(browser_log: Path) -> dict:

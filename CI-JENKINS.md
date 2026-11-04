@@ -95,22 +95,29 @@ perf record -o /dev/null -- true && echo "perf records"
 
 ```
 # /etc/sysctl.d/90-cool-perf.conf
-kernel.perf_event_paranoid = 2
+kernel.perf_event_paranoid = 0
+kernel.perf_event_mlock_kb = 32768
 ```
 
-The flamegraph pass records its own coolwsd processes by pid, and that is
-unprivileged at `perf_event_paranoid <= 2`, so it needs no `sudo` and no
-`NOPASSWD` sudoers entry. Check what the machine actually has, since
-distributions have shipped stricter defaults than upstream in the past:
+The flamegraph pass runs each coolwsd in a cgroup of its own
+(`k6-flamegraph.py --cgroup`): coolwsd in `wsd/`, forkit and its kits in `kit/`.
+`perf stat` counts each cgroup and `perf record` records both from before the
+document opens, so the counts include the whole load. Counting a cgroup uses
+CPU-wide events, which need `perf_event_paranoid <= 0`. The dwarf call graphs
+need the larger `perf_event_mlock_kb`. With both set, the pass needs no `sudo`.
+Check what the machine actually has:
 
 ```
-sysctl kernel.perf_event_paranoid
+sysctl kernel.perf_event_paranoid kernel.perf_event_mlock_kb
 ```
 
-Anything at 2 or below is enough. Only a system-wide capture would want `0` or
-less, and the suite never asks for one. `cool-ci doctor` reports this check as
-`ok` from 2 downwards, and a timing-only run (`--no-flamegraphs`) does not need
-perf at all.
+`cool-ci doctor` reports the permission check as `ok` from 0 downwards, and a
+timing-only run (`--no-flamegraphs`) does not need perf at all.
+
+The harness creates these cgroups under its own, so the service that runs it
+needs `Delegate=yes` (the unit in `deploy/systemd/` has it). Without it the
+harness falls back to attaching by pid once the kit is found, and the counts
+then miss a varying part of the document load.
 
 The document kit jails itself with unprivileged user namespaces. Debian allows
 them out of the box, so nothing is needed there unless the machine has been
@@ -529,12 +536,12 @@ by the harness itself, and the timeout is only a backstop.
 | symptom | cause and fix |
 | --- | --- |
 | `doctor` fails on `docker daemon` | the agent user is not in the `docker` group, or the daemon is not running |
-| `doctor` fails on `perf permission` | `kernel.perf_event_paranoid` is above 1 and sudo would prompt. Set the sysctl to `-1` |
+| `doctor` fails on `perf permission` | `kernel.perf_event_paranoid` is above 0 and sudo would prompt. Set the sysctl to `0` |
 | `doctor` fails on `user namespaces` | the kit cannot build its jail. Check `kernel.apparmor_restrict_unprivileged_userns` and `kernel.unprivileged_userns_clone` |
 | `doctor` warns about leftover coolwsd | a previous run leaked instances. `pkill -f coolwsd`. They hold their ports and compete with the profiled kit |
 | every document fails, `coolwsd.log` ends at the banner | coolwsd started but nothing reached it. Usually the WOPI host: it must be HTTPS and reachable from inside the k6 container, so check `HOST_IP` |
 | captures fail with almost no samples | the kit was idle during the window. `EDIT=1` is set by the pass for this reason. `--min-samples` catches it. The draw documents are the weakest here (7 to 17 samples seen), so expect draw to go unstable before the others |
-| flamegraph frames resolve to `:tid` with no symbols | perf could not read the jailed kit's binaries. This is what `--new-instance` plus pid targeting avoids, so check that the capture really targeted `kit_*` and not the whole tree |
+| flamegraph frames resolve to `:tid` with no symbols | perf could not read the jailed kit's binaries. `--namespaces` should resolve them under `--cgroup`; if the harness reports a high `unresolved` share, compare with a run without `--cgroup` |
 | the numbers moved but the commit did not | make relinked a restored snapshot. Use `cool-ci`, which never runs make, and check `.cool-build-installed` against the label on the chart |
 | no hardware events on the VM | without PMU passthrough, `cycles` cannot be opened. The harness self-tests and falls back to `task-clock`, which is fine for the shape of a flamegraph |
 | k6 container cannot reach the host | `k6-wrap` uses `--network host` because the default bridge fails to create veth pairs on some hosts. Override with `COOL_K6_DOCKER_NETWORK` if your setup differs |

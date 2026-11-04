@@ -1,0 +1,189 @@
+#!/bin/bash
+# Prepare an Ubuntu 26.04 machine to build Collabora Online main and measure
+# each new commit, every hour. See DEPLOY-VM.md for the whole procedure.
+#
+#   sudo deploy/setup-vm                  every step below
+#   sudo deploy/setup-vm --no-packages    skip apt, the slow step
+#
+# Run it as root, from the perf-dashboard checkout that the timer will use.
+# Every step checks what is already there, so running it again after a change
+# to deploy/ only rewrites what changed. It never overwrites /etc/cool-perf.env.
+#
+# It does not build Collabora Online. The first build takes hours, so it is
+# deploy/bootstrap, run afterwards as the service user.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+SVC_USER=${COOL_PERF_USER:-collabora}
+# The home of the service user when it exists already, else /home/<user>.
+SVC_HOME=${COOL_PERF_HOME:-$(getent passwd "$SVC_USER" | cut -d: -f6)}
+SVC_HOME=${SVC_HOME:-/home/$SVC_USER}
+STORE=/var/lib/cool-perf
+ENV_FILE=/etc/cool-perf.env
+PACKAGES=1
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --no-packages) PACKAGES=; shift ;;
+        -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+step() { echo; echo "=== $*"; }
+warn() { echo "!!! $*" >&2; }
+
+[ "$(id -u)" = 0 ] || { echo "run this as root (incus shell gives a root shell)" >&2; exit 1; }
+
+. /etc/os-release
+if [ "${ID:-}" != ubuntu ] || [ "${VERSION_ID:-}" != 26.04 ]; then
+    warn "this is written for Ubuntu 26.04, this machine is ${PRETTY_NAME:-unknown}."
+    warn "The package names may differ. Continuing."
+fi
+
+# In a container the kernel is the host's: its sysctls are read-only here, and
+# docker needs security.nesting on the instance. A VM has neither problem.
+CONTAINER=
+if systemd-detect-virt --container --quiet; then
+    CONTAINER=1
+    warn "this is a container, not a VM. The kernel settings below must be set"
+    warn "on the incus host, and the instance needs security.nesting=true."
+fi
+
+# The size of the filesystem, not the free space, so that a run after the first
+# build passes too.
+MIN_DISK_GB=${COOL_PERF_MIN_DISK_GB:-120}
+disk_gb=$(df --output=size -BG / | tail -1 | tr -dc 0-9)
+if [ "$disk_gb" -lt "$MIN_DISK_GB" ]; then
+    echo "/ is ${disk_gb} GB, and the engine build needs ${MIN_DISK_GB} GB." >&2
+    echo "Grow the disk first, see "The machine" in DEPLOY-VM.md." >&2
+    exit 1
+fi
+
+# An incus bridge can give the machine an IPv6 address with no route out. Each
+# download then waits for the IPv6 connection to time out, and the engine
+# build downloads about a hundred files. Prefer IPv4 when only IPv4 works.
+step "network"
+probe=https://gerrit.collaboraoffice.com/
+if command -v curl >/dev/null \
+        && curl -4 -sS -o /dev/null --max-time 10 "$probe" \
+        && ! curl -6 -sS -o /dev/null --max-time 10 "$probe" 2>/dev/null; then
+    if ! grep -q '^precedence ::ffff:0:0/96' /etc/gai.conf 2>/dev/null; then
+        echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
+        echo "IPv6 has no route out: IPv4 is now preferred, in /etc/gai.conf."
+    fi
+fi
+
+if [ -n "$PACKAGES" ]; then
+    step "enabling source packages, for the engine build dependencies"
+    # 26.04 lists its archives in deb822 form. build-dep needs the deb-src half.
+    src=/etc/apt/sources.list.d/ubuntu.sources
+    if [ -f "$src" ] && grep -q '^Types: deb$' "$src"; then
+        sed -i 's/^Types: deb$/Types: deb deb-src/' "$src"
+    fi
+
+    step "installing packages"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    # The engine is LibreOffice core, and Ubuntu's own libreoffice source
+    # package lists everything its build needs.
+    apt-get build-dep -y libreoffice
+    apt-get install -y --no-install-recommends \
+        git ca-certificates curl openssl build-essential ccache \
+        autoconf automake libtool pkg-config nasm gperf flex bison zip unzip \
+        meson ninja-build cmake \
+        python3 python3-dev python3-lxml python3-polib \
+        libcap-dev libpam0g-dev libzstd-dev libpng-dev libcppunit-dev \
+        libssl-dev libpcre2-dev libkrb5-dev \
+        nodejs npm docker.io linux-perf iproute2 nginx \
+        python3-odf python3-pil python3-matplotlib python3-numpy \
+        libreoffice-writer-nogui libreoffice-calc-nogui \
+        libreoffice-impress-nogui libreoffice-draw-nogui
+    # meson, ninja and cmake build the engine's bundled libraries, such as
+    # harfbuzz. Ubuntu's libreoffice uses the system ones, so build-dep omits
+    # them. The last two lines are for documents/gen-docs.py: its python modules, and
+    # a system LibreOffice for the .docx/.xlsx/.pptx conversions, which the
+    # engine build refuses to do.
+
+    step "installing FlameGraph"
+    if [ ! -d /opt/FlameGraph/.git ]; then
+        git clone --depth 1 https://github.com/brendangregg/FlameGraph /opt/FlameGraph
+    fi
+    ln -sf /opt/FlameGraph/stackcollapse-perf.pl /opt/FlameGraph/flamegraph.pl /usr/local/bin/
+fi
+
+step "kernel settings"
+conf=/etc/sysctl.d/90-cool-perf.conf
+{
+    echo "# Written by perf-dashboard/deploy/setup-vm."
+    echo "# perf may count and record a cgroup on every CPU (perf -a -G)."
+    echo "kernel.perf_event_paranoid = 0"
+    echo "# perf record --call-graph dwarf needs a larger ring buffer."
+    echo "kernel.perf_event_mlock_kb = 32768"
+    # Only a key the kernel has: sysctl --system stops at an unknown one and
+    # would drop the line above with it.
+    if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+        echo "# The document kit builds its jail in a user namespace."
+        echo "kernel.apparmor_restrict_unprivileged_userns = 0"
+    fi
+} > "$conf"
+if [ -z "$CONTAINER" ]; then
+    sysctl -p "$conf"
+else
+    warn "not applied in a container. On the incus host, set:"
+    sed -n 's/^kernel/    kernel/p' "$conf" >&2
+fi
+
+step "service user $SVC_USER, home $SVC_HOME"
+if ! id "$SVC_USER" >/dev/null 2>&1; then
+    useradd --create-home --home-dir "$SVC_HOME" --shell /bin/bash "$SVC_USER"
+fi
+# The k6 browser tests run in a container.
+usermod -aG docker "$SVC_USER"
+systemctl enable --now docker
+install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$STORE"
+
+# The timer runs this checkout, and npm writes node_modules/ and dist/ into
+# it, so the service user owns it.
+if [ "$(stat -c %U "$REPO")" != "$SVC_USER" ]; then
+    chown -R "$SVC_USER:" "$REPO"
+fi
+case $REPO in
+    "$SVC_HOME"/*) ;;
+    *) warn "$REPO is outside $SVC_HOME. The service user must be able to reach it." ;;
+esac
+
+step "configuration in $ENV_FILE"
+if [ ! -f "$ENV_FILE" ]; then
+    sed -e "s|@HOME@|$SVC_HOME|g" "$REPO/deploy/cool-perf.env" > "$ENV_FILE"
+    echo "written. Edit it to change what is built or kept."
+else
+    echo "kept as it is. Compare it with deploy/cool-perf.env for new settings."
+fi
+chmod 644 "$ENV_FILE"
+
+step "systemd units"
+for unit in cool-perf.service cool-perf.timer; do
+    sed -e "s|@REPO@|$REPO|g" -e "s|@USER@|$SVC_USER|g" \
+        "$REPO/deploy/systemd/$unit" > "/etc/systemd/system/$unit"
+done
+systemctl daemon-reload
+# Enabled, not started: the timer waits for its first hour, and until
+# deploy/bootstrap has built the tree a run could only fail.
+systemctl enable cool-perf.timer
+systemctl start cool-perf.timer
+
+step "nginx site for the dashboard"
+sed -e "s|@STORE@|$STORE|g" "$REPO/deploy/nginx/cool-perf.conf" \
+    > /etc/nginx/sites-available/cool-perf.conf
+ln -sf ../sites-available/cool-perf.conf /etc/nginx/sites-enabled/cool-perf.conf
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl enable nginx
+systemctl reload-or-restart nginx
+
+echo
+echo "Machine ready. Next, as $SVC_USER (hours, the first time):"
+echo "    sudo -iu $SVC_USER $REPO/deploy/bootstrap"
+echo "The timer then runs every hour:"
+echo "    systemctl list-timers cool-perf.timer"

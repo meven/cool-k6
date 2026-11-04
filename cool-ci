@@ -24,6 +24,12 @@ Configuration is all environment, so a Jenkins job needs no arguments:
     COOL_PERF_LABEL    label the runs with this instead of the built commit
     PERF_EVENT         perf sampling event (default cycles, self-tested and
                        downgraded automatically when it captures nothing)
+    COOL_PERF_PROBE_MAX      a run is busy when its machine probe is slower than the usual
+                             time by this factor (default 1.2)
+    COOL_PERF_STEAL_MAX      a run is busy above this CPU steal percentage (default 2)
+    COOL_PERF_BUSY_RETRIES   how many busy runs of a commit are left unpublished before one
+                             is published with its busy mark (default 3, 0 publishes them all)
+    COOL_PERF_PROBE_INTERVAL seconds between two machine probes during a run (default 20)
     HOST_IP            IP the k6 container reaches the host on (default: auto)
     WOPI_PORT          port for the test WOPI host (default 3000)
 
@@ -41,6 +47,8 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+from pylib.machine import Sampler, baseline_ms, judge
 
 ROOT = Path(__file__).resolve().parent
 K6_IMAGE = "grafana/k6:1.7.1-with-browser"
@@ -208,25 +216,24 @@ def checks(publishing: bool = True, flamegraphs: bool = True) -> list[tuple[str,
             K6_IMAGE if img.returncode == 0
             else f"{K6_IMAGE} not pulled yet, the first run will fetch it")
 
-    # perf sampling permission. The flamegraph pass records its own coolwsd
-    # processes by pid, which is unprivileged at perf_event_paranoid <= 2 (see
-    # prepare_perf in k6-flamegraph.py). Only a system-wide capture would need
-    # <= 0, and the suite never asks for one.
+    # perf sampling permission. The flamegraph pass counts and records its own
+    # coolwsd by cgroup (k6-flamegraph.py --cgroup), which uses CPU-wide events
+    # and needs perf_event_paranoid <= 0 (see prepare_perf in k6-flamegraph.py).
     try:
         paranoid = int(Path("/proc/sys/kernel/perf_event_paranoid").read_text().strip())
     except Exception:
         paranoid = None
     sudo_ok = run(["sudo", "-n", "true"]).returncode == 0 if shutil.which("sudo") else False
-    if paranoid is not None and paranoid <= 2:
+    if paranoid is not None and paranoid <= 0:
         add(OK, "perf permission",
-            f"perf_event_paranoid={paranoid}, enough to record our own processes by pid")
+            f"perf_event_paranoid={paranoid}, enough to count and record a cgroup")
     elif sudo_ok:
         add(WARN, "perf permission",
             f"perf_event_paranoid={paranoid}, falling back to passwordless sudo")
     else:
         add(FAIL if flamegraphs else WARN, "perf permission",
             f"perf_event_paranoid={paranoid} and sudo would prompt: "
-            "set kernel.perf_event_paranoid=2 (sysctl) or grant NOPASSWD perf"
+            "set kernel.perf_event_paranoid=0 (sysctl) or grant NOPASSWD perf"
             + ("" if flamegraphs else ", which only the flamegraph pass needs"))
 
     # The kit runs in a jail built from user namespaces.
@@ -451,7 +458,12 @@ def cmd_run(args) -> int:
         if args.strict:
             cmd += ["--strict"]
         print("running: " + " ".join(cmd))
-        suite_rc = subprocess.run(cmd, cwd=str(ROOT), env=suite_env).returncode
+        sampler = Sampler(float(env("COOL_PERF_PROBE_INTERVAL", "20")))
+        sampler.start()
+        try:
+            suite_rc = subprocess.run(cmd, cwd=str(ROOT), env=suite_env).returncode
+        finally:
+            machine = sampler.stop()
     finally:
         stop_proc(wopi_proc)
         stop_proc(cool_proc)
@@ -461,15 +473,48 @@ def cmd_run(args) -> int:
         print("no run directory was produced", file=sys.stderr)
         return suite_rc or 1
 
+    store = store_dir()
+    reasons = judge(machine, baseline_ms(store / "results") if (store / "results").is_dir()
+                    else None,
+                    float(env("COOL_PERF_PROBE_MAX", "1.2")),
+                    float(env("COOL_PERF_STEAL_MAX", "2")))
+    machine["busy"] = bool(reasons)
+    (ROOT / "results" / runid / "machine.json").write_text(json.dumps(machine, indent=2) + "\n")
+    for why in reasons:
+        print(f"busy machine: {why}")
+
     # Measuring and keeping are two things. A run on a workstation is often only worth looking
     # at once, and the store lives where only its owner may write.
     if not args.publish:
         print(f"not publishing: {runid} stays in results/")
         return suite_rc
 
-    pub_rc = publish(runid, store_dir(), int(env("COOL_PERF_KEEP", "20")),
-                     junit=junit)
+    if reasons and busy_retry(store, label or runid, int(env("COOL_PERF_BUSY_RETRIES", "3"))):
+        print(f"not publishing {runid}: the next run measures {label} again")
+        return suite_rc
+
+    pub_rc = publish(runid, store, int(env("COOL_PERF_KEEP", "20")), junit=junit)
     return suite_rc or pub_rc
+
+
+def busy_retry(store: Path, label: str, retries: int) -> bool:
+    """Whether a busy run of @p label is to be measured again rather than published.
+
+    The store keeps how many busy runs of the label came before, in busy-retries.json. Once
+    there were @p retries of them, the run is published with its busy mark, so that a commit
+    on a machine that stays busy still gets a point."""
+    path = store / "busy-retries.json"
+    try:
+        counts = json.loads(path.read_text())
+    except (OSError, ValueError):
+        counts = {}
+    done = counts.get(label, 0)
+    if done >= retries:
+        path.unlink(missing_ok=True)
+        return False
+    store.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({label: done + 1}) + "\n")
+    return True
 
 
 # --------------------------------------------------------------------------- #

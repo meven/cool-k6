@@ -1,0 +1,113 @@
+#!/bin/bash
+# First build on a machine that deploy/setup-vm prepared. Run it as the service
+# user, from the checkout that the timer uses:
+#
+#   sudo -iu collabora ~collabora/perf-dashboard/deploy/bootstrap
+#
+# It prepares this checkout (test bundles, WOPI host certificate, document
+# corpus, k6 image), clones online, configures the engine and the server, and
+# builds both. The engine build takes hours the first time, so run it in tmux
+# or screen. A step that is already done is skipped, so after a failure run it
+# again and it continues where it stopped.
+#
+# Settings come from /etc/cool-perf.env. ENGINE_AUTOGEN_ARGS and
+# ONLINE_AUTOGEN_ARGS replace the configure options below.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+cd "$REPO"
+
+if [ -z "${COOLWSD_DIR:-}" ] && [ -r /etc/cool-perf.env ]; then
+    set -a; . /etc/cool-perf.env; set +a
+fi
+: "${COOLWSD_DIR:?not set: run deploy/setup-vm first, or set it in /etc/cool-perf.env}"
+: "${COOL_SRC_URL:=https://github.com/CollaboraOnline/online.mirror.git}"
+: "${COOL_SRC_REF:=origin/main}"
+TREE=$COOLWSD_DIR
+
+# The engine as production builds it (CPLinux-LOKit: optimised, with symbols
+# for perf), less packaging and translations, which a measurement never loads.
+ENGINE_AUTOGEN_ARGS=${ENGINE_AUTOGEN_ARGS:---with-distro=CPLinux-LOKit --without-package-format --without-lang}
+# The server needs --enable-debug: cool-ci starts coolwsd with
+# --find-free-port, and the flamegraph pass adds --singlekit, and coolwsd only
+# accepts both options in a debug build. -O2 keeps the code optimised, where
+# --enable-developer would compile it at -O0. The engine configure finds ccache
+# by itself, and the server configure only uses it through CC and CXX.
+ONLINE_AUTOGEN_ARGS=${ONLINE_AUTOGEN_ARGS:-"--enable-debug --disable-cypress CC='ccache gcc' CXX='ccache g++' CFLAGS='-O2 -g' CXXFLAGS='-O2 -g'"}
+
+step() { echo; echo "=== $*"; }
+
+[ "$(id -un)" != root ] || { echo "run this as the service user, not root" >&2; exit 1; }
+
+# The bootstrap and a nightly run build in the same tree, so they take the
+# same lock. deploy/nightly runs only once the bootstrapped file exists.
+STATE=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
+mkdir -p "$STATE"
+exec 9>"$STATE/lock"
+flock -n 9 || { echo "a bootstrap or a nightly run is already running" >&2; exit 1; }
+
+step "test bundles"
+npm ci --no-audit --no-fund
+npm run build
+
+step "WOPI host certificate"
+if [ ! -f server/npm-server-key.pem ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+        -keyout server/npm-server-key.pem -out server/npm-server-cert.pem \
+        -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+fi
+
+step "document corpus"
+if [ ! -f documents/writer-5mb.odt ]; then
+    python3 documents/gen-docs.py
+fi
+if [ ! -f documents/writer-10mb.odt ]; then
+    python3 documents/gen-docs.py --apps writer --mb 10 --report --no-ooxml --no-image
+fi
+
+step "k6 image"
+docker pull grafana/k6:1.7.1-with-browser
+
+step "online checkout in $TREE"
+if [ ! -d "$TREE/.git" ]; then
+    # The same blobless, single-branch clone that cool-build makes.
+    git clone --filter=blob:none --no-tags --single-branch \
+        --branch "${COOL_SRC_REF#origin/}" "$COOL_SRC_URL" "$TREE"
+fi
+
+# The engine build with symbols is large; the default 5 GB cache would only
+# hold part of it.
+ccache --max-size=30G >/dev/null
+
+step "configuring the engine"
+if [ ! -f "$TREE/engine/config_host.mk" ]; then
+    # shellcheck disable=SC2086
+    (cd "$TREE/engine" && ./autogen.sh $ENGINE_AUTOGEN_ARGS)
+fi
+
+# The server's configure checks for engine/instdir, so the engine is built
+# first.
+step "building the engine (hours the first time)"
+if [ ! -f "$TREE/engine/instdir/program/versionrc" ]; then
+    make -C "$TREE/engine" -j"${COOL_BUILD_JOBS:-$(nproc)}"
+fi
+
+step "configuring the server"
+if [ ! -f "$TREE/Makefile" ]; then
+    # eval keeps the quoting of CFLAGS='-O2 -g' in the variable.
+    (cd "$TREE" && eval "./autogen.sh $ONLINE_AUTOGEN_ARGS")
+fi
+
+step "building the server"
+build_args=()
+[ "${COOL_PERF_SAVE_BUILDS:-0}" = 1 ] || build_args+=(--no-save)
+"$REPO/cool-build" "${build_args[@]}"
+
+step "checking the machine"
+"$REPO/cool-ci" doctor
+
+touch "$STATE/bootstrapped"
+
+echo
+echo "Ready. The timer measures main every night. To measure now:"
+echo "    sudo systemctl start cool-perf.service"

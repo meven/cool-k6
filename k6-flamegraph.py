@@ -32,15 +32,20 @@ from pathlib import Path
 
 from pylib.perfutils import (
     MemorySampler,
+    browser_pids,
+    descendant_pids,
     collect_perf,
     collect_workload,
-    coolwsd_cgroup,
     document_kit_pids,
     flamegraph_sample_count,
+    CGROUP_ROOT,
+    make_capture_cgroup,
+    move_kit_processes,
     pgrep,
     print_memory,
     print_perf,
     print_workload,
+    remove_capture_cgroup,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -184,11 +189,13 @@ def parse_args() -> argparse.Namespace:
         "--cgroup",
         action=argparse.BooleanOptionalAction,
         default=env_bool("COOL_K6_CGROUP", False),
-        help="launch coolwsd in a dedicated cgroup (systemd --scope) and record "
-             "with perf -a -G <cgroup> --namespaces. Captures every kit the "
-             "moment it forks (cgroup membership is inherited across fork and "
-             "survives the jail namespaces), no pid-chasing. Needs systemd-run "
-             "and lowers perf_event_paranoid to 0. Falls back to --pid targeting "
+        help="launch coolwsd in a cgroup of its own, created under this "
+             "process's cgroup, with forkit and its kits moved to a child "
+             "cgroup. perf record and perf stat then count by cgroup "
+             "(perf -a -G) from before the document opens, so the counts do "
+             "not depend on when the kit was found. Needs a cgroup this "
+             "process may create children in (a service needs Delegate=yes) "
+             "and perf_event_paranoid <= 0. Falls back to --pid targeting "
              "if unavailable. (env COOL_K6_CGROUP=1/0)",
     )
     p.add_argument(
@@ -496,13 +503,17 @@ def main() -> int:
             f"(did you run `npm run build` in {SCRIPT_DIR}?)")
 
     cgroup_mode = bool(args.cgroup)
-    if cgroup_mode and shutil.which("systemd-run") is None:
-        print("warning: --cgroup needs systemd-run, which is missing; "
-              "using --pid targeting instead", file=sys.stderr)
-        cgroup_mode = False
     if cgroup_mode and not Path("/sys/fs/cgroup/cgroup.controllers").exists():
         print("warning: --cgroup needs cgroup v2 (unified) mounted at "
               "/sys/fs/cgroup; using --pid targeting instead", file=sys.stderr)
+        cgroup_mode = False
+
+    if (cgroup_mode and not perf_can_bypass_paranoid()
+            and _read_int("/proc/sys/kernel/perf_event_paranoid", 4) > 0
+            and sudo_needs_password() and not sys.stdin.isatty()):
+        print("warning: --cgroup needs kernel.perf_event_paranoid <= 0 and sudo "
+              "cannot lower it here; using --pid targeting instead",
+              file=sys.stderr)
         cgroup_mode = False
 
     sudo_perf, perf_mmap, mmap_desc = prepare_perf(system_wide=cgroup_mode)
@@ -523,7 +534,7 @@ def main() -> int:
             "and perf_event_paranoid.")
     perf_event = chosen
 
-    scope_unit: str | None = None  # transient systemd scope, if we launch one
+    capture_cg: Path | None = None  # cgroup coolwsd runs in, in cgroup mode
 
     coolwsd_proc: subprocess.Popen | None = None
     wopi_proc: subprocess.Popen | None = None
@@ -585,9 +596,9 @@ def main() -> int:
                     pass
                 if not http_ok(f"{coolwsd_url}hosting/discovery"):
                     break
-            if scope_unit:
-                subprocess.run(["systemctl", "--user", "stop", scope_unit],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if capture_cg and not remove_capture_cgroup(capture_cg):
+                print(f"WARNING: could not remove cgroup {capture_cg}",
+                      file=sys.stderr)
             if http_ok(f"{coolwsd_url}hosting/discovery"):
                 print(f"WARNING: coolwsd at {coolwsd_url} still answers after "
                       "SIGTERM and SIGKILL to its process group. It is leaked "
@@ -615,9 +626,9 @@ def main() -> int:
                   "(pkill -f coolwsd) and re-run, or pass --new-instance to "
                   "launch a separate single kit on its own port.", file=sys.stderr)
             if cgroup_mode:
-                print("  cgroup mode: with no dedicated scope, perf -G records "
-                      "whatever cgroup it sits in (may include sibling "
-                      "processes).", file=sys.stderr)
+                print("  --cgroup needs a coolwsd this tool launched; using "
+                      "--pid targeting instead.", file=sys.stderr)
+                cgroup_mode = False
         else:
             if already and args.new_instance:
                 print(f"--new-instance: a coolwsd is already on {coolwsd_url}; "
@@ -633,10 +644,18 @@ def main() -> int:
             # session.
             cmd = shlex.split(args.cool_cmd)
             if cgroup_mode:
-                scope_unit = f"coolperf-{os.getpid()}.scope"
-                cmd = ["systemd-run", "--user", "--scope", "--collect",
-                       f"--unit={scope_unit}", *cmd]
-                print(f"launching coolwsd in cgroup scope {scope_unit} ...")
+                capture_cg = make_capture_cgroup(f"coolperf-{os.getpid()}")
+                if capture_cg is None:
+                    print("warning: --cgroup could not create a cgroup under "
+                          "this process's own (a service needs Delegate=yes); "
+                          "using --pid targeting instead", file=sys.stderr)
+                    cgroup_mode = False
+            if cgroup_mode:
+                # The shell joins wsd/ and execs the command, so coolwsd and
+                # everything it forks start in that cgroup.
+                cmd = ["sh", "-c", 'echo $$ > "$0" && exec "$@"',
+                       str(capture_cg / "wsd" / "cgroup.procs"), *cmd]
+                print(f"launching coolwsd in cgroup {capture_cg}/wsd ...")
             print(f"coolwsd command: {args.cool_cmd}")
             coolwsd_proc = subprocess.Popen(
                 cmd,
@@ -657,6 +676,13 @@ def main() -> int:
             else:
                 wait_for("coolwsd ready", 60,
                          lambda: http_ok(f"{coolwsd_url}hosting/discovery"))
+            if cgroup_mode:
+                moved, forkit_seen = move_kit_processes(capture_cg)
+                print(f"moved forkit and its kits to {capture_cg}/kit "
+                      f"(pids {','.join(moved) or 'none'})")
+                if not forkit_seen:
+                    print("WARNING: no forkit appeared in the coolwsd cgroup; "
+                          "the kit counts will be empty", file=sys.stderr)
 
         wopi_scheme = args.wopi_scheme
         wopi_key = args.wopi_key or str(coolwsd_dir / "etc" / "key.pem")
@@ -732,14 +758,21 @@ def main() -> int:
                 return None
             return proc
 
-        def start_perf_stat_group(label: str, pids: list[str]):
-            """Count instructions/cycles for one process group (its own CSV).
+        def start_perf_stat_group(label: str, pids: list[str] = (),
+                                  cgroup: str | None = None):
+            """Count instructions/cycles for one process group (its own CSV),
+            either a pid set or, in cgroup mode, a cgroup counted on every CPU.
 
-            The groups are disjoint pid sets (coolwsd+forkit vs the document
-            kit), so no task is counted twice - that keeps each event on its
-            own hardware counter instead of multiplexing (which would scale
-            the numbers). Output: perf-stat-<label>.csv."""
-            if not pids:
+            The groups are disjoint, so no task is counted twice - that keeps
+            each event on its own hardware counter instead of multiplexing
+            (which would scale the numbers). Output: perf-stat-<label>.csv."""
+            if cgroup:
+                target = ["-a", "-G", cgroup]
+                desc = f"cgroup {cgroup}"
+            elif pids:
+                target = ["--pid", ",".join(pids)]
+                desc = f"pid {','.join(pids)}"
+            else:
                 print(f"skipping perf stat ({label}): no pids to attach to")
                 return None
             csv_out = out_dir / f"perf-stat-{label}.csv"
@@ -747,21 +780,20 @@ def main() -> int:
                 csv_out.unlink()
             except FileNotFoundError:
                 pass
-            print(f"starting perf stat ({label}: pid {','.join(pids)}) ...")
+            print(f"starting perf stat ({label}: {desc}) ...")
             slog = (out_dir / f"perf-stat-{label}.log").open("w")
             # LC_ALL=C forces a period decimal separator so the -x , CSV holds.
             return subprocess.Popen(
                 [*sudo_perf, "perf", "stat", "-e", "instructions,cycles,task-clock",
-                 "-x", ",", "--pid", ",".join(pids), "-o", str(csv_out)],
+                 *target, "-x", ",", "-o", str(csv_out)],
                 env={**os.environ, "LC_ALL": "C", "LANG": "C"},
                 stdout=slog, stderr=subprocess.STDOUT)
 
         def start_perf_stat_groups() -> list[subprocess.Popen]:
-            """Start one perf stat per process group. coolwsd/forkit are the
-            WSD side; kitbroker_* is the document kit (LibreOfficeKit work).
-            Uses explicit pids regardless of how perf record targets, so it
-            works in both --pid and --cgroup modes."""
-            wsd_pids = sorted(set(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"])))
+            """pid mode: start one perf stat per process group. coolwsd/forkit
+            are the WSD side; kitbroker_* is the document kit (LibreOfficeKit
+            work)."""
+            wsd_pids = sorted(set(ours(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"]))))
             groups = [("coolwsd", wsd_pids), ("kit", kit_pids)]
             return [p for label, pids in groups
                     if (p := start_perf_stat_group(label, pids)) is not None]
@@ -799,13 +831,26 @@ def main() -> int:
         #    before attaching (and its pid is what resolves the jailed symbols).
         kit_pids: list[str] = []
 
+        def ours(pids: list[str]) -> list[str]:
+            """pids without the processes of a coolwsd this tool did not launch,
+            such as the instance already serving port 9980. A process outside
+            every coolwsd tree is kept."""
+            if not (started_coolwsd and coolwsd_proc):
+                return pids
+            own = descendant_pids([str(coolwsd_proc.pid)])
+            others = [p for p in pgrep(["-x", "coolwsd"]) if p not in own]
+            if not others:
+                return pids
+            theirs = descendant_pids(others)
+            return [p for p in pids if p not in theirs]
+
         def launch_and_wait_for_kit() -> tuple[float, subprocess.Popen, list[str]]:
             start = time.monotonic()
             proc = build_runner()
             print("waiting for the document kit (kitbroker_*) to spawn ...")
             pids: list[str] = []
             for i in range(30):
-                pids = document_kit_pids()
+                pids = ours(document_kit_pids())
                 if pids:
                     print(f"document kit pid(s): {','.join(pids)}")
                     break
@@ -824,16 +869,15 @@ def main() -> int:
             return start, proc, pids
 
         if cgroup_mode:
-            # The kit will join coolwsd's scope cgroup on fork, so resolve it now
-            # from the already-running coolwsd; fall back to pid mode if it
-            # cannot be read.
-            cgpath = coolwsd_cgroup()
-            if not cgpath:
-                print("warning: could not resolve coolwsd's cgroup; falling back "
-                      "to --pid targeting", file=sys.stderr)
-                cgroup_mode = False
-
-        if cgroup_mode:
+            # perf -G takes the path relative to the cgroup2 mount, and counts
+            # the tasks of the named cgroup and of its descendants.
+            cgpath = capture_cg.relative_to(CGROUP_ROOT).as_posix()
+            # Both counters run before the document is opened, so they count
+            # the whole load whatever time the kit takes to appear.
+            perf_stat_procs = [
+                p for p in (start_perf_stat_group("coolwsd", cgroup=f"{cgpath}/wsd"),
+                            start_perf_stat_group("kit", cgroup=f"{cgpath}/kit"))
+                if p is not None]
             target = ["-a", "--cgroup", cgpath]
             print(f"perf will record cgroup {cgpath} (system-wide, cgroup-filtered)")
             # start_perf names the event (before --cgroup, as perf requires) and
@@ -841,16 +885,13 @@ def main() -> int:
             perf_proc = start_perf(target, extra=["--namespaces"])
             if perf_proc is None:
                 return 1
-            # perf is already recording the cgroup; now open the document so the
-            # kit is captured from its first instruction. (perf stat is per-pid
-            # and starts below, once the kit pid is known.)
             runner_start, runner_proc, kit_pids = launch_and_wait_for_kit()
         else:
             # perf --pid needs the kit to exist first: open the document, wait
             # for the kit, then attach.
             runner_start, runner_proc, kit_pids = launch_and_wait_for_kit()
             cool_pids = sorted(set(
-                pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"]) + kit_pids))
+                ours(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"])) + kit_pids))
             if not cool_pids:
                 print("no coolwsd processes found; perf will record system-wide (-a)")
                 target = ["-a"]
@@ -876,10 +917,12 @@ def main() -> int:
                   "document, or run the load test without perf.", file=sys.stderr)
             return 1
 
-        # Count instructions/cycles per process group now that the kit pid is
-        # known: one perf stat for coolwsd+forkit, one for the document kit,
-        # written to perf-stat-coolwsd.csv / perf-stat-kit.csv.
-        perf_stat_procs = start_perf_stat_groups()
+        # pid mode: count instructions/cycles per process group now that the
+        # kit pid is known, one perf stat for coolwsd+forkit, one for the
+        # document kit, written to perf-stat-coolwsd.csv / perf-stat-kit.csv.
+        # Whatever the kit ran before this point is not counted.
+        if not cgroup_mode:
+            perf_stat_procs = start_perf_stat_groups()
 
         print(f"waiting for {runner} to finish ...")
         # In pid mode perf only follows the kit(s) that existed at attach time.
@@ -893,8 +936,15 @@ def main() -> int:
         # Sample resident memory every couple of seconds while the workload
         # runs, so the JSON carries a time series and a true concurrent peak.
         # coolwsd's and forkit's pids are stable for the run, so resolve once.
-        mem_wsd_pids = sorted(set(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"])))
-        mem_sampler = MemorySampler({"coolwsd": mem_wsd_pids, "kit": kit_pids})
+        mem_wsd_pids = sorted(set(ours(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"]))))
+        # The browser runs in the k6 container and starts its processes as the
+        # page needs them, so those groups are looked up again at each sample.
+        mem_sampler = MemorySampler({
+            "coolwsd": mem_wsd_pids, "kit": kit_pids,
+            "browser_renderer": lambda: browser_pids()["renderer"],
+            "browser_gpu": lambda: browser_pids()["gpu"],
+            "browser_other": lambda: browser_pids()["other"],
+        })
 
         mem_sampler.sample()
         while True:

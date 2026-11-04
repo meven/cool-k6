@@ -157,21 +157,62 @@ def cool_metrics() -> dict:
     return out
 
 
+def cool_doc_pids(metrics: dict) -> set[str]:
+    """The kit pids of the documents that getMetrics lists, from doc_info{...,pid="P"}."""
+    pids = set()
+    for key in metrics:
+        if key.startswith("doc_info{"):
+            m = re.search(r'pid="(\d+)"', key)
+            if m:
+                pids.add(m.group(1))
+    return pids
+
+
+def doc_private_dirty_kb(pid: str, metrics: dict) -> float:
+    """The Private_Dirty of the kit @p pid in kB, read from /proc now. coolwsd's own
+    doc_memory_used_bytes is the fallback, for a kit whose /proc cannot be read."""
+    from pylib.perfutils import group_mem
+    kb = group_mem([pid]).get("private_dirty_kb")
+    if kb is not None:
+        return float(kb)
+    return metrics.get(f'doc_memory_used_bytes{{pid="{pid}"}}', 0.0) / 1024
+
+
 def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) -> None:
     out = ROOT / out_rel
     out.mkdir(parents=True, exist_ok=True)
     out.chmod(0o777)  # the k6 container user writes metrics.json here
     env = {**os.environ, "USERS": str(users), "OUT_DIR": out_rel, "COMMIT": commit or ""}
     print(f"running {app} {doc} {users}u (commit {commit or 'local'}) ...")
+    # The kits of earlier tests can still be listed while this one starts, so
+    # only the kits that appear during this test are this document's.
+    earlier_kits = cool_doc_pids(cool_metrics())
+    # The 3-user tests have no capture, so sample coolwsd and the Chromium
+    # processes here as the capture does, for every test.
+    from pylib.perfutils import MemorySampler, browser_pids, pgrep
+    groups: dict = {
+        "browser_renderer": lambda: browser_pids()["renderer"],
+        "browser_gpu": lambda: browser_pids()["gpu"],
+        "browser_other": lambda: browser_pids()["other"],
+    }
+    # Only when one coolwsd runs as this user, to be sure that it is the one
+    # that serves COOL_URL.
+    wsd = pgrep(["-x", "coolwsd", "-u", str(os.getuid())])
+    if len(wsd) == 1:
+        groups["coolwsd"] = wsd
+    sampler = MemorySampler(groups)
 
     # Tee what k6 says into the run directory. A scenario that measures nothing used to leave
     # only a metrics.json full of nulls, which says that it failed and nothing about why.
     log = (out / "k6.log").open("wb")
     proc = subprocess.Popen(["./k6-run", test_script(app, doc)], cwd=str(ROOT), env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    # poll COOL's own metrics while the test runs: kit_memory_used_max_bytes is
-    # the document kit's Private_Dirty (the doc's real footprint), and
-    # global_memory_used_bytes is the whole COOL total. Keep the peaks.
+    # Poll while the test runs and keep the peaks: the Private_Dirty of this
+    # test's kit (the document's own footprint), and global_memory_used_bytes,
+    # the whole COOL total. coolwsd's kit_memory_used_max_bytes is not used for
+    # the document: it is the largest kit still listed, often the previous
+    # test's, and coolwsd refreshes it only every few seconds, so a short test
+    # can end before its own kit has a value there.
     peak_doc = peak_total = 0.0
     reached = False
     while proc.poll() is None:
@@ -186,12 +227,11 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
         m = cool_metrics()
         if m:
             reached = True
-        # kit_memory_used_max_bytes is the document kit's Private_Dirty, but it
-        # only reads nonzero while a kit is *assigned* (a doc actively open), so
-        # for short sessions it is often 0; global_memory_used_bytes is the
-        # dependable total (the dashboard falls back to it for the memory line).
-        peak_doc = max(peak_doc, m.get("kit_memory_used_max_bytes", 0.0))
+        kits = cool_doc_pids(m) - earlier_kits
+        doc_kb = sum(doc_private_dirty_kb(pid, m) for pid in kits)
+        peak_doc = max(peak_doc, doc_kb * 1024)
         peak_total = max(peak_total, m.get("global_memory_used_bytes", 0.0))
+        sampler.sample()
         time.sleep(1)
     if proc.stdout:
         rest = proc.stdout.read()
@@ -208,14 +248,32 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
               f"{os.environ.get('COOL_URL', 'https://localhost:9980/')} and "
               f"COOL_ADMIN (default admin:admin).", file=sys.stderr)
     mj = out / "metrics.json"
-    if mj.exists() and (peak_doc or peak_total):
+    mem = sampler.summary()
+    wsd_mem = mem.get("coolwsd", {})
+    browser = browser_memory_of(mem)
+    if mj.exists() and (peak_doc or peak_total or wsd_mem or browser):
         try:
             d = json.loads(mj.read_text())
-            d["cool_memory"] = {
+            cool = {
                 "peak_doc_mem_mb": round(peak_doc / 1048576, 1) if peak_doc else None,
                 "peak_total_mem_mb": round(peak_total / 1048576, 1) if peak_total else None,
             }
-            mj.write_text(json.dumps(d, indent=2))
+            # This coolwsd served the earlier tests too, so its VmHWM can come
+            # from one of them. The peak resident size during this test is this
+            # test's.
+            if wsd_mem.get("peak_rss_mb") is not None:
+                cool["peak_master_rss_mb"] = wsd_mem["peak_rss_mb"]
+            if wsd_mem.get("peak_pss_mb") is not None:
+                cool["peak_master_pss_mb"] = wsd_mem["peak_pss_mb"]
+            d["cool_memory"] = cool
+            if browser:
+                d["browser_memory"] = browser
+            # metrics.json belongs to the k6 container's user, so opening it
+            # for writing here fails: write a file of our own and rename it
+            # over, which the run directory's own permissions allow.
+            tmp = mj.with_name(mj.name + ".tmp")
+            tmp.write_text(json.dumps(d, indent=2))
+            os.replace(tmp, mj)
         except Exception as exc:
             print(f"could not add memory to {mj}: {exc}", file=sys.stderr)
 
@@ -277,9 +335,12 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
     for app, doc in documents():
             out_rel = (results_dir / runid / "flamegraph" / f"{app}-{doc}").as_posix()
             print(f"flamegraph {app}-{doc}: own single-kit cool -> {out_rel} ...")
+            # --cgroup counts and records the instance by cgroup from before
+            # the document opens. pid mode attaches only once the kit is
+            # found, so its counts miss a varying part of the load.
             cmd = [sys.executable, "k6-flamegraph.py", test_script(app, doc),
                    "--out-dir", out_rel, "--coolwsd-dir", coolwsd_dir,
-                   "--new-instance"]
+                   "--new-instance", "--cgroup"]
             # Tee the harness output into the run directory. Without this a
             # failed document left only coolwsd.log behind, which says nothing
             # about why the harness itself gave up.
@@ -607,6 +668,52 @@ def _capture_memory(mj: Path) -> dict | None:
     return out
 
 
+def _capture_browser_memory(mj: Path) -> dict | None:
+    """The memory of the Chromium processes during this run's capture, or None.
+
+    browser_heap_mb is the JavaScript heap of the page alone. The renderer
+    process also holds the DOM, the decoded images and the canvas pixels of the
+    tiles, and the GPU process holds the compositor's buffers. The capture samples
+    these processes from /proc. They belong to the k6 container's user, so only
+    /proc/<pid>/status can be read: the resident size, its anonymous, file and
+    shared memory parts, and the high-water mark. Shared memory is counted in each
+    process that maps it, so the sum over processes is an upper bound."""
+    try:
+        d = json.loads((mj.parent.parent / "metrics.json").read_text())
+    except (OSError, ValueError):
+        return None
+    mem = d.get("memory")
+    if not isinstance(mem, dict):
+        return None
+    return browser_memory_of(mem)
+
+
+def browser_memory_of(mem: dict) -> dict | None:
+    """The browser_memory of a run, from the MemorySampler summary @p mem."""
+    out: dict = {}
+    for label, key in (("browser_renderer", "renderer"), ("browser_gpu", "gpu"),
+                       ("browser_other", "other")):
+        entry = mem.get(label)
+        if not isinstance(entry, dict):
+            continue
+        fields = {"peak_rss_mb": "rss", "peak_rss_hwm_mb": "hwm",
+                  "peak_rss_anon_mb": "anon", "peak_rss_shmem_mb": "shmem",
+                  "peak_pss_mb": "pss", "max_pids": "pids"}
+        out[key] = {name: entry[f] for f, name in fields.items() if entry.get(f) is not None}
+    if not out:
+        return None
+    # The largest sum over the sample times, not the sum of the peaks, which
+    # would count moments that never happened together.
+    by_time: dict = {}
+    for label in ("browser_renderer", "browser_gpu", "browser_other"):
+        entry = mem.get(label)
+        for sample in entry.get("samples", []) if isinstance(entry, dict) else []:
+            by_time[sample["t_s"]] = by_time.get(sample["t_s"], 0.0) + sample.get("rss_mb", 0.0)
+    if by_time:
+        out["peak_total_rss_mb"] = round(max(by_time.values()), 1)
+    return out
+
+
 def _flamegraph_for(mj: Path, results_dir: Path,
                     app: str, doc: str) -> tuple[str | None, bool]:
     """(absolute path to this run's flamegraph or None, was this run profiled).
@@ -646,20 +753,65 @@ def collect(results_dir: Path) -> dict:
         users = int(d.get("users", 1))
         ts = d.get("ts") or datetime.fromtimestamp(mj.stat().st_mtime,
                                                    timezone.utc).isoformat()
+        # k6 reports a trend with no samples as all zeros, and its count of 0 is the only
+        # sign of it, so such a trend is left out like a metric that was never written.
+        metrics = {k: v for k, v in d.get("metrics", {}).items()
+                   if not (isinstance(v, dict) and v.get("count") == 0)}
         # Absolute path here, write_dashboard makes it relative to the html.
         flame, profiled = _flamegraph_for(mj, results_dir, app, doc)
         scen.setdefault(f"{app}|{doc}|{users}", []).append({
             "commit": d.get("commit"), "ts": ts,
             "runid": _runid_of(mj, results_dir),
-            "metrics": d.get("metrics", {}),
+            "metrics": metrics,
             "cool_memory": d.get("cool_memory") or _capture_memory(mj),
+            "browser_memory": d.get("browser_memory") or _capture_browser_memory(mj),
             "instructions": d.get("instructions") or _capture_instructions(mj),
             "flamegraph": flame, "profiled": profiled,
+            "machine": _machine_of(mj, results_dir),
             "file": d.get("file") or files.get(f"{app}|{doc}"),
         })
-    for pts in scen.values():
-        pts.sort(key=lambda p: p["ts"])
+    for key, pts in scen.items():
+        scen[key] = _merge_profiled(pts)
+        scen[key].sort(key=lambda p: p["ts"])
     return scen
+
+
+def _machine_of(mj: Path, results_dir: Path) -> dict | None:
+    """The machine.json of the run that @p mj belongs to: the probe times and the steal time
+    during the run, and whether the machine was busy."""
+    runid = _runid_of(mj, results_dir)
+    if not runid:
+        return None
+    try:
+        return json.loads((results_dir / runid / "machine.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _merge_profiled(pts: list[dict]) -> list[dict]:
+    """Fold each profiled point into the plain point of the same run.
+
+    The plain point keeps its own times on the chart. The times measured under
+    perf move to profiled_metrics, for the run detail. Instructions come from
+    the capture, and its memory figures fill in those the plain run lacks. A
+    profiled point with no plain point in its run stays on the chart as it is."""
+    plain = {p["runid"]: p for p in pts if p["runid"] and not p["profiled"]}
+    out = []
+    for p in pts:
+        host = plain.get(p["runid"]) if p["profiled"] else None
+        if host is None:
+            out.append(p)
+            continue
+        host["profiled_metrics"] = p["metrics"]
+        host["instructions"] = host["instructions"] or p["instructions"]
+        # getMetrics gives the plain run its document and total memory only.
+        # The capture adds the coolwsd peak, the resident sizes and the kit
+        # stack, so merge the two, and keep the plain figure for the same key.
+        if p["cool_memory"]:
+            host["cool_memory"] = {**p["cool_memory"], **(host["cool_memory"] or {})}
+        host["browser_memory"] = host["browser_memory"] or p["browser_memory"]
+        host["flamegraph"] = host["flamegraph"] or p["flamegraph"]
+    return out
 
 
 def demo_history() -> dict:
@@ -718,13 +870,13 @@ DASHBOARD = r"""<!doctype html>
 <style>
   :root{ --surface:#fcfcfb; --panel:#fff; --ink:#0b0b0b; --ink-soft:#52514e;
     --ink-faint:#8a8880; --grid:#e6e6e2; --hair:#dcdbd5; --accent:#2a78d6;
-    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#5a6b7a; --s4:#d11a45; --s5:#0e8aa8; --s6:#a3199b; --s7:#b5651d; --mem:#7a4fc0; --bmem:#d64f9a; --wmem:#b8860b; --ibar-wsd:#8fb8e0; --ibar-kit:#c9b3e6; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
+    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#5a6b7a; --s4:#d11a45; --s5:#0e8aa8; --s6:#a3199b; --s7:#b5651d; --mem:#7a4fc0; --bmem:#d64f9a; --tmem:#8e2f63; --wmem:#b8860b; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
     --app-writer:#2a6cc9; --app-calc:#1a9e4b; --app-impress:#e8710a; --app-draw:#e0a80f;
     --shadow:0 1px 2px rgba(11,11,11,.06),0 8px 24px rgba(11,11,11,.05); }
   @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
     --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee; --ink-soft:#c3c2b7;
     --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35; --accent:#3987e5;
-    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --s6:#e36fd6; --s7:#d9893a; --mem:#9f7be6; --bmem:#e07bb0; --wmem:#d8a72a; --ibar-wsd:#2f4f6e; --ibar-kit:#4a3a63; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
+    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --s6:#e36fd6; --s7:#d9893a; --mem:#9f7be6; --bmem:#e07bb0; --tmem:#f0a6cf; --wmem:#d8a72a; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
     --app-writer:#5a9bea; --app-calc:#35c46f; --app-impress:#ff9440; --app-draw:#f2c94c;
     --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35); }}
   :root[data-theme=dark]{ --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee;
@@ -784,7 +936,15 @@ DASHBOARD = r"""<!doctype html>
   .line.image_displayed_ms{stroke:var(--s6);}
   .line.slide_duplicated_ms{stroke:var(--s7);}
   .line.master_mem{stroke:var(--wmem);stroke-dasharray:2 3;}
-  .ibar{stroke:none;fill-opacity:.55;} .ibar.wsd{fill:var(--ibar-wsd);} .ibar.kit{fill:var(--ibar-kit);}
+  .line.tab_mem{stroke:var(--tmem);stroke-dasharray:8 3;}
+  .line.instr_kit{stroke:var(--ink);stroke-width:3;} .dot.instr_kit{fill:var(--ink);}
+  .line.instr_wsd{stroke:var(--ink-soft);stroke-width:2.5;stroke-dasharray:6 3;} .dot.instr_wsd{fill:var(--ink-soft);}
+  /* the buttons that show or hide a group of lines on every chart */
+  .views{display:inline-flex;gap:6px;align-items:center;}
+  .vt{font:inherit;font-size:12px;cursor:pointer;border:1px solid var(--hair);border-radius:999px;
+    padding:2px 10px;background:var(--surface);color:var(--ink-faint);text-decoration:line-through;}
+  .vt[aria-pressed=true]{background:var(--panel);color:var(--ink);border-color:var(--ink-soft);text-decoration:none;}
+  .legend .key.off{opacity:.35;}
   .sbar{stroke:none;fill-opacity:.85;} .sbar.lib{fill:var(--st-lib);} .sbar.other{fill:var(--st-other);}
   .sbar.inh{fill:var(--st-inh);} .sbar.own{fill:var(--st-own);}
   .dot{stroke:var(--panel);stroke-width:1.3;cursor:pointer;transition:r .12s ease;}
@@ -794,10 +954,11 @@ DASHBOARD = r"""<!doctype html>
   .dot.first_content_ms{fill:var(--s4);} .dot.js_ready_ms{fill:var(--s5);}
   .dot.image_displayed_ms{fill:var(--s6);}
   .dot.slide_duplicated_ms{fill:var(--s7);}
-  .dot.master_mem{fill:var(--wmem);}
+  .dot.master_mem{fill:var(--wmem);} .dot.tab_mem{fill:var(--tmem);}
   .dot:hover{r:6;} .dot:focus-visible{outline:2px solid var(--ink);outline-offset:1px;}
   /* a run captured under perf: ringed, since profiling inflates its own times */
   .dot.prof{stroke:var(--ink);stroke-width:2;}
+  .dot.busy{opacity:.4;}
   .modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;
     padding:24px;background:rgba(11,11,11,.55);} .modal[hidden]{display:none;}
   .modal-card{background:var(--panel);border:1px solid var(--hair);border-radius:12px;
@@ -812,6 +973,7 @@ DASHBOARD = r"""<!doctype html>
   th,td{text-align:right;padding:6px 12px;border-bottom:1px solid var(--hair);
     font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,monospace;}
   th:first-child,td:first-child{text-align:left;font-family:system-ui,sans-serif;}
+  tr.prof td{color:var(--ink-soft);}
   thead th{color:var(--ink-soft);font-weight:600;}
   #tip{position:fixed;z-index:60;pointer-events:none;background:var(--panel);color:var(--ink);
     border:1px solid var(--hair);border-radius:6px;padding:4px 8px;font-size:12px;box-shadow:var(--shadow);
@@ -854,36 +1016,41 @@ DASHBOARD = r"""<!doctype html>
 </style></head><body>
 <div class="wrap">
   <h1>Collabora Online browser tests</h1>
-  <p class="sub">One chart per document and user pool, tracked across commits. Left axis: load, feedback and edit times (ms). Right axis: memory (MB), the document's own footprint, the browser heap, and the coolwsd process peak. Click a point for detail.</p>
+  <p class="sub">One chart per document and user pool, tracked across commits. The thick line is the instructions that the document kit executed, and the dashed grey line those of coolwsd. Left axis: load, feedback and edit times (ms), or the instructions (G) when the times are hidden. The buttons in the legend show or hide each group. Right axis: memory (MB), the document's own footprint, the browser heap, the page process, and the coolwsd process peak. Click a point for detail.</p>
   <div class="legend">
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s0)" stroke-width="2.5"/></svg> frame ready</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s4)" stroke-width="2.5"/></svg> first content</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s5)" stroke-width="2.5"/></svg> js ready</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s1)" stroke-width="2.5"/></svg> page load</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s2)" stroke-width="2.5"/></svg> edit</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s6)" stroke-width="2.5"/></svg> image displayed</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s7)" stroke-width="2.5"/></svg> slide duplicated</span>
+    <span class="views" role="group" aria-label="lines shown on the charts">show <button class="vt" type="button" data-v="instr" aria-pressed="true">instructions</button><button class="vt" type="button" data-v="times" aria-pressed="true">times</button><button class="vt" type="button" data-v="mem" aria-pressed="true">memory</button></span>
     <span class="sep"></span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--mem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> COOL doc memory (MB, right)</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--bmem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> browser heap (MB, right)</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--wmem)" stroke-width="2.5" stroke-dasharray="2 3"/></svg> coolwsd peak (MB, right)</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><rect x="2" y="1" width="7" height="6" fill="var(--ibar-wsd)"/><rect x="12" y="1" width="7" height="6" fill="var(--ibar-kit)"/></svg> instructions, coolwsd and document kit (bars)</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><rect x="0" y="1" width="5" height="6" fill="var(--st-lib)"/><rect x="5.5" y="1" width="5" height="6" fill="var(--st-other)"/><rect x="11" y="1" width="5" height="6" fill="var(--st-inh)"/><rect x="16.5" y="1" width="5" height="6" fill="var(--st-own)"/></svg> kit memory stacked: libraries, other files, inherited, own (MB, right)</span>
+    <span class="key" data-g="instr"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink)" stroke-width="3"/></svg> instructions, document kit (G)</span>
+    <span class="key" data-g="instr"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink-soft)" stroke-width="2.5" stroke-dasharray="6 3"/></svg> instructions, coolwsd (G)</span>
+    <span class="sep"></span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s0)" stroke-width="2.5"/></svg> frame ready</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s4)" stroke-width="2.5"/></svg> first content</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s5)" stroke-width="2.5"/></svg> js ready</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s1)" stroke-width="2.5"/></svg> page load</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s2)" stroke-width="2.5"/></svg> edit</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s6)" stroke-width="2.5"/></svg> image displayed</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s7)" stroke-width="2.5"/></svg> slide duplicated</span>
+    <span class="sep"></span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--mem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> COOL doc memory (MB, right)</span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--bmem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> browser heap (MB, right)</span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--tmem)" stroke-width="2.5" stroke-dasharray="8 3"/></svg> page process, resident (MB, right)</span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--wmem)" stroke-width="2.5" stroke-dasharray="2 3"/></svg> coolwsd peak (MB, right)</span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><rect x="0" y="1" width="5" height="6" fill="var(--st-lib)"/><rect x="5.5" y="1" width="5" height="6" fill="var(--st-other)"/><rect x="11" y="1" width="5" height="6" fill="var(--st-inh)"/><rect x="16.5" y="1" width="5" height="6" fill="var(--st-own)"/></svg> kit memory stacked: libraries, other files, inherited, own (MB, right)</span>
     <a id="fglink" class="fg-link" target="_blank" rel="noopener" hidden>document flamegraph &#8599;</a>
   </div>
   <div id="charts"></div>
-  <footer>Each point is one run (one COOL commit) of the document named under the chart title, which is the file that test opens through the WOPI host. Times are ms averaged over the run (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint on a plain run, or the document kit's proportional set size sampled from /proc when the point comes from a flamegraph capture, which runs its own COOL, and browser heap is the page's JS heap. The coolwsd peak is that process's
-resident high-water mark (VmHWM), which is set by its own startup rather than by
-the document, and is the figure a memory limit has to accommodate. The stacked bar beside each point breaks the document kit's resident memory into
+  <footer>Each point is one run (one COOL commit) of the document named under the chart title, which is the file that test opens through the WOPI host. Times are ms averaged over the run (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint on a plain run, or the document kit's proportional set size sampled from /proc when the point comes from a flamegraph capture, which runs its own COOL, and browser heap is the page's JS heap. The page process is the resident size of the Chromium renderer that runs the page, sampled from /proc during the test: on top of the JS heap it holds the DOM, the decoded images and the canvas pixels of the tiles. The coolwsd peak is the largest resident size of
+coolwsd during the test, sampled from /proc. Runs from before that sampling show the
+resident high-water mark (VmHWM) of the capture's own coolwsd instead. The stacked bar beside each point breaks the document kit's resident memory into
     the engine libraries it maps, other mapped files, what the fork handed it (mostly the
     dictionaries the parent preloaded), and what the document itself wrote. Only the last layer is
     the document's own cost; the first three are shared with every other document on the machine,
     which is why the resident total is several times what one more document actually adds.
-    The bars behind the lines are the instructions each of the two processes
-    executed, the server on the left of a point and the document kit on the right, on their own
-    scale since instructions share no axis with times or memory. They count only the window perf
-    was attached for, which opens after the server is up, so they describe the test and not a whole
-    process life, and they move a lot from run to run. A rising line across commits is a regression. A ringed point was itself captured under perf, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
+    The instruction lines have a scale of their own, which the left axis shows when the times
+    are hidden. They count only the window perf was attached for, which opens after the server
+    is up, so they describe the test and not a whole process life. A busy machine slows the
+    times but does not change the instruction counts, so a busy run stays on the instruction
+    lines. A rising line across commits is a regression. A faded point was measured on a busy machine: a fixed probe ran slower than usual during the run, or the hypervisor took CPU time from the VM, so its times are not comparable. The run detail of each point gives the commits since the previous point, as a git log range and, for a GitHub source, a link that lists them. When a run was also captured under perf, its point shows the plain times and the run detail lists the times under perf beside them. A ringed point is a capture with no plain run beside it, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
 </div>
 <div id="tip" role="tooltip" hidden></div>
 <div class="modal" id="modal" hidden><div class="modal-card" id="mcard" role="dialog" aria-modal="true">
@@ -892,10 +1059,17 @@ the document, and is the figure a memory limit has to accommodate. The stacked b
 </div></div>
 <script>
 const DATA = __DATA__;
+const COMPARE = __COMPARE__;
 const SVGNS = "http://www.w3.org/2000/svg";
 const MS = [{m:"document_loaded_ms"},{m:"frame_ready_ms"},{m:"first_content_ms"},{m:"js_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"},{m:"image_displayed_ms"},{m:"slide_duplicated_ms"}];
-const NAMES={document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",image_displayed_ms:"image displayed",slide_duplicated_ms:"slide duplicated",cool_mem:"COOL memory",browser_mem:"browser heap",master_mem:"coolwsd peak"};
+const NAMES={instr_kit:"document kit instructions",instr_wsd:"coolwsd instructions",document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",image_displayed_ms:"image displayed",slide_duplicated_ms:"slide duplicated",cool_mem:"COOL memory",browser_mem:"browser heap",tab_mem:"page process",master_mem:"coolwsd peak"};
 const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","5mb","10mb","duplicate","ooxml","image5mb"];
+// Instructions count the same work whatever the load of the machine, while
+// the times follow it, so either group can be hidden to read the other.
+const INS=[{cls:"instr_kit",k:"kit"},{cls:"instr_wsd",k:"master"}];
+const insOf=(r,k)=>{const n=r.instructions;return n&&n[k]!=null?n[k]:null;};
+const SHOW={instr:true,times:true,mem:true};
+try{Object.assign(SHOW,JSON.parse(localStorage.getItem("cool-perf-show")||"{}"));}catch(e){}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
 function niceStep(s){if(s<=0)return 1;const r=s/4,m=Math.pow(10,Math.floor(Math.log10(r))),n=r/m;return (n<=1?1:n<=2?2:n<=5?5:10)*m;}
 function niceCeil(v){return Math.ceil(v/niceStep(v))*niceStep(v);}
@@ -906,6 +1080,17 @@ function el(name,attrs,text){const e=document.createElementNS(SVGNS,name);for(co
 // first dash.
 function shortLabel(c){if(!c)return "";const i=c.indexOf("-");
   return i<0?c.slice(0,7):c.slice(0,Math.min(i,7))+c.slice(i);}
+function shaOf(c){const m=/^[0-9a-f]{7,40}/.exec(c||"");return m?m[0]:null;}
+// The commits that a run measured for the first time: after the newest earlier run of this chart
+// with another commit, up to the commit of this run.
+function commitRange(runs,i){
+  const to=shaOf(runs[i].commit);if(!to)return "";
+  for(let j=i-1;j>=0;j--){const from=shaOf(runs[j].commit);if(!from||from===to)continue;
+    const text=`${from}..${to}`;
+    const link=COMPARE?`<a href="${esc(COMPARE+from+"..."+to)}" target="_blank" rel="noopener">${esc(text)}</a>`:esc(text);
+    return `<br>commits since the previous run: ${link}  ·  <code>git log --oneline ${esc(text)}</code>`;}
+  return "<br>first commit measured in this chart";
+}
 // The document kit's resident memory in the layers it is made of, bottom-up.
 // The layers add up to what the process has resident, so the top of the stack is
 // the figure a machine actually has to hold for that document.
@@ -916,8 +1101,13 @@ function stackOf(pt){const m=pt.cool_memory,d=m&&m.doc_stack;if(!d)return null;
   for(const [key,cls,name] of STACK){const v=d[key];if(v==null)continue;
     parts.push({cls,name,v});total+=v;}
   return parts.length?{parts,total}:null;}
-function masterOf(pt){const m=pt.cool_memory;
-  return m&&m.peak_master_hwm_mb!=null?m.peak_master_hwm_mb:null;}
+// The peak resident size during the test, which a plain run records for every
+// test. A run from before that has the capture's high-water mark only.
+function masterOf(pt){const m=pt.cool_memory;if(!m)return null;
+  if(m.peak_master_rss_mb!=null)return m.peak_master_rss_mb;
+  return m.peak_master_hwm_mb!=null?m.peak_master_hwm_mb:null;}
+function tabOf(pt){const b=pt.browser_memory,r=b&&b.renderer;
+  return r&&r.rss!=null?r.rss:null;}
 function memOf(pt){const m=pt.cool_memory;if(!m)return null;
   if(m.peak_doc_mem_mb!=null)return m.peak_doc_mem_mb;
   if(m.peak_total_mem_mb!=null)return m.peak_total_mem_mb;
@@ -927,46 +1117,34 @@ function render(svg, runs, W=520, H=300){
   const m={top:14,right:52,bottom:46,left:50};
   svg.replaceChildren();svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
   const pW=W-m.left-m.right,pH=H-m.top-m.bottom,x0=m.left,x1=x0+pW,y1=m.top+pH;
-  let msMax=0,memMax=0;
+  let msMax=0,memMax=0,insMax=0;
   const heapOf=r=>{const x=r.metrics.browser_heap_mb;return x?x.avg:null;};
-  runs.forEach(r=>{MS.forEach(s=>{const v=r.metrics[s.m]&&r.metrics[s.m].avg;if(v>msMax)msMax=v;});
-    const mm=memOf(r);if(mm!=null&&mm>memMax)memMax=mm;
-    const wm=masterOf(r);if(wm!=null&&wm>memMax)memMax=wm;
-    const sk=stackOf(r);if(sk&&sk.total>memMax)memMax=sk.total;
-    const bh=heapOf(r);if(bh!=null&&bh>memMax)memMax=bh;});
-  const msTop=niceCeil(msMax)||1, memTop=niceCeil(memMax)||1;
-  const yMs=v=>y1-(v/msTop)*pH, yMem=v=>y1-(v/memTop)*pH;
-  const step=niceStep(msTop);
-  for(let v=0;v<=msTop+1e-9;v+=step){const y=yMs(v),t=el("g",{class:"tick"});
-    t.appendChild(el("line",{x1:x0,x2:x1,y1:y,y2:y}));
-    t.appendChild(el("text",{x:x0-7,y:y+3.5,"text-anchor":"end"},String(Math.round(v))));svg.appendChild(t);}
+  runs.forEach(r=>{
+    if(SHOW.times)MS.forEach(s=>{const v=r.metrics[s.m]&&r.metrics[s.m].avg;if(v>msMax)msMax=v;});
+    if(SHOW.mem){const mm=memOf(r);if(mm!=null&&mm>memMax)memMax=mm;
+      const wm=masterOf(r);if(wm!=null&&wm>memMax)memMax=wm;
+      const sk=stackOf(r);if(sk&&sk.total>memMax)memMax=sk.total;
+      const bh=heapOf(r);if(bh!=null&&bh>memMax)memMax=bh;
+      const tb=tabOf(r);if(tb!=null&&tb>memMax)memMax=tb;}
+    if(SHOW.instr)INS.forEach(s=>{const v=insOf(r,s.k);if(v!=null&&v>insMax)insMax=v;});});
+  const msTop=niceCeil(msMax)||1, memTop=niceCeil(memMax)||1, insTop=(niceCeil(insMax/1e9)||1)*1e9;
+  const yMs=v=>y1-(v/msTop)*pH, yMem=v=>y1-(v/memTop)*pH, yIns=v=>y1-(v/insTop)*pH;
+  // The left axis is for the times, and for the instructions once the times are hidden.
+  const leftIns=!SHOW.times&&insMax>0, left=leftIns||msMax>0;
+  if(left){const top=leftIns?insTop/1e9:msTop,step=niceStep(top);
+    for(let v=0;v<=top+1e-9;v+=step){const y=y1-(v/top)*pH,t=el("g",{class:"tick"});
+      t.appendChild(el("line",{x1:x0,x2:x1,y1:y,y2:y}));
+      t.appendChild(el("text",{x:x0-7,y:y+3.5,"text-anchor":"end"},leftIns?String(+v.toFixed(2)):String(Math.round(v))));svg.appendChild(t);}}
   if(memMax>0){const ms2=niceStep(memTop);for(let v=0;v<=memTop+1e-9;v+=ms2){
     svg.appendChild(el("text",{class:"tick",x:x1+7,y:yMem(v)+3.5,"text-anchor":"start"},String(Math.round(v))));}}
   svg.appendChild(el("line",{class:"baseline",x1:x0,x2:x1,y1:y1,y2:y1}));
-  svg.appendChild(el("text",{class:"axtitle",x:12,y:m.top+pH/2,"text-anchor":"middle",transform:`rotate(-90 12 ${m.top+pH/2})`},"ms"));
+  if(left)svg.appendChild(el("text",{class:"axtitle",x:12,y:m.top+pH/2,"text-anchor":"middle",transform:`rotate(-90 12 ${m.top+pH/2})`},leftIns?"G instructions":"ms"));
   if(memMax>0)svg.appendChild(el("text",{class:"axtitle",x:W-10,y:m.top+pH/2,"text-anchor":"middle",transform:`rotate(90 ${W-10} ${m.top+pH/2})`},"MB"));
   const n=runs.length,pad=n>1?18:pW/2;
   const xAt=i=>x0+pad+(n>1?i*(pW-2*pad)/(n-1):0);
-  // Instructions have no relation to milliseconds or megabytes, so the bars get
-  // the plot height to themselves rather than a shared axis, and are drawn
-  // before anything else so the lines stay readable over them.
-  let instrMax=0;
-  runs.forEach(r=>{const n=r.instructions;if(!n)return;
-    ["master","kit"].forEach(k=>{if(n[k]!=null&&n[k]>instrMax)instrMax=n[k];});});
-  if(instrMax>0){
-    const bw=Math.max(3,Math.min(11,pW/(runs.length*3)));
-    runs.forEach((r,i)=>{const n=r.instructions;if(!n)return;
-      [["master","wsd","coolwsd"],["kit","kit","document kit"]].forEach((spec,j)=>{
-        const v=n[spec[0]];if(v==null)return;
-        const h=(v/instrMax)*pH*0.9, cx=xAt(i)+(j?1:-1)*(bw/2+1);
-        const bar=el("rect",{class:"ibar "+spec[1],x:cx-bw/2,y:y1-h,width:bw,height:h});
-        const tip=`${shortLabel(r.commit)} · ${spec[2]}: ${(v/1e9).toFixed(1)}G instructions`;
-        bar.setAttribute("data-tip",tip);bar.setAttribute("aria-label",tip);
-        svg.appendChild(bar);});});
-  }
   // One stacked bar per run, on the same MB axis as the memory lines so its
   // height can be read off that axis rather than taken on trust.
-  runs.forEach((r,i)=>{const sk=stackOf(r);if(!sk)return;
+  if(SHOW.mem)runs.forEach((r,i)=>{const sk=stackOf(r);if(!sk)return;
     const bw=Math.max(4,Math.min(13,pW/(runs.length*3)));
     const cx=xAt(i)+bw*1.6;
     let acc=0;
@@ -976,21 +1154,33 @@ function render(svg, runs, W=520, H=300){
       const tip=`${shortLabel(r.commit)} · ${part.name}: ${Math.round(part.v)} MB of ${Math.round(sk.total)} resident`;
       rect.setAttribute("data-tip",tip);rect.setAttribute("aria-label",tip);
       svg.appendChild(rect);acc+=part.v;});});
-  function plot(cls,scale,getv){
+  // fmt gives the value with its unit. A steady line keeps the busy runs on it.
+  let drawn=0;
+  function plot(cls,scale,getv,fmt,steady){
     const pts=[];runs.forEach((r,i)=>{const v=getv(r);if(v!=null)pts.push([i,xAt(i),scale(v),v]);});
     if(!pts.length)return;
-    if(pts.length>1)svg.appendChild(el("polyline",{class:"line "+cls,points:pts.map(p=>p[1]+","+p[2]).join(" ")}));
+    drawn++;
+    // the line joins the runs of a quiet machine, and a busy run stays a faded dot beside it
+    const quiet=steady?pts:pts.filter(p=>!(runs[p[0]].machine&&runs[p[0]].machine.busy));
+    if(quiet.length>1)svg.appendChild(el("polyline",{class:"line "+cls,points:quiet.map(p=>p[1]+","+p[2]).join(" ")}));
     pts.forEach(p=>{const r=runs[p[0]];
-      const dot=el("circle",{class:"dot "+cls.split(" ")[0]+(r.profiled?" prof":""),cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
+      const busy=r.machine&&r.machine.busy;
+      const dot=el("circle",{class:"dot "+cls.split(" ")[0]+(r.profiled?" prof":"")+(busy&&!steady?" busy":""),cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
       const short=cls.split(" ")[0],unit=cls.indexOf("mem")>=0?"MB":"ms";
-      const label=`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${Math.round(p[3])} ${unit}`+(r.profiled?" · profiled":"");
+      const label=`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${fmt?fmt(p[3]):Math.round(p[3])+" "+unit}`+(r.profiled?" · profiled":"")+(busy?" · busy machine":"");
       dot.setAttribute("data-tip",label);dot.setAttribute("aria-label",label);
       dot.addEventListener("click",()=>openDetail(runs,p[0]));svg.appendChild(dot);});
   }
-  MS.forEach(s=>plot(s.m,yMs,r=>{const x=r.metrics[s.m];return x?x.avg:null;}));
-  plot("master_mem mem",yMem,masterOf);
-  plot("cool_mem mem",yMem,memOf);
-  plot("browser_mem mem",yMem,heapOf);
+  if(SHOW.times)MS.forEach(s=>plot(s.m,yMs,r=>{const x=r.metrics[s.m];return x?x.avg:null;}));
+  if(SHOW.mem){plot("master_mem mem",yMem,masterOf);
+    plot("cool_mem mem",yMem,memOf);
+    plot("browser_mem mem",yMem,heapOf);
+    plot("tab_mem mem",yMem,tabOf);}
+  // drawn last, so they stay on top of the other lines
+  if(SHOW.instr)INS.forEach(s=>plot(s.cls,yIns,r=>insOf(r,s.k),v=>(v/1e9).toFixed(2)+" G",true));
+  // perf counts the instructions of the 1-user runs only
+  if(!drawn)svg.appendChild(el("text",{class:"axtitle",x:x0+pW/2,y:m.top+pH/2,"text-anchor":"middle"},
+    SHOW.instr&&!SHOW.times&&!SHOW.mem?"no instruction counts: perf measures the 1-user runs only":"nothing to show for the lines selected"));
   // x labels: short commit, thinned if crowded
   const everyk=Math.ceil(n/Math.max(6,Math.floor(pW/75)));
   runs.forEach((r,i)=>{if(i%everyk)return;svg.appendChild(el("text",{class:"xlab",x:xAt(i),y:y1+15,"text-anchor":"middle"},r.commit?shortLabel(r.commit):("#"+i)));});
@@ -1038,6 +1228,20 @@ function setFull(sec){
 host.addEventListener("click",e=>{const b=e.target.closest(".fullbtn");if(!b)return;
   const sec=b.closest(".chart");setFull(fullChart===sec?null:sec);});
 window.addEventListener("resize",()=>{if(fullChart)drawFull();});
+
+// The buttons in the legend show or hide a group of lines on every chart. The
+// choice is kept in this browser only.
+function syncViews(){
+  document.querySelectorAll(".vt").forEach(b=>b.setAttribute("aria-pressed",String(!!SHOW[b.dataset.v])));
+  document.querySelectorAll(".legend .key[data-g]").forEach(k=>k.classList.toggle("off",!SHOW[k.dataset.g]));}
+document.querySelector(".views").addEventListener("click",e=>{const b=e.target.closest(".vt");if(!b)return;
+  SHOW[b.dataset.v]=!SHOW[b.dataset.v];
+  try{localStorage.setItem("cool-perf-show",JSON.stringify(SHOW));}catch(e){}
+  syncViews();
+  document.querySelectorAll("svg[data-key]").forEach(svg=>{
+    if(!fullChart||!fullChart.contains(svg))render(svg,DATA[svg.dataset.key]);});
+  if(fullChart)drawFull();});
+syncViews();
 
 // document flamegraph: link the header to the most recent run that has one
 (function(){let best=null;
@@ -1095,11 +1299,17 @@ function openDetail(runs,i){
   let meta=`commit ${esc(r.commit||"(unknown)")}  ·  ${esc(r.ts||"")}`;
   if(r.file)meta+=`  ·  ${esc(r.file)}`;
   if(r.runid)meta+=`  ·  run ${esc(r.runid)}`;
+  meta+=commitRange(runs,i);
   mmeta.innerHTML=meta;
   const cols=["avg","min","med","p90","p95","max"];
   let h='<table><thead><tr><th>metric</th>'+cols.map(c=>`<th>${c}</th>`).join("")+'</tr></thead><tbody>';
-  Object.keys(r.metrics).forEach(name=>{const s=r.metrics[name]||{};
-    h+=`<tr><td>${name.replace(/_ms$/,"")} (ms)</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
+  // a metric name ends in its unit: _ms for times, _mb for the browser heap
+  const metricLabel=name=>/_mb$/.test(name)?[name.replace(/_mb$/,""),"MB"]:[name.replace(/_ms$/,""),"ms"];
+  Object.keys(r.metrics).forEach(name=>{const s=r.metrics[name]||{};const [label,unit]=metricLabel(name);
+    h+=`<tr><td>${label} (${unit})</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
+  // the same test run again under perf for the flamegraph, slower by nature
+  Object.keys(r.profiled_metrics||{}).forEach(name=>{const s=r.profiled_metrics[name]||{};const [label,unit]=metricLabel(name);
+    h+=`<tr class="prof"><td>${label} under perf (${unit})</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
   const cm=r.cool_memory;
   const asMb=v=>v==null?null:Math.round(v);
   if(cm){
@@ -1125,6 +1335,28 @@ function openDetail(runs,i){
     h+=`<tr><td>kit memory (MB)</td><td colspan="6" style="text-align:left">`+
       STACK.filter(([k])=>ds[k]!=null).map(([k,,name])=>`${name} ${Math.round(ds[k])}`).join(", ")+
       `, resident ${Math.round(tot)}</td></tr>`;}
+  const bm=r.browser_memory;
+  if(bm){
+    // Read from /proc/<pid>/status: shared memory counts once per process that
+    // maps it, so the total is an upper bound.
+    const part=(name,g)=>{if(!g)return null;const b=[];
+      if(g.rss!=null)b.push(`resident ${asMb(g.rss)}`);
+      if(g.hwm!=null)b.push(`peak ${asMb(g.hwm)}`);
+      if(g.anon!=null)b.push(`anonymous ${asMb(g.anon)}`);
+      if(g.shmem!=null)b.push(`shared memory ${asMb(g.shmem)}`);
+      if(g.pss!=null)b.push(`proportional ${asMb(g.pss)}`);
+      if(g.pids)b.push(`${g.pids} process${g.pids>1?"es":""}`);
+      return b.length?`${name}: ${b.join(", ")}`:null;};
+    const rows=[part("page (renderer)",bm.renderer),part("GPU",bm.gpu),part("browser and utility",bm.other)].filter(Boolean);
+    if(bm.peak_total_rss_mb!=null)rows.push(`all Chromium processes: resident ${asMb(bm.peak_total_rss_mb)}`);
+    if(rows.length)h+=`<tr><td>browser (MB)</td><td colspan="6" style="text-align:left">${rows.join("<br>")}</td></tr>`;}
+  const mc=r.machine;
+  if(mc){const bits=[];const pr=mc.probe_ms;
+    if(pr)bits.push(`probe ${Math.round(pr.med)} ms median, ${Math.round(pr.p90)} ms p90`+
+      (mc.probe_ratio!=null?` (${mc.probe_ratio.toFixed(2)} times the usual)`:""));
+    if(mc.steal_pct!=null)bits.push(`steal ${mc.steal_pct.toFixed(1)}%`);
+    if(mc.busy)bits.push("<b>busy machine</b>");
+    if(bits.length)h+=`<tr><td>machine</td><td colspan="6" style="text-align:left">${bits.join(", ")}</td></tr>`;}
   const ins=r.instructions;
   if(ins){h+=`<tr><td>instructions (G)</td><td colspan="6" style="text-align:left">`+
     (ins.master!=null?`coolwsd ${(ins.master/1e9).toFixed(1)}`:"")+
@@ -1188,6 +1420,14 @@ def _svg_aspect(path: Path) -> float | None:
     return round(hv / wv, 4)
 
 
+def compare_url_base() -> str:
+    """The GitHub page that lists the commits between two others, for the repository in
+    COOL_SRC_URL, or "" when that is not a GitHub https URL."""
+    m = re.match(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$",
+                 os.environ.get("COOL_SRC_URL", ""))
+    return f"https://github.com/{m.group(1)}/{m.group(2)}/compare/" if m else ""
+
+
 def write_dashboard(scen: dict, out: str) -> None:
     # Flamegraph paths are stored absolute; rewrite them relative to the html
     # file's directory so the links work from wherever the dashboard is opened.
@@ -1200,7 +1440,8 @@ def write_dashboard(scen: dict, out: str) -> None:
                 p["fg_aspect"] = _svg_aspect(Path(fg))
                 p["flamegraph"] = os.path.relpath(fg, out_dir).replace(os.sep, "/")
                 flames += 1
-    Path(out).write_text(DASHBOARD.replace("__DATA__", json.dumps(scen)))
+    Path(out).write_text(DASHBOARD.replace("__DATA__", json.dumps(scen))
+                          .replace("__COMPARE__", json.dumps(compare_url_base())))
     runs = sum(len(v) for v in scen.values())
     print(f"wrote {out}  ({len(scen)} chart(s), {runs} run(s), {flames} flamegraph link(s))")
 

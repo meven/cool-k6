@@ -95,8 +95,13 @@ fi
 
 # build-nocheck is all-am without the check target, which runs the unit tests
 # and the linters. A measurement job wants the binaries, not a verdict on them.
+# all-am builds the top directory only, and the SBOM it writes lists the files
+# of browser/dist, so the browser is built first. The systemplate, the template
+# of each kit's jail, is a target of its own that all-am does not build.
 echo "=== building $SHA with -j$JOBS"
+$DRY make -C "$TREE/browser" -j"$JOBS"
 $DRY make -C "$TREE" -j"$JOBS" build-nocheck
+$DRY make -C "$TREE" systemplate
 
 if [ -n "$SAVE" ]; then
     echo "=== snapshotting $SHA"
