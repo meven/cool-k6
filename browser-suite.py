@@ -950,6 +950,8 @@ DASHBOARD = r"""<!doctype html>
     font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;}
   .axtitle{font-family:system-ui,sans-serif;}
   .baseline{stroke:var(--hair);stroke-width:1;}
+  .tabtick{fill:var(--tmem);font-size:10px;font-family:ui-monospace,Menlo,monospace;
+    font-variant-numeric:tabular-nums;}
   .line{fill:none;stroke-width:2;} .line.mem{stroke-dasharray:5 4;}
   .line.document_loaded_ms{stroke:var(--s0);} .line.frame_ready_ms{stroke:var(--s3);}
   .line.page_load_ms{stroke:var(--s1);}
@@ -1054,7 +1056,7 @@ DASHBOARD = r"""<!doctype html>
     <span class="sep"></span>
     <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--mem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> COOL doc memory (MB, right)</span>
     <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--bmem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> browser heap (MB, right)</span>
-    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--tmem)" stroke-width="2.5" stroke-dasharray="8 3"/></svg> page process, resident (MB, right)</span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--tmem)" stroke-width="2.5" stroke-dasharray="8 3"/></svg> page process, resident (MB, own scale at the far right)</span>
     <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--wmem)" stroke-width="2.5" stroke-dasharray="2 3"/></svg> coolwsd peak (MB, right)</span>
     <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><rect x="0" y="1" width="5" height="6" fill="var(--st-lib)"/><rect x="5.5" y="1" width="5" height="6" fill="var(--st-other)"/><rect x="11" y="1" width="5" height="6" fill="var(--st-inh)"/><rect x="16.5" y="1" width="5" height="6" fill="var(--st-own)"/></svg> kit memory stacked: libraries, other files, inherited, own (MB, right)</span>
     <a id="fglink" class="fg-link" target="_blank" rel="noopener" hidden>document flamegraph &#8599;</a>
@@ -1134,13 +1136,17 @@ function masterOf(pt){const m=pt.cool_memory;if(!m)return null;
   return m.peak_master_hwm_mb!=null?m.peak_master_hwm_mb:null;}
 function tabOf(pt){const b=pt.browser_memory,r=b&&b.renderer;
   return r&&r.rss!=null?r.rss:null;}
+// A run with no document figure leaves a gap: the COOL total in its place is
+// ten times larger, and drew a spike that set the axis.
 function memOf(pt){const m=pt.cool_memory;if(!m)return null;
   if(m.peak_doc_mem_mb!=null)return m.peak_doc_mem_mb;
-  if(m.peak_total_mem_mb!=null)return m.peak_total_mem_mb;
   return m.peak_pss_mb!=null?m.peak_pss_mb:(m.peak_rss_mb!=null?m.peak_rss_mb:null);}
 
 function render(svg, runs, W=520, H=300){
-  const m={top:14,right:52,bottom:46,left:50};
+  // The Chromium renderers hold several times the memory of everything else,
+  // so the page process gets a scale of its own, outside the MB axis.
+  const tabMax=SHOW.mem?Math.max(0,...runs.map(r=>tabOf(r)||0)):0;
+  const m={top:14,right:tabMax>0?96:52,bottom:46,left:50};
   svg.replaceChildren();svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
   const pW=W-m.left-m.right,pH=H-m.top-m.bottom,x0=m.left,x1=x0+pW,y1=m.top+pH;
   let msMax=0,memMax=0,insMax=0;
@@ -1150,11 +1156,11 @@ function render(svg, runs, W=520, H=300){
     if(SHOW.mem){const mm=memOf(r);if(mm!=null&&mm>memMax)memMax=mm;
       const wm=masterOf(r);if(wm!=null&&wm>memMax)memMax=wm;
       const sk=stackOf(r);if(sk&&sk.total>memMax)memMax=sk.total;
-      const bh=heapOf(r);if(bh!=null&&bh>memMax)memMax=bh;
-      const tb=tabOf(r);if(tb!=null&&tb>memMax)memMax=tb;}
+      const bh=heapOf(r);if(bh!=null&&bh>memMax)memMax=bh;}
     if(SHOW.instr)INS.forEach(s=>{const v=insOf(r,s.k);if(v!=null&&v>insMax)insMax=v;});});
   const msTop=niceCeil(msMax)||1, memTop=niceCeil(memMax)||1, insTop=(niceCeil(insMax/1e9)||1)*1e9;
   const yMs=v=>y1-(v/msTop)*pH, yMem=v=>y1-(v/memTop)*pH, yIns=v=>y1-(v/insTop)*pH;
+  const tabTop=niceCeil(tabMax)||1, yTab=v=>y1-(v/tabTop)*pH;
   // The left axis is for the times, and for the instructions once the times are hidden.
   const leftIns=!SHOW.times&&insMax>0, left=leftIns||msMax>0;
   if(left){const top=leftIns?insTop/1e9:msTop,step=niceStep(top);
@@ -1163,6 +1169,8 @@ function render(svg, runs, W=520, H=300){
       t.appendChild(el("text",{x:x0-7,y:y+3.5,"text-anchor":"end"},leftIns?String(+v.toFixed(2)):String(Math.round(v))));svg.appendChild(t);}}
   if(memMax>0){const ms2=niceStep(memTop);for(let v=0;v<=memTop+1e-9;v+=ms2){
     svg.appendChild(el("text",{class:"tick",x:x1+7,y:yMem(v)+3.5,"text-anchor":"start"},String(Math.round(v))));}}
+  if(tabMax>0){const ts=niceStep(tabTop);for(let v=0;v<=tabTop+1e-9;v+=ts){
+    svg.appendChild(el("text",{class:"tabtick",x:x1+48,y:yTab(v)+3.5,"text-anchor":"start"},String(Math.round(v))));}}
   svg.appendChild(el("line",{class:"baseline",x1:x0,x2:x1,y1:y1,y2:y1}));
   if(left)svg.appendChild(el("text",{class:"axtitle",x:12,y:m.top+pH/2,"text-anchor":"middle",transform:`rotate(-90 12 ${m.top+pH/2})`},leftIns?"G instructions":"ms"));
   if(memMax>0)svg.appendChild(el("text",{class:"axtitle",x:W-10,y:m.top+pH/2,"text-anchor":"middle",transform:`rotate(90 ${W-10} ${m.top+pH/2})`},"MB"));
@@ -1201,7 +1209,7 @@ function render(svg, runs, W=520, H=300){
   if(SHOW.mem){plot("master_mem mem",yMem,masterOf);
     plot("cool_mem mem",yMem,memOf);
     plot("browser_mem mem",yMem,heapOf);
-    plot("tab_mem mem",yMem,tabOf);}
+    plot("tab_mem mem",yTab,tabOf);}
   // drawn last, so they stay on top of the other lines
   if(SHOW.instr)INS.forEach(s=>plot(s.cls,yIns,r=>insOf(r,s.k),v=>(v/1e9).toFixed(2)+" G",true));
   // perf counts the instructions of the 1-user runs only
