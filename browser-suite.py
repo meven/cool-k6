@@ -187,6 +187,20 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
     # The kits of earlier tests can still be listed while this one starts, so
     # only the kits that appear during this test are this document's.
     earlier_kits = cool_doc_pids(cool_metrics())
+    # The 3-user tests have no capture, so sample coolwsd and the Chromium
+    # processes here as the capture does, for every test.
+    from pylib.perfutils import MemorySampler, browser_pids, pgrep
+    groups: dict = {
+        "browser_renderer": lambda: browser_pids()["renderer"],
+        "browser_gpu": lambda: browser_pids()["gpu"],
+        "browser_other": lambda: browser_pids()["other"],
+    }
+    # Only when one coolwsd runs as this user, to be sure that it is the one
+    # that serves COOL_URL.
+    wsd = pgrep(["-x", "coolwsd", "-u", str(os.getuid())])
+    if len(wsd) == 1:
+        groups["coolwsd"] = wsd
+    sampler = MemorySampler(groups)
 
     # Tee what k6 says into the run directory. A scenario that measures nothing used to leave
     # only a metrics.json full of nulls, which says that it failed and nothing about why.
@@ -217,6 +231,7 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
         doc_kb = sum(doc_private_dirty_kb(pid, m) for pid in kits)
         peak_doc = max(peak_doc, doc_kb * 1024)
         peak_total = max(peak_total, m.get("global_memory_used_bytes", 0.0))
+        sampler.sample()
         time.sleep(1)
     if proc.stdout:
         rest = proc.stdout.read()
@@ -233,13 +248,26 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
               f"{os.environ.get('COOL_URL', 'https://localhost:9980/')} and "
               f"COOL_ADMIN (default admin:admin).", file=sys.stderr)
     mj = out / "metrics.json"
-    if mj.exists() and (peak_doc or peak_total):
+    mem = sampler.summary()
+    wsd_mem = mem.get("coolwsd", {})
+    browser = browser_memory_of(mem)
+    if mj.exists() and (peak_doc or peak_total or wsd_mem or browser):
         try:
             d = json.loads(mj.read_text())
-            d["cool_memory"] = {
+            cool = {
                 "peak_doc_mem_mb": round(peak_doc / 1048576, 1) if peak_doc else None,
                 "peak_total_mem_mb": round(peak_total / 1048576, 1) if peak_total else None,
             }
+            # This coolwsd served the earlier tests too, so its VmHWM can come
+            # from one of them. The peak resident size during this test is this
+            # test's.
+            if wsd_mem.get("peak_rss_mb") is not None:
+                cool["peak_master_rss_mb"] = wsd_mem["peak_rss_mb"]
+            if wsd_mem.get("peak_pss_mb") is not None:
+                cool["peak_master_pss_mb"] = wsd_mem["peak_pss_mb"]
+            d["cool_memory"] = cool
+            if browser:
+                d["browser_memory"] = browser
             # metrics.json belongs to the k6 container's user, so opening it
             # for writing here fails: write a file of our own and rename it
             # over, which the run directory's own permissions allow.
@@ -657,6 +685,11 @@ def _capture_browser_memory(mj: Path) -> dict | None:
     mem = d.get("memory")
     if not isinstance(mem, dict):
         return None
+    return browser_memory_of(mem)
+
+
+def browser_memory_of(mem: dict) -> dict | None:
+    """The browser_memory of a run, from the MemorySampler summary @p mem."""
     out: dict = {}
     for label, key in (("browser_renderer", "renderer"), ("browser_gpu", "gpu"),
                        ("browser_other", "other")):
@@ -731,7 +764,7 @@ def collect(results_dir: Path) -> dict:
             "runid": _runid_of(mj, results_dir),
             "metrics": metrics,
             "cool_memory": d.get("cool_memory") or _capture_memory(mj),
-            "browser_memory": _capture_browser_memory(mj),
+            "browser_memory": d.get("browser_memory") or _capture_browser_memory(mj),
             "instructions": d.get("instructions") or _capture_instructions(mj),
             "flamegraph": flame, "profiled": profiled,
             "machine": _machine_of(mj, results_dir),
@@ -1006,9 +1039,9 @@ DASHBOARD = r"""<!doctype html>
     <a id="fglink" class="fg-link" target="_blank" rel="noopener" hidden>document flamegraph &#8599;</a>
   </div>
   <div id="charts"></div>
-  <footer>Each point is one run (one COOL commit) of the document named under the chart title, which is the file that test opens through the WOPI host. Times are ms averaged over the run (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint on a plain run, or the document kit's proportional set size sampled from /proc when the point comes from a flamegraph capture, which runs its own COOL, and browser heap is the page's JS heap. The page process is the resident size of the Chromium renderer that runs the page, sampled from /proc during the flamegraph capture: on top of the JS heap it holds the DOM, the decoded images and the canvas pixels of the tiles. The coolwsd peak is that process's
-resident high-water mark (VmHWM), which is set by its own startup rather than by
-the document, and is the figure a memory limit has to accommodate. The stacked bar beside each point breaks the document kit's resident memory into
+  <footer>Each point is one run (one COOL commit) of the document named under the chart title, which is the file that test opens through the WOPI host. Times are ms averaged over the run (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint on a plain run, or the document kit's proportional set size sampled from /proc when the point comes from a flamegraph capture, which runs its own COOL, and browser heap is the page's JS heap. The page process is the resident size of the Chromium renderer that runs the page, sampled from /proc during the test: on top of the JS heap it holds the DOM, the decoded images and the canvas pixels of the tiles. The coolwsd peak is the largest resident size of
+coolwsd during the test, sampled from /proc. Runs from before that sampling show the
+resident high-water mark (VmHWM) of the capture's own coolwsd instead. The stacked bar beside each point breaks the document kit's resident memory into
     the engine libraries it maps, other mapped files, what the fork handed it (mostly the
     dictionaries the parent preloaded), and what the document itself wrote. Only the last layer is
     the document's own cost; the first three are shared with every other document on the machine,
@@ -1068,8 +1101,11 @@ function stackOf(pt){const m=pt.cool_memory,d=m&&m.doc_stack;if(!d)return null;
   for(const [key,cls,name] of STACK){const v=d[key];if(v==null)continue;
     parts.push({cls,name,v});total+=v;}
   return parts.length?{parts,total}:null;}
-function masterOf(pt){const m=pt.cool_memory;
-  return m&&m.peak_master_hwm_mb!=null?m.peak_master_hwm_mb:null;}
+// The peak resident size during the test, which a plain run records for every
+// test. A run from before that has the capture's high-water mark only.
+function masterOf(pt){const m=pt.cool_memory;if(!m)return null;
+  if(m.peak_master_rss_mb!=null)return m.peak_master_rss_mb;
+  return m.peak_master_hwm_mb!=null?m.peak_master_hwm_mb:null;}
 function tabOf(pt){const b=pt.browser_memory,r=b&&b.renderer;
   return r&&r.rss!=null?r.rss:null;}
 function memOf(pt){const m=pt.cool_memory;if(!m)return null;
