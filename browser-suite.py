@@ -925,7 +925,7 @@ DASHBOARD = r"""<!doctype html>
   .chart h2::before{content:"";width:9px;height:9px;border-radius:2px;flex:0 0 auto;
     background:var(--app,var(--ink-faint));}
   svg{width:100%;height:auto;display:block;}
-  .fullbtn{margin-left:6px;font:inherit;font-size:11px;font-weight:500;text-transform:none;
+  .fullbtn{margin-left:auto;font:inherit;font-size:11px;font-weight:500;text-transform:none;
     cursor:pointer;border:1px solid var(--hair);border-radius:999px;padding:1px 8px;
     background:var(--surface);color:var(--ink-soft);}
   .fullbtn:hover{color:var(--ink);}
@@ -996,12 +996,6 @@ DASHBOARD = r"""<!doctype html>
   /* the document a chart's test opens */
   .fname{margin:-2px 0 8px;font-size:11.5px;color:var(--ink-faint);
     font-family:ui-monospace,Menlo,monospace;overflow-wrap:anywhere;}
-  /* per-chart capture coverage: how many of this document's runs were profiled */
-  .cov{margin-left:auto;font-size:11px;font-weight:500;white-space:nowrap;
-    font-family:ui-monospace,Menlo,monospace;color:var(--ink-faint);
-    border:1px solid var(--hair);border-radius:999px;padding:1px 8px;}
-  .cov.some{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--hair));}
-  .cov.none{opacity:.8;}
   /* inline flamegraph viewer, in the run detail */
   .modal-card.wide{width:min(1280px,96vw);}
   .fg-sec{border-top:1px solid var(--hair);padding:10px 16px 16px;}
@@ -1210,16 +1204,11 @@ Object.keys(DATA).sort((a,b)=>{const A=a.split("|"),B=b.split("|");
       || (DOC_ORDER.indexOf(A[1])-DOC_ORDER.indexOf(B[1]))
       || (Number(A[2])-Number(B[2]));}).forEach(key=>{
   const [app,doc,users]=key.split("|");
-  // capture coverage, so a document with no flamegraph says so instead of just
-  // being silently linkless
-  const runs=DATA[key],nfg=runs.filter(r=>r.flamegraph).length;
-  const cov=nfg
-    ?`<span class="cov some" title="${nfg} of ${runs.length} run(s) of this document were profiled">flame ${nfg}/${runs.length}</span>`
-    :`<span class="cov none" title="no capture for this document yet: ./browser-suite.py --flamegraphs">no flame</span>`;
+  const runs=DATA[key];
   // the document under test, from the newest run that recorded one
   const file=(runs.filter(r=>r.file).pop()||{}).file;
   const sec=document.createElement("section");sec.className="chart a-"+app;
-  sec.innerHTML=`<h2>${esc(app)} &middot; ${esc(doc)} &middot; ${esc(users)} user${users==="1"?"":"s"}${cov}<button class="fullbtn" type="button" aria-pressed="false">full view</button></h2>
+  sec.innerHTML=`<h2>${esc(app)} &middot; ${esc(doc)} &middot; ${esc(users)} user${users==="1"?"":"s"}<button class="fullbtn" type="button" aria-pressed="false">full view</button></h2>
     ${file?`<p class="fname" title="the document this test opens">${esc(file)}</p>`:""}
     <svg data-key="${esc(key)}" viewBox="0 0 520 300" role="img" aria-label="${esc(key)}${file?" of "+esc(file):""} over commits"></svg>`;
   host.appendChild(sec);
