@@ -808,13 +808,13 @@ DASHBOARD = r"""<!doctype html>
 <style>
   :root{ --surface:#fcfcfb; --panel:#fff; --ink:#0b0b0b; --ink-soft:#52514e;
     --ink-faint:#8a8880; --grid:#e6e6e2; --hair:#dcdbd5; --accent:#2a78d6;
-    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#5a6b7a; --s4:#d11a45; --s5:#0e8aa8; --s6:#a3199b; --s7:#b5651d; --mem:#7a4fc0; --bmem:#d64f9a; --tmem:#8e2f63; --wmem:#b8860b; --ibar-wsd:#8fb8e0; --ibar-kit:#c9b3e6; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
+    --s0:#2a78d6; --s1:#eb6834; --s2:#1baf7a; --s3:#5a6b7a; --s4:#d11a45; --s5:#0e8aa8; --s6:#a3199b; --s7:#b5651d; --mem:#7a4fc0; --bmem:#d64f9a; --tmem:#8e2f63; --wmem:#b8860b; --st-lib:#9ec9c4; --st-other:#cfd3a8; --st-inh:#f0c48a; --st-own:#e8896f;
     --app-writer:#2a6cc9; --app-calc:#1a9e4b; --app-impress:#e8710a; --app-draw:#e0a80f;
     --shadow:0 1px 2px rgba(11,11,11,.06),0 8px 24px rgba(11,11,11,.05); }
   @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
     --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee; --ink-soft:#c3c2b7;
     --ink-faint:#8f8e84; --grid:#33332f; --hair:#3a3a35; --accent:#3987e5;
-    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --s6:#e36fd6; --s7:#d9893a; --mem:#9f7be6; --bmem:#e07bb0; --tmem:#f0a6cf; --wmem:#d8a72a; --ibar-wsd:#2f4f6e; --ibar-kit:#4a3a63; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
+    --s0:#3987e5; --s1:#d95926; --s2:#199e70; --s3:#8ba0b3; --s4:#f2506f; --s5:#2bb3d6; --s6:#e36fd6; --s7:#d9893a; --mem:#9f7be6; --bmem:#e07bb0; --tmem:#f0a6cf; --wmem:#d8a72a; --st-lib:#3f6f69; --st-other:#6b7040; --st-inh:#9c6a2a; --st-own:#a5442c;
     --app-writer:#5a9bea; --app-calc:#35c46f; --app-impress:#ff9440; --app-draw:#f2c94c;
     --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35); }}
   :root[data-theme=dark]{ --surface:#161615; --panel:#1f1f1d; --ink:#f4f3ee;
@@ -875,7 +875,14 @@ DASHBOARD = r"""<!doctype html>
   .line.slide_duplicated_ms{stroke:var(--s7);}
   .line.master_mem{stroke:var(--wmem);stroke-dasharray:2 3;}
   .line.tab_mem{stroke:var(--tmem);stroke-dasharray:8 3;}
-  .ibar{stroke:none;fill-opacity:.55;} .ibar.wsd{fill:var(--ibar-wsd);} .ibar.kit{fill:var(--ibar-kit);}
+  .line.instr_kit{stroke:var(--ink);stroke-width:3;} .dot.instr_kit{fill:var(--ink);}
+  .line.instr_wsd{stroke:var(--ink-soft);stroke-width:2.5;stroke-dasharray:6 3;} .dot.instr_wsd{fill:var(--ink-soft);}
+  /* the buttons that show or hide a group of lines on every chart */
+  .views{display:inline-flex;gap:6px;align-items:center;}
+  .vt{font:inherit;font-size:12px;cursor:pointer;border:1px solid var(--hair);border-radius:999px;
+    padding:2px 10px;background:var(--surface);color:var(--ink-faint);text-decoration:line-through;}
+  .vt[aria-pressed=true]{background:var(--panel);color:var(--ink);border-color:var(--ink-soft);text-decoration:none;}
+  .legend .key.off{opacity:.35;}
   .sbar{stroke:none;fill-opacity:.85;} .sbar.lib{fill:var(--st-lib);} .sbar.other{fill:var(--st-other);}
   .sbar.inh{fill:var(--st-inh);} .sbar.own{fill:var(--st-own);}
   .dot{stroke:var(--panel);stroke-width:1.3;cursor:pointer;transition:r .12s ease;}
@@ -947,22 +954,26 @@ DASHBOARD = r"""<!doctype html>
 </style></head><body>
 <div class="wrap">
   <h1>Collabora Online browser tests</h1>
-  <p class="sub">One chart per document and user pool, tracked across commits. Left axis: load, feedback and edit times (ms). Right axis: memory (MB), the document's own footprint, the browser heap, the page process, and the coolwsd process peak. Click a point for detail.</p>
+  <p class="sub">One chart per document and user pool, tracked across commits. The thick line is the instructions that the document kit executed, and the dashed grey line those of coolwsd. Left axis: load, feedback and edit times (ms), or the instructions (G) when the times are hidden. The buttons in the legend show or hide each group. Right axis: memory (MB), the document's own footprint, the browser heap, the page process, and the coolwsd process peak. Click a point for detail.</p>
   <div class="legend">
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s0)" stroke-width="2.5"/></svg> frame ready</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s4)" stroke-width="2.5"/></svg> first content</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s5)" stroke-width="2.5"/></svg> js ready</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s1)" stroke-width="2.5"/></svg> page load</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s2)" stroke-width="2.5"/></svg> edit</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s6)" stroke-width="2.5"/></svg> image displayed</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s7)" stroke-width="2.5"/></svg> slide duplicated</span>
+    <span class="views" role="group" aria-label="lines shown on the charts">show <button class="vt" type="button" data-v="instr" aria-pressed="true">instructions</button><button class="vt" type="button" data-v="times" aria-pressed="true">times</button><button class="vt" type="button" data-v="mem" aria-pressed="true">memory</button></span>
     <span class="sep"></span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--mem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> COOL doc memory (MB, right)</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--bmem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> browser heap (MB, right)</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--tmem)" stroke-width="2.5" stroke-dasharray="8 3"/></svg> page process, resident (MB, right)</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--wmem)" stroke-width="2.5" stroke-dasharray="2 3"/></svg> coolwsd peak (MB, right)</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><rect x="2" y="1" width="7" height="6" fill="var(--ibar-wsd)"/><rect x="12" y="1" width="7" height="6" fill="var(--ibar-kit)"/></svg> instructions, coolwsd and document kit (bars)</span>
-    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><rect x="0" y="1" width="5" height="6" fill="var(--st-lib)"/><rect x="5.5" y="1" width="5" height="6" fill="var(--st-other)"/><rect x="11" y="1" width="5" height="6" fill="var(--st-inh)"/><rect x="16.5" y="1" width="5" height="6" fill="var(--st-own)"/></svg> kit memory stacked: libraries, other files, inherited, own (MB, right)</span>
+    <span class="key" data-g="instr"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink)" stroke-width="3"/></svg> instructions, document kit (G)</span>
+    <span class="key" data-g="instr"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink-soft)" stroke-width="2.5" stroke-dasharray="6 3"/></svg> instructions, coolwsd (G)</span>
+    <span class="sep"></span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s0)" stroke-width="2.5"/></svg> frame ready</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s4)" stroke-width="2.5"/></svg> first content</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s5)" stroke-width="2.5"/></svg> js ready</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s1)" stroke-width="2.5"/></svg> page load</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s2)" stroke-width="2.5"/></svg> edit</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s6)" stroke-width="2.5"/></svg> image displayed</span>
+    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s7)" stroke-width="2.5"/></svg> slide duplicated</span>
+    <span class="sep"></span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--mem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> COOL doc memory (MB, right)</span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--bmem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> browser heap (MB, right)</span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--tmem)" stroke-width="2.5" stroke-dasharray="8 3"/></svg> page process, resident (MB, right)</span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--wmem)" stroke-width="2.5" stroke-dasharray="2 3"/></svg> coolwsd peak (MB, right)</span>
+    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><rect x="0" y="1" width="5" height="6" fill="var(--st-lib)"/><rect x="5.5" y="1" width="5" height="6" fill="var(--st-other)"/><rect x="11" y="1" width="5" height="6" fill="var(--st-inh)"/><rect x="16.5" y="1" width="5" height="6" fill="var(--st-own)"/></svg> kit memory stacked: libraries, other files, inherited, own (MB, right)</span>
     <a id="fglink" class="fg-link" target="_blank" rel="noopener" hidden>document flamegraph &#8599;</a>
   </div>
   <div id="charts"></div>
@@ -973,11 +984,11 @@ the document, and is the figure a memory limit has to accommodate. The stacked b
     dictionaries the parent preloaded), and what the document itself wrote. Only the last layer is
     the document's own cost; the first three are shared with every other document on the machine,
     which is why the resident total is several times what one more document actually adds.
-    The bars behind the lines are the instructions each of the two processes
-    executed, the server on the left of a point and the document kit on the right, on their own
-    scale since instructions share no axis with times or memory. They count only the window perf
-    was attached for, which opens after the server is up, so they describe the test and not a whole
-    process life, and they move a lot from run to run. A rising line across commits is a regression. A faded point was measured on a busy machine: a fixed probe ran slower than usual during the run, or the hypervisor took CPU time from the VM, so its times are not comparable. The run detail of each point gives the commits since the previous point, as a git log range and, for a GitHub source, a link that lists them. When a run was also captured under perf, its point shows the plain times and the run detail lists the times under perf beside them. A ringed point is a capture with no plain run beside it, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
+    The instruction lines have a scale of their own, which the left axis shows when the times
+    are hidden. They count only the window perf was attached for, which opens after the server
+    is up, so they describe the test and not a whole process life. A busy machine slows the
+    times but does not change the instruction counts, so a busy run stays on the instruction
+    lines. A rising line across commits is a regression. A faded point was measured on a busy machine: a fixed probe ran slower than usual during the run, or the hypervisor took CPU time from the VM, so its times are not comparable. The run detail of each point gives the commits since the previous point, as a git log range and, for a GitHub source, a link that lists them. When a run was also captured under perf, its point shows the plain times and the run detail lists the times under perf beside them. A ringed point is a capture with no plain run beside it, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
 </div>
 <div id="tip" role="tooltip" hidden></div>
 <div class="modal" id="modal" hidden><div class="modal-card" id="mcard" role="dialog" aria-modal="true">
@@ -989,8 +1000,14 @@ const DATA = __DATA__;
 const COMPARE = __COMPARE__;
 const SVGNS = "http://www.w3.org/2000/svg";
 const MS = [{m:"document_loaded_ms"},{m:"frame_ready_ms"},{m:"first_content_ms"},{m:"js_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"},{m:"image_displayed_ms"},{m:"slide_duplicated_ms"}];
-const NAMES={document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",image_displayed_ms:"image displayed",slide_duplicated_ms:"slide duplicated",cool_mem:"COOL memory",browser_mem:"browser heap",tab_mem:"page process",master_mem:"coolwsd peak"};
+const NAMES={instr_kit:"document kit instructions",instr_wsd:"coolwsd instructions",document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",image_displayed_ms:"image displayed",slide_duplicated_ms:"slide duplicated",cool_mem:"COOL memory",browser_mem:"browser heap",tab_mem:"page process",master_mem:"coolwsd peak"};
 const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","5mb","10mb","duplicate","ooxml","image5mb"];
+// Instructions count the same work whatever the load of the machine, while
+// the times follow it, so either group can be hidden to read the other.
+const INS=[{cls:"instr_kit",k:"kit"},{cls:"instr_wsd",k:"master"}];
+const insOf=(r,k)=>{const n=r.instructions;return n&&n[k]!=null?n[k]:null;};
+const SHOW={instr:true,times:true,mem:true};
+try{Object.assign(SHOW,JSON.parse(localStorage.getItem("cool-perf-show")||"{}"));}catch(e){}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
 function niceStep(s){if(s<=0)return 1;const r=s/4,m=Math.pow(10,Math.floor(Math.log10(r))),n=r/m;return (n<=1?1:n<=2?2:n<=5?5:10)*m;}
 function niceCeil(v){return Math.ceil(v/niceStep(v))*niceStep(v);}
@@ -1035,47 +1052,34 @@ function render(svg, runs, W=520, H=300){
   const m={top:14,right:52,bottom:46,left:50};
   svg.replaceChildren();svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
   const pW=W-m.left-m.right,pH=H-m.top-m.bottom,x0=m.left,x1=x0+pW,y1=m.top+pH;
-  let msMax=0,memMax=0;
+  let msMax=0,memMax=0,insMax=0;
   const heapOf=r=>{const x=r.metrics.browser_heap_mb;return x?x.avg:null;};
-  runs.forEach(r=>{MS.forEach(s=>{const v=r.metrics[s.m]&&r.metrics[s.m].avg;if(v>msMax)msMax=v;});
-    const mm=memOf(r);if(mm!=null&&mm>memMax)memMax=mm;
-    const wm=masterOf(r);if(wm!=null&&wm>memMax)memMax=wm;
-    const sk=stackOf(r);if(sk&&sk.total>memMax)memMax=sk.total;
-    const bh=heapOf(r);if(bh!=null&&bh>memMax)memMax=bh;
-    const tb=tabOf(r);if(tb!=null&&tb>memMax)memMax=tb;});
-  const msTop=niceCeil(msMax)||1, memTop=niceCeil(memMax)||1;
-  const yMs=v=>y1-(v/msTop)*pH, yMem=v=>y1-(v/memTop)*pH;
-  const step=niceStep(msTop);
-  for(let v=0;v<=msTop+1e-9;v+=step){const y=yMs(v),t=el("g",{class:"tick"});
-    t.appendChild(el("line",{x1:x0,x2:x1,y1:y,y2:y}));
-    t.appendChild(el("text",{x:x0-7,y:y+3.5,"text-anchor":"end"},String(Math.round(v))));svg.appendChild(t);}
+  runs.forEach(r=>{
+    if(SHOW.times)MS.forEach(s=>{const v=r.metrics[s.m]&&r.metrics[s.m].avg;if(v>msMax)msMax=v;});
+    if(SHOW.mem){const mm=memOf(r);if(mm!=null&&mm>memMax)memMax=mm;
+      const wm=masterOf(r);if(wm!=null&&wm>memMax)memMax=wm;
+      const sk=stackOf(r);if(sk&&sk.total>memMax)memMax=sk.total;
+      const bh=heapOf(r);if(bh!=null&&bh>memMax)memMax=bh;
+      const tb=tabOf(r);if(tb!=null&&tb>memMax)memMax=tb;}
+    if(SHOW.instr)INS.forEach(s=>{const v=insOf(r,s.k);if(v!=null&&v>insMax)insMax=v;});});
+  const msTop=niceCeil(msMax)||1, memTop=niceCeil(memMax)||1, insTop=(niceCeil(insMax/1e9)||1)*1e9;
+  const yMs=v=>y1-(v/msTop)*pH, yMem=v=>y1-(v/memTop)*pH, yIns=v=>y1-(v/insTop)*pH;
+  // The left axis is for the times, and for the instructions once the times are hidden.
+  const leftIns=!SHOW.times&&insMax>0, left=leftIns||msMax>0;
+  if(left){const top=leftIns?insTop/1e9:msTop,step=niceStep(top);
+    for(let v=0;v<=top+1e-9;v+=step){const y=y1-(v/top)*pH,t=el("g",{class:"tick"});
+      t.appendChild(el("line",{x1:x0,x2:x1,y1:y,y2:y}));
+      t.appendChild(el("text",{x:x0-7,y:y+3.5,"text-anchor":"end"},leftIns?String(+v.toFixed(2)):String(Math.round(v))));svg.appendChild(t);}}
   if(memMax>0){const ms2=niceStep(memTop);for(let v=0;v<=memTop+1e-9;v+=ms2){
     svg.appendChild(el("text",{class:"tick",x:x1+7,y:yMem(v)+3.5,"text-anchor":"start"},String(Math.round(v))));}}
   svg.appendChild(el("line",{class:"baseline",x1:x0,x2:x1,y1:y1,y2:y1}));
-  svg.appendChild(el("text",{class:"axtitle",x:12,y:m.top+pH/2,"text-anchor":"middle",transform:`rotate(-90 12 ${m.top+pH/2})`},"ms"));
+  if(left)svg.appendChild(el("text",{class:"axtitle",x:12,y:m.top+pH/2,"text-anchor":"middle",transform:`rotate(-90 12 ${m.top+pH/2})`},leftIns?"G instructions":"ms"));
   if(memMax>0)svg.appendChild(el("text",{class:"axtitle",x:W-10,y:m.top+pH/2,"text-anchor":"middle",transform:`rotate(90 ${W-10} ${m.top+pH/2})`},"MB"));
   const n=runs.length,pad=n>1?18:pW/2;
   const xAt=i=>x0+pad+(n>1?i*(pW-2*pad)/(n-1):0);
-  // Instructions have no relation to milliseconds or megabytes, so the bars get
-  // the plot height to themselves rather than a shared axis, and are drawn
-  // before anything else so the lines stay readable over them.
-  let instrMax=0;
-  runs.forEach(r=>{const n=r.instructions;if(!n)return;
-    ["master","kit"].forEach(k=>{if(n[k]!=null&&n[k]>instrMax)instrMax=n[k];});});
-  if(instrMax>0){
-    const bw=Math.max(3,Math.min(11,pW/(runs.length*3)));
-    runs.forEach((r,i)=>{const n=r.instructions;if(!n)return;
-      [["master","wsd","coolwsd"],["kit","kit","document kit"]].forEach((spec,j)=>{
-        const v=n[spec[0]];if(v==null)return;
-        const h=(v/instrMax)*pH*0.9, cx=xAt(i)+(j?1:-1)*(bw/2+1);
-        const bar=el("rect",{class:"ibar "+spec[1],x:cx-bw/2,y:y1-h,width:bw,height:h});
-        const tip=`${shortLabel(r.commit)} · ${spec[2]}: ${(v/1e9).toFixed(1)}G instructions`;
-        bar.setAttribute("data-tip",tip);bar.setAttribute("aria-label",tip);
-        svg.appendChild(bar);});});
-  }
   // One stacked bar per run, on the same MB axis as the memory lines so its
   // height can be read off that axis rather than taken on trust.
-  runs.forEach((r,i)=>{const sk=stackOf(r);if(!sk)return;
+  if(SHOW.mem)runs.forEach((r,i)=>{const sk=stackOf(r);if(!sk)return;
     const bw=Math.max(4,Math.min(13,pW/(runs.length*3)));
     const cx=xAt(i)+bw*1.6;
     let acc=0;
@@ -1085,25 +1089,33 @@ function render(svg, runs, W=520, H=300){
       const tip=`${shortLabel(r.commit)} · ${part.name}: ${Math.round(part.v)} MB of ${Math.round(sk.total)} resident`;
       rect.setAttribute("data-tip",tip);rect.setAttribute("aria-label",tip);
       svg.appendChild(rect);acc+=part.v;});});
-  function plot(cls,scale,getv){
+  // fmt gives the value with its unit. A steady line keeps the busy runs on it.
+  let drawn=0;
+  function plot(cls,scale,getv,fmt,steady){
     const pts=[];runs.forEach((r,i)=>{const v=getv(r);if(v!=null)pts.push([i,xAt(i),scale(v),v]);});
     if(!pts.length)return;
+    drawn++;
     // the line joins the runs of a quiet machine, and a busy run stays a faded dot beside it
-    const quiet=pts.filter(p=>!(runs[p[0]].machine&&runs[p[0]].machine.busy));
+    const quiet=steady?pts:pts.filter(p=>!(runs[p[0]].machine&&runs[p[0]].machine.busy));
     if(quiet.length>1)svg.appendChild(el("polyline",{class:"line "+cls,points:quiet.map(p=>p[1]+","+p[2]).join(" ")}));
     pts.forEach(p=>{const r=runs[p[0]];
       const busy=r.machine&&r.machine.busy;
-      const dot=el("circle",{class:"dot "+cls.split(" ")[0]+(r.profiled?" prof":"")+(busy?" busy":""),cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
+      const dot=el("circle",{class:"dot "+cls.split(" ")[0]+(r.profiled?" prof":"")+(busy&&!steady?" busy":""),cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
       const short=cls.split(" ")[0],unit=cls.indexOf("mem")>=0?"MB":"ms";
-      const label=`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${Math.round(p[3])} ${unit}`+(r.profiled?" · profiled":"")+(busy?" · busy machine":"");
+      const label=`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${fmt?fmt(p[3]):Math.round(p[3])+" "+unit}`+(r.profiled?" · profiled":"")+(busy?" · busy machine":"");
       dot.setAttribute("data-tip",label);dot.setAttribute("aria-label",label);
       dot.addEventListener("click",()=>openDetail(runs,p[0]));svg.appendChild(dot);});
   }
-  MS.forEach(s=>plot(s.m,yMs,r=>{const x=r.metrics[s.m];return x?x.avg:null;}));
-  plot("master_mem mem",yMem,masterOf);
-  plot("cool_mem mem",yMem,memOf);
-  plot("browser_mem mem",yMem,heapOf);
-  plot("tab_mem mem",yMem,tabOf);
+  if(SHOW.times)MS.forEach(s=>plot(s.m,yMs,r=>{const x=r.metrics[s.m];return x?x.avg:null;}));
+  if(SHOW.mem){plot("master_mem mem",yMem,masterOf);
+    plot("cool_mem mem",yMem,memOf);
+    plot("browser_mem mem",yMem,heapOf);
+    plot("tab_mem mem",yMem,tabOf);}
+  // drawn last, so they stay on top of the other lines
+  if(SHOW.instr)INS.forEach(s=>plot(s.cls,yIns,r=>insOf(r,s.k),v=>(v/1e9).toFixed(2)+" G",true));
+  // perf counts the instructions of the 1-user runs only
+  if(!drawn)svg.appendChild(el("text",{class:"axtitle",x:x0+pW/2,y:m.top+pH/2,"text-anchor":"middle"},
+    SHOW.instr&&!SHOW.times&&!SHOW.mem?"no instruction counts: perf measures the 1-user runs only":"nothing to show for the lines selected"));
   // x labels: short commit, thinned if crowded
   const everyk=Math.ceil(n/Math.max(6,Math.floor(pW/75)));
   runs.forEach((r,i)=>{if(i%everyk)return;svg.appendChild(el("text",{class:"xlab",x:xAt(i),y:y1+15,"text-anchor":"middle"},r.commit?shortLabel(r.commit):("#"+i)));});
@@ -1151,6 +1163,20 @@ function setFull(sec){
 host.addEventListener("click",e=>{const b=e.target.closest(".fullbtn");if(!b)return;
   const sec=b.closest(".chart");setFull(fullChart===sec?null:sec);});
 window.addEventListener("resize",()=>{if(fullChart)drawFull();});
+
+// The buttons in the legend show or hide a group of lines on every chart. The
+// choice is kept in this browser only.
+function syncViews(){
+  document.querySelectorAll(".vt").forEach(b=>b.setAttribute("aria-pressed",String(!!SHOW[b.dataset.v])));
+  document.querySelectorAll(".legend .key[data-g]").forEach(k=>k.classList.toggle("off",!SHOW[k.dataset.g]));}
+document.querySelector(".views").addEventListener("click",e=>{const b=e.target.closest(".vt");if(!b)return;
+  SHOW[b.dataset.v]=!SHOW[b.dataset.v];
+  try{localStorage.setItem("cool-perf-show",JSON.stringify(SHOW));}catch(e){}
+  syncViews();
+  document.querySelectorAll("svg[data-key]").forEach(svg=>{
+    if(!fullChart||!fullChart.contains(svg))render(svg,DATA[svg.dataset.key]);});
+  if(fullChart)drawFull();});
+syncViews();
 
 // document flamegraph: link the header to the most recent run that has one
 (function(){let best=null;
