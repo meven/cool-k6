@@ -157,21 +157,48 @@ def cool_metrics() -> dict:
     return out
 
 
+def cool_doc_pids(metrics: dict) -> set[str]:
+    """The kit pids of the documents that getMetrics lists, from doc_info{...,pid="P"}."""
+    pids = set()
+    for key in metrics:
+        if key.startswith("doc_info{"):
+            m = re.search(r'pid="(\d+)"', key)
+            if m:
+                pids.add(m.group(1))
+    return pids
+
+
+def doc_private_dirty_kb(pid: str, metrics: dict) -> float:
+    """The Private_Dirty of the kit @p pid in kB, read from /proc now. coolwsd's own
+    doc_memory_used_bytes is the fallback, for a kit whose /proc cannot be read."""
+    from pylib.perfutils import group_mem
+    kb = group_mem([pid]).get("private_dirty_kb")
+    if kb is not None:
+        return float(kb)
+    return metrics.get(f'doc_memory_used_bytes{{pid="{pid}"}}', 0.0) / 1024
+
+
 def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) -> None:
     out = ROOT / out_rel
     out.mkdir(parents=True, exist_ok=True)
     out.chmod(0o777)  # the k6 container user writes metrics.json here
     env = {**os.environ, "USERS": str(users), "OUT_DIR": out_rel, "COMMIT": commit or ""}
     print(f"running {app} {doc} {users}u (commit {commit or 'local'}) ...")
+    # The kits of earlier tests can still be listed while this one starts, so
+    # only the kits that appear during this test are this document's.
+    earlier_kits = cool_doc_pids(cool_metrics())
 
     # Tee what k6 says into the run directory. A scenario that measures nothing used to leave
     # only a metrics.json full of nulls, which says that it failed and nothing about why.
     log = (out / "k6.log").open("wb")
     proc = subprocess.Popen(["./k6-run", test_script(app, doc)], cwd=str(ROOT), env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    # poll COOL's own metrics while the test runs: kit_memory_used_max_bytes is
-    # the document kit's Private_Dirty (the doc's real footprint), and
-    # global_memory_used_bytes is the whole COOL total. Keep the peaks.
+    # Poll while the test runs and keep the peaks: the Private_Dirty of this
+    # test's kit (the document's own footprint), and global_memory_used_bytes,
+    # the whole COOL total. coolwsd's kit_memory_used_max_bytes is not used for
+    # the document: it is the largest kit still listed, often the previous
+    # test's, and coolwsd refreshes it only every few seconds, so a short test
+    # can end before its own kit has a value there.
     peak_doc = peak_total = 0.0
     reached = False
     while proc.poll() is None:
@@ -186,11 +213,9 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
         m = cool_metrics()
         if m:
             reached = True
-        # kit_memory_used_max_bytes is the document kit's Private_Dirty, but it
-        # only reads nonzero while a kit is *assigned* (a doc actively open), so
-        # for short sessions it is often 0; global_memory_used_bytes is the
-        # dependable total (the dashboard falls back to it for the memory line).
-        peak_doc = max(peak_doc, m.get("kit_memory_used_max_bytes", 0.0))
+        kits = cool_doc_pids(m) - earlier_kits
+        doc_kb = sum(doc_private_dirty_kb(pid, m) for pid in kits)
+        peak_doc = max(peak_doc, doc_kb * 1024)
         peak_total = max(peak_total, m.get("global_memory_used_bytes", 0.0))
         time.sleep(1)
     if proc.stdout:
