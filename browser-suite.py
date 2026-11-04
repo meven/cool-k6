@@ -209,6 +209,9 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
     wsd = pgrep(["-x", "coolwsd", "-u", str(os.getuid())])
     if len(wsd) == 1:
         groups["coolwsd"] = lambda: wsd + pgrep(["-x", "forkit", "-P", wsd[0]])
+    # The kits of this test, which the loop below finds through getMetrics.
+    test_kits: list[str] = []
+    groups["kit"] = lambda: test_kits
     sampler = MemorySampler(groups)
 
     # Tee what k6 says into the run directory. A scenario that measures nothing used to leave
@@ -236,9 +239,9 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
         m = cool_metrics()
         if m:
             reached = True
-        kits = [pid for pid, views in cool_doc_views(m).items()
-                if pid not in earlier_views or views > earlier_views[pid]]
-        doc_kb = sum(doc_private_dirty_kb(pid, m) for pid in kits)
+        test_kits[:] = [pid for pid, views in cool_doc_views(m).items()
+                        if pid not in earlier_views or views > earlier_views[pid]]
+        doc_kb = sum(doc_private_dirty_kb(pid, m) for pid in test_kits)
         peak_doc = max(peak_doc, doc_kb * 1024)
         peak_total = max(peak_total, m.get("global_memory_used_bytes", 0.0))
         sampler.sample()
@@ -275,6 +278,7 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
                 cool["peak_master_rss_mb"] = wsd_mem["peak_rss_mb"]
             if wsd_mem.get("peak_pss_mb") is not None:
                 cool["peak_master_pss_mb"] = wsd_mem["peak_pss_mb"]
+            cool.update(kit_memory_of(mem.get("kit", {})))
             d["cool_memory"] = cool
             if browser:
                 d["browser_memory"] = browser
@@ -593,6 +597,38 @@ def _capture_instructions(mj: Path) -> dict | None:
     return out or None
 
 
+def kit_memory_of(kit: dict) -> dict:
+    """The cool_memory figures of the document kit, from the MemorySampler
+    summary entry @p kit."""
+    out: dict = {}
+    # How the kit's resident memory is made up: the engine libraries it maps,
+    # other mapped files, what the fork handed it, and what the document itself
+    # went on to write. The four add up to the resident total.
+    lib = kit.get("peak_lib_rss_mb")
+    other = kit.get("peak_other_rss_mb")
+    anon = kit.get("peak_anon_rss_mb")
+    inherited = kit.get("peak_anon_shared_dirty_mb")
+    private = kit.get("peak_private_dirty_mb")
+    shared = kit.get("peak_shared_dirty_mb")
+    # Resident totals and how many processes were in each group, so the
+    # proportional figures can be read for what they are.
+    if kit.get("peak_rss_mb") is not None:
+        out["peak_doc_rss_mb"] = kit["peak_rss_mb"]
+    if kit.get("max_pids") is not None:
+        out["doc_pids"] = kit["max_pids"]
+    if None not in (lib, other, anon, inherited):
+        out["doc_stack"] = {"libraries": lib, "other_files": other,
+                            "inherited": inherited,
+                            "own": round(anon - inherited, 1)}
+    # What the document costs on its own, and the base it inherited from the
+    # process it was forked from, which every other document shares.
+    if private is not None:
+        out["peak_doc_private_mb"] = private
+    if shared is not None:
+        out["peak_doc_shared_mb"] = shared
+    return out
+
+
 def _capture_memory(mj: Path) -> dict | None:
     """This run's Collabora Online memory, read from the capture's own harness
     summary, or None when the run has no capture beside it.
@@ -631,8 +667,6 @@ def _capture_memory(mj: Path) -> dict | None:
     kit = mem.get("kit") if isinstance(mem.get("kit"), dict) else {}
     wsd = mem.get("coolwsd") if isinstance(mem.get("coolwsd"), dict) else {}
     master_peak = wsd.get("peak_rss_hwm_mb", wsd.get("peak_rss_mb"))
-    private = kit.get("peak_private_dirty_mb")
-    shared = kit.get("peak_shared_dirty_mb")
     totals = []
     wsd_series = series_of("coolwsd")
     for i, kit_sample in enumerate(series_of("kit")):
@@ -644,33 +678,11 @@ def _capture_memory(mj: Path) -> dict | None:
         return None
     out = {"peak_doc_mem_mb": doc_peak, "peak_total_mem_mb": total_peak,
            "source": "capture"}
-    # How the kit's resident memory is made up: the engine libraries it maps,
-    # other mapped files, what the fork handed it, and what the document itself
-    # went on to write. The four add up to the resident total.
-    lib = kit.get("peak_lib_rss_mb")
-    other = kit.get("peak_other_rss_mb")
-    anon = kit.get("peak_anon_rss_mb")
-    inherited = kit.get("peak_anon_shared_dirty_mb")
-    # Resident totals and how many processes were in each group, so the
-    # proportional figures can be read for what they are.
-    if kit.get("peak_rss_mb") is not None:
-        out["peak_doc_rss_mb"] = kit["peak_rss_mb"]
-    if kit.get("max_pids") is not None:
-        out["doc_pids"] = kit["max_pids"]
+    out.update(kit_memory_of(kit))
     if wsd.get("peak_rss_mb") is not None:
         out["peak_master_rss_mb"] = wsd["peak_rss_mb"]
     if wsd.get("peak_pss_mb") is not None:
         out["peak_master_pss_mb"] = wsd["peak_pss_mb"]
-    if None not in (lib, other, anon, inherited):
-        out["doc_stack"] = {"libraries": lib, "other_files": other,
-                            "inherited": inherited,
-                            "own": round(anon - inherited, 1)}
-    # What the document costs on its own, and the base it inherited from the
-    # process it was forked from, which every other document shares.
-    if private is not None:
-        out["peak_doc_private_mb"] = private
-    if shared is not None:
-        out["peak_doc_shared_mb"] = shared
     # The high-water mark of the process that serves the client and holds the
     # static file cache, which no other figure here covers.
     if master_peak is not None:
