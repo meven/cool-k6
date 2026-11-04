@@ -204,10 +204,11 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
         "browser_other": lambda: browser_pids()["other"],
     }
     # Only when one coolwsd runs as this user, to be sure that it is the one
-    # that serves COOL_URL.
+    # that serves COOL_URL. The group holds its forkit too, as the capture's
+    # does, so that the figure is the same one across both kinds of run.
     wsd = pgrep(["-x", "coolwsd", "-u", str(os.getuid())])
     if len(wsd) == 1:
-        groups["coolwsd"] = wsd
+        groups["coolwsd"] = lambda: wsd + pgrep(["-x", "forkit", "-P", wsd[0]])
     sampler = MemorySampler(groups)
 
     # Tee what k6 says into the run directory. A scenario that measures nothing used to leave
@@ -1048,8 +1049,9 @@ DASHBOARD = r"""<!doctype html>
   </div>
   <div id="charts"></div>
   <footer>Each point is one run (one COOL commit) of the document named under the chart title, which is the file that test opens through the WOPI host. Times are ms averaged over the run (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint on a plain run, or the document kit's proportional set size sampled from /proc when the point comes from a flamegraph capture, which runs its own COOL, and browser heap is the page's JS heap. The page process is the resident size of the Chromium renderer that runs the page, sampled from /proc during the test: on top of the JS heap it holds the DOM, the decoded images and the canvas pixels of the tiles. The coolwsd peak is the largest resident size of
-coolwsd during the test, sampled from /proc. Runs from before that sampling show the
-resident high-water mark (VmHWM) of the capture's own coolwsd instead. The stacked bar beside each point breaks the document kit's resident memory into
+coolwsd and its forkit together during the test, sampled from /proc. The forkit holds the
+preloaded engine, most of the figure. Runs from before that sampling show the resident
+high-water mark (VmHWM) of the capture's own coolwsd instead. The stacked bar beside each point breaks the document kit's resident memory into
     the engine libraries it maps, other mapped files, what the fork handed it (mostly the
     dictionaries the parent preloaded), and what the document itself wrote. Only the last layer is
     the document's own cost; the first three are shared with every other document on the machine,
