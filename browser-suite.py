@@ -168,6 +168,12 @@ def cool_doc_pids(metrics: dict) -> set[str]:
     return pids
 
 
+def cool_doc_views(metrics: dict) -> dict[str, float]:
+    """The view count of each kit that getMetrics lists, by pid."""
+    return {pid: metrics.get(f'doc_views{{pid="{pid}"}}', 0.0)
+            for pid in cool_doc_pids(metrics)}
+
+
 def doc_private_dirty_kb(pid: str, metrics: dict) -> float:
     """The Private_Dirty of the kit @p pid in kB, read from /proc now. coolwsd's own
     doc_memory_used_bytes is the fallback, for a kit whose /proc cannot be read."""
@@ -184,9 +190,11 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
     out.chmod(0o777)  # the k6 container user writes metrics.json here
     env = {**os.environ, "USERS": str(users), "OUT_DIR": out_rel, "COMMIT": commit or ""}
     print(f"running {app} {doc} {users}u (commit {commit or 'local'}) ...")
-    # The kits of earlier tests can still be listed while this one starts, so
-    # only the kits that appear during this test are this document's.
-    earlier_kits = cool_doc_pids(cool_metrics())
+    # The kits of earlier tests can still be listed while this one starts. A
+    # kit is this test's when it appears during the test, or when it gains
+    # views: the 3-user test joins the kit that the 1-user test of the same
+    # document left open.
+    earlier_views = cool_doc_views(cool_metrics())
     # The 3-user tests have no capture, so sample coolwsd and the Chromium
     # processes here as the capture does, for every test.
     from pylib.perfutils import MemorySampler, browser_pids, pgrep
@@ -227,7 +235,8 @@ def run_one(app: str, doc: str, users: int, out_rel: str, commit: str | None) ->
         m = cool_metrics()
         if m:
             reached = True
-        kits = cool_doc_pids(m) - earlier_kits
+        kits = [pid for pid, views in cool_doc_views(m).items()
+                if pid not in earlier_views or views > earlier_views[pid]]
         doc_kb = sum(doc_private_dirty_kb(pid, m) for pid in kits)
         peak_doc = max(peak_doc, doc_kb * 1024)
         peak_total = max(peak_total, m.get("global_memory_used_bytes", 0.0))
