@@ -734,9 +734,9 @@ def _merge_profiled(pts: list[dict]) -> list[dict]:
     """Fold each profiled point into the plain point of the same run.
 
     The plain point keeps its own times on the chart. The times measured under
-    perf move to profiled_metrics, for the run detail. Instructions and, when
-    the plain run has none, memory come from the capture. A profiled point with
-    no plain point in its run stays on the chart as it is."""
+    perf move to profiled_metrics, for the run detail. Instructions come from
+    the capture, and its memory figures fill in those the plain run lacks. A
+    profiled point with no plain point in its run stays on the chart as it is."""
     plain = {p["runid"]: p for p in pts if p["runid"] and not p["profiled"]}
     out = []
     for p in pts:
@@ -746,7 +746,11 @@ def _merge_profiled(pts: list[dict]) -> list[dict]:
             continue
         host["profiled_metrics"] = p["metrics"]
         host["instructions"] = host["instructions"] or p["instructions"]
-        host["cool_memory"] = host["cool_memory"] or p["cool_memory"]
+        # getMetrics gives the plain run its document and total memory only.
+        # The capture adds the coolwsd peak, the resident sizes and the kit
+        # stack, so merge the two, and keep the plain figure for the same key.
+        if p["cool_memory"]:
+            host["cool_memory"] = {**p["cool_memory"], **(host["cool_memory"] or {})}
         host["browser_memory"] = host["browser_memory"] or p["browser_memory"]
         host["flamegraph"] = host["flamegraph"] or p["flamegraph"]
     return out
