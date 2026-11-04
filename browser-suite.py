@@ -976,6 +976,11 @@ DASHBOARD = r"""<!doctype html>
     border-bottom:1px solid var(--hair);} .modal-head strong{font-size:14px;}
   .modal-head button{font:inherit;font-size:13px;cursor:pointer;border-radius:7px;
     border:1px solid var(--hair);background:var(--surface);color:var(--ink);padding:5px 12px;}
+  .modal-head button:disabled{cursor:default;opacity:.45;}
+  .modal-head{flex-wrap:wrap;gap:8px;}
+  .mnav{display:flex;gap:6px;align-items:center;margin-left:auto;}
+  .mnav button,.mnav .pos{white-space:nowrap;}
+  .mnav .pos{font-size:12px;color:var(--ink-soft);font-variant-numeric:tabular-nums;margin:0 4px;}
   .modal .meta{padding:8px 16px;color:var(--ink-soft);font-size:12.5px;
     font-family:ui-monospace,Menlo,monospace;}
   table{border-collapse:collapse;width:100%;font-size:13px;}
@@ -1063,7 +1068,11 @@ resident high-water mark (VmHWM) of the capture's own coolwsd instead. The stack
 </div>
 <div id="tip" role="tooltip" hidden></div>
 <div class="modal" id="modal" hidden><div class="modal-card" id="mcard" role="dialog" aria-modal="true">
-  <div class="modal-head"><strong id="mt">Run</strong><button id="mc" type="button">Close</button></div>
+  <div class="modal-head"><strong id="mt">Run</strong><div class="mnav">
+    <button id="mprev" type="button" title="Previous run (Left arrow)">&larr; Previous</button>
+    <span class="pos" id="mpos"></span>
+    <button id="mnext" type="button" title="Next run (Right arrow)">Next &rarr;</button>
+    <button id="mc" type="button">Close</button></div></div>
   <div class="meta" id="mmeta"></div><div id="mb"></div><div id="mfg"></div>
 </div></div>
 <script>
@@ -1303,8 +1312,16 @@ function renderFg(runs,i,cmp){
   if(sel)sel.addEventListener("change",()=>renderFg(runs,i,sel.value===""?null:Number(sel.value)));
 }
 
+// The run that the detail shows, so that Previous and Next can step through
+// the runs of the same chart.
+let detailRuns=null,detailIdx=-1;
+const mprev=document.getElementById("mprev"),mnext=document.getElementById("mnext"),
+  mpos=document.getElementById("mpos");
 function openDetail(runs,i){
   const r=runs[i];mt.textContent="Run detail";
+  detailRuns=runs;detailIdx=i;
+  mprev.disabled=i<=0;mnext.disabled=i>=runs.length-1;
+  mpos.textContent=`${i+1} of ${runs.length}`;
   let meta=`commit ${esc(r.commit||"(unknown)")}  ·  ${esc(r.ts||"")}`;
   if(r.file)meta+=`  ·  ${esc(r.file)}`;
   if(r.runid)meta+=`  ·  run ${esc(r.runid)}`;
@@ -1372,12 +1389,24 @@ function openDetail(runs,i){
     (ins.kit!=null?`${ins.master!=null?", ":""}document kit ${(ins.kit/1e9).toFixed(1)}`:"")+"</td></tr>";}
   mb.innerHTML=h+"</tbody></table>";
   renderFg(runs,i,null);
-  modal.hidden=false;document.getElementById("mc").focus();
+  const wasOpen=!modal.hidden;
+  modal.hidden=false;
+  if(!wasOpen)document.getElementById("mc").focus();
 }
+function stepDetail(d){const j=detailIdx+d;
+  if(!detailRuns||j<0||j>=detailRuns.length)return;
+  openDetail(detailRuns,j);mcard.scrollTop=0;}
 function close(){modal.hidden=true;}
 document.getElementById("mc").addEventListener("click",close);
+mprev.addEventListener("click",()=>stepDetail(-1));
+mnext.addEventListener("click",()=>stepDetail(1));
 modal.addEventListener("click",e=>{if(e.target===modal)close();});
-document.addEventListener("keydown",e=>{if(e.key!=="Escape")return;
+document.addEventListener("keydown",e=>{
+  if(!modal.hidden&&(e.key==="ArrowLeft"||e.key==="ArrowRight")){
+    // leave the arrows to a focused select, such as the flamegraph comparison
+    if(e.target.closest&&e.target.closest("select,input"))return;
+    e.preventDefault();stepDetail(e.key==="ArrowLeft"?-1:1);return;}
+  if(e.key!=="Escape")return;
   if(!modal.hidden)close();else if(fullChart)setFull(null);});
 
 // instant hover tooltip (no native <title> delay)
