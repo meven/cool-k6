@@ -1401,18 +1401,20 @@ function sideName(side){const f=POINT_BY_ID[side.from],t=side.to&&POINT_BY_ID[si
   if(!f)return "nothing";
   return t&&t!==f?`${f.branch} · ${shortLabel(f.commit)} (${day(f.ts)}) to ${shortLabel(t.commit)} (${day(t.ts)}), ${sideRuns(side).size} runs`:pointName(f);}
 
-// What is compared, and how far a value has to move before it counts as a change. The
-// instruction counts hardly depend on the load of the machine, the times depend on it most.
+// What is compared, and how far a value has to move before it counts as a change: by the
+// share th of its value, and by abs in its own unit, so that a few ms on a short time do
+// not count. The instruction counts hardly depend on the load of the machine, the times
+// depend on it most.
 const heapOf=r=>{const x=r.metrics.browser_heap_mb;return x?x.avg:null;};
 const CMP_METRICS=[
-  {name:"instructions, document kit",get:r=>insOf(r,"kit"),fmt:v=>(v/1e9).toFixed(2)+" G",th:.01},
-  {name:"instructions, coolwsd",get:r=>insOf(r,"master"),fmt:v=>(v/1e9).toFixed(2)+" G",th:.01},
-  ...MS.map(s=>({name:NAMES[s.m]||s.m,get:r=>{const x=r.metrics[s.m];return x?x.avg:null;},fmt:v=>Math.round(v)+" ms",th:.05})),
-  {name:"COOL doc memory",get:memOf,fmt:v=>Math.round(v)+" MB",th:.03},
-  {name:"kit memory, resident",get:r=>{const s=stackOf(r);return s?s.total:null;},fmt:v=>Math.round(v)+" MB",th:.03},
-  {name:"coolwsd peak",get:masterOf,fmt:v=>Math.round(v)+" MB",th:.03},
-  {name:"browser heap",get:heapOf,fmt:v=>Math.round(v)+" MB",th:.03},
-  {name:"page process",get:tabOf,fmt:v=>Math.round(v)+" MB",th:.03},
+  {name:"instructions, document kit",get:r=>insOf(r,"kit"),fmt:v=>(v/1e9).toFixed(2)+" G",th:.01,abs:5e7},
+  {name:"instructions, coolwsd",get:r=>insOf(r,"master"),fmt:v=>(v/1e9).toFixed(2)+" G",th:.01,abs:5e7},
+  ...MS.map(s=>({name:NAMES[s.m]||s.m,get:r=>{const x=r.metrics[s.m];return x?x.avg:null;},fmt:v=>Math.round(v)+" ms",th:.05,abs:50})),
+  {name:"COOL doc memory",get:memOf,fmt:v=>Math.round(v)+" MB",th:.03,abs:10},
+  {name:"kit memory, resident",get:r=>{const s=stackOf(r);return s?s.total:null;},fmt:v=>Math.round(v)+" MB",th:.03,abs:10},
+  {name:"coolwsd peak",get:masterOf,fmt:v=>Math.round(v)+" MB",th:.03,abs:10},
+  {name:"browser heap",get:heapOf,fmt:v=>Math.round(v)+" MB",th:.03,abs:10},
+  {name:"page process",get:tabOf,fmt:v=>Math.round(v)+" MB",th:.03,abs:10},
 ];
 const median=a=>{const s=a.slice().sort((x,y)=>x-y),n=s.length;return n?(n%2?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2):null;};
 
@@ -1457,7 +1459,7 @@ function renderCompare(){
     CMP_METRICS.forEach(m=>{
       const va=median(A.map(m.get).filter(v=>v!=null)),vb=median(B.map(m.get).filter(v=>v!=null));
       if(va==null||vb==null||!va)return;
-      const d=(vb-va)/va,changed=Math.abs(d)>=m.th;
+      const d=(vb-va)/va,changed=Math.abs(d)>=m.th&&Math.abs(vb-va)>=m.abs;
       changed?changes++:still++;
       if(!changed&&!all)return;
       // lighter the closer the change is to its threshold, full past four times it
@@ -1474,7 +1476,8 @@ function renderCompare(){
   note.innerHTML=`<b>A</b> ${esc(sideName(CMP.a))}<br><b>B</b> ${esc(sideName(CMP.b))}<br>`+
     (CMP_NOTE?esc(CMP_NOTE)+"<br>":"")+
     `${changes} change${changes===1?"":"s"} in ${docs} test${docs===1?"":"s"}, ${still} metric${still===1?"":"s"} within the noise: `+
-    `1% for instructions, 3% for memory, 5% for times. Each value is the median over the runs of the side.`+
+    `a change counts from 1% and 0.05 G for instructions, 3% and 10 MB for memory, 5% and 50 ms for times. `+
+    `Each value is the median over the runs of the side.`+
     (missing?` ${missing} test${missing===1?" was":"s were"} measured on one side only.`:"");}
 
 (function(){const n=Object.values(POINTS).reduce((a,l)=>a+l.length,0);if(n<2)return;
