@@ -4,7 +4,9 @@
 #
 #   COOLWSD_DIR=/srv/online ./cool-build                build origin/main
 #   COOLWSD_DIR=/srv/online ./cool-build --ref v25.04   build another ref
-#   ./cool-build --engine     rebuild the engine as well, which takes hours
+#   ./cool-build --from https://gerrit.collaboraoffice.com/online \
+#                --ref refs/changes/91/18591/2        build a ref of another remote
+#   ./cool-build --engine     rebuild the engine as well
 #   ./cool-build --no-save    do not snapshot the result
 #   ./cool-build --dry-run    print what it would run
 #
@@ -17,14 +19,15 @@
 # what puts the run on the dashboard under the commit it came from.
 #
 # The engine under engine/instdir is left alone unless --engine is given. It is
-# a LibreOffice core build, it takes hours, and it changes far less often than
-# the server does.
+# a LibreOffice core build: the first one takes hours, and a later one compiles
+# only the files that changed, through ccache where it is set up, and links again.
 set -e
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 TREE=${COOLWSD_DIR}
 REF=${COOL_SRC_REF:-origin/main}
 URL=${COOL_SRC_URL:-}
+FROM=
 JOBS=${COOL_BUILD_JOBS:-$(nproc 2>/dev/null || echo 4)}
 DRY=
 SAVE=1
@@ -33,11 +36,12 @@ ENGINE=
 while [ $# -gt 0 ]; do
     case $1 in
         --ref) REF=$2; shift 2 ;;
+        --from) FROM=$2; shift 2 ;;
         --jobs|-j) JOBS=$2; shift 2 ;;
         --engine) ENGINE=1; shift ;;
         --no-save) SAVE=; shift ;;
         --dry-run) DRY=echo; shift ;;
-        -h|--help) sed -n '2,22p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,24p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -74,14 +78,22 @@ fi
 
 # One branch, no tags. A plain `git fetch origin` takes every branch the remote
 # has and all 755 tags; this asks for the one ref that is about to be built.
-echo "=== fetching $BRANCH"
-if $DRY git -C "$TREE" fetch --no-tags --quiet origin "$BRANCH"; then
+if [ -n "$FROM" ]; then
+    # A change under review is not on origin. Only the objects that origin does not
+    # have come from the other remote, as the fetch tells it what the tree has.
+    echo "=== fetching $REF from $FROM"
+    $DRY git -C "$TREE" fetch --no-tags --quiet "$FROM" "$REF"
     TARGET=FETCH_HEAD
 else
-    # A sha the remote will not serve by name, or a ref that is not a branch.
-    echo "    $BRANCH is not a branch on origin, taking every branch instead"
-    $DRY git -C "$TREE" fetch --no-tags --quiet origin
-    TARGET=$REF
+    echo "=== fetching $BRANCH"
+    if $DRY git -C "$TREE" fetch --no-tags --quiet origin "$BRANCH"; then
+        TARGET=FETCH_HEAD
+    else
+        # A sha the remote will not serve by name, or a ref that is not a branch.
+        echo "    $BRANCH is not a branch on origin, taking every branch instead"
+        $DRY git -C "$TREE" fetch --no-tags --quiet origin
+        TARGET=$REF
+    fi
 fi
 
 echo "=== checking out $REF"
@@ -89,7 +101,7 @@ $DRY git -C "$TREE" switch --detach "$TARGET"
 SHA=$(git -C "$TREE" rev-parse --short=12 HEAD)
 
 if [ -n "$ENGINE" ]; then
-    echo "=== building the engine (hours)"
+    echo "=== building the engine"
     $DRY make -C "$TREE/engine" -j"$JOBS"
 fi
 

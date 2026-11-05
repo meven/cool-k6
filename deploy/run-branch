@@ -1,0 +1,85 @@
+#!/bin/bash
+# Build a change or a branch of online, measure it, and publish its runs as a line of
+# their own on the dashboard, beside main, which it can be compared with.
+#
+# Stop cool-perf.timer as root or wait for its run to end, then run as the service user:
+#
+#   deploy/run-branch --gerrit 18591                 the current patch set of a change
+#   deploy/run-branch --gerrit 18591/2               one patch set
+#   deploy/run-branch --name feature --ref origin/feature
+#   deploy/run-branch --name x --ref refs/heads/x --from https://example.org/online.git
+#   deploy/run-branch --gerrit 18591 --runs 3        measure the same build 3 times
+#
+# The runs go on the branch that --name gives, gerrit-<change> for --gerrit, and each
+# is labelled with the commit it measured, so the patch sets of a change are points of
+# one line. The tree keeps the build until the next run of main replaces it.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+cd "$REPO"
+
+GERRIT_URL=${COOL_GERRIT_URL:-https://gerrit.collaboraoffice.com}
+name= ref= from= change= runs=1
+while [ $# -gt 0 ]; do
+    case $1 in
+        --gerrit) change=$2; shift 2 ;;
+        --name) name=$2; shift 2 ;;
+        --ref) ref=$2; shift 2 ;;
+        --from) from=$2; shift 2 ;;
+        --runs) runs=$2; shift 2 ;;
+        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [ -n "$change" ]; then
+    # The ref of the patch set, from the Gerrit REST API, which prefixes its JSON with
+    # a line against cross-site inclusion.
+    number=${change%%/*}
+    patchset=
+    [ "$number" != "$change" ] && patchset=${change#*/}
+    ref=$(curl -sf "$GERRIT_URL/changes/$number?o=ALL_REVISIONS" | python3 -c '
+import json, sys
+c = json.loads(sys.stdin.read().split("\n", 1)[1])
+want = sys.argv[1]
+for sha, rev in c["revisions"].items():
+    if (want and str(rev["_number"]) == want) or (not want and sha == c["current_revision"]):
+        print(rev["ref"])
+' "$patchset")
+    [ -n "$ref" ] || { echo "no patch set ${patchset:-current} of change $number on $GERRIT_URL" >&2; exit 1; }
+    from=${from:-$GERRIT_URL/online}
+    name=${name:-gerrit-$number}
+fi
+[ -n "$name" ] && [ -n "$ref" ] || { echo "give --gerrit, or --name and --ref" >&2; exit 2; }
+[ "$name" != main ] || { echo "main is what deploy/nightly measures" >&2; exit 2; }
+
+set -a; . /etc/cool-perf.env; set +a
+: "${COOLWSD_DIR:?not set in /etc/cool-perf.env}"
+
+# The same lock as deploy/nightly, so a timer run cannot start in between.
+STATE=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
+exec 9>"$STATE/lock"
+flock -n 9 || { echo "a nightly run is running; stop cool-perf.timer or wait" >&2; exit 1; }
+
+# The test bundles, rebuilt when the checkout moved, as deploy/nightly does.
+head=$(git rev-parse HEAD)
+if [ ! -f dist/.built-from ] || [ "$(cat dist/.built-from)" != "$head" ]; then
+    npm ci --no-audit --no-fund
+    npm run build
+    echo "$head" > dist/.built-from
+fi
+
+build_args=(--no-save --ref "$ref")
+[ "${COOL_PERF_ENGINE:-1}" = 1 ] && build_args+=(--engine)
+[ -n "$from" ] && build_args+=(--from "$from")
+echo "=== $name: building $ref${from:+ from $from}"
+./cool-build "${build_args[@]}"
+pkill -u "$(id -u)" -x coolwsd || true
+
+for i in $(seq "$runs"); do
+    echo "=== $name: measuring, run $i of $runs"
+    # Publish even a busy run: a retry would measure the same build again.
+    COOL_PERF_BRANCH=$name COOL_PERF_REF=$ref COOL_PERF_BUSY_RETRIES=0 ./cool-ci run ||
+        echo "cool-ci run $i failed" >&2
+done
+echo "the runs of $name are on the dashboard under the branch $name"

@@ -379,6 +379,25 @@ The logs of each run are kept in the store, under
 `/var/lib/cool-perf/junit/`. The run's work directory is
 `/home/collabora/perf-dashboard/results/`.
 
+**Measuring a change or a branch.** `deploy/run-branch` builds a change under
+review, or any ref, measures it, and publishes its runs as a branch of their own.
+The dashboard shows main by default. Its "branch" selector shows another branch,
+and "compare with" draws a second branch faded beside the first, with diamond
+points. Both choices are kept in the address, so a comparison can be sent as a
+link. Wait for the run of the timer to end, or stop the timer, then:
+
+```
+sudo -iu collabora ~/perf-dashboard/deploy/run-branch --gerrit 18591 --runs 3
+```
+
+`--gerrit` takes the current patch set of the change from Gerrit, or one patch
+set as `18591/2`, and names the branch `gerrit-18591`. `--name` and `--ref`
+measure anything else, with `--from` for a remote other than origin. A change to
+the engine needs `COOL_PERF_ENGINE=1`, the default. The engine build is
+incremental and goes through ccache, so a change to a few engine files costs
+their compilation and the link of `libmergedlo.so`. The tree keeps the build
+until main next moves, and the next run of main builds main again the same way.
+
 **Updating perf-dashboard.** Pull the new commit (see step 1), then run
 `deploy/setup-vm --no-packages` as root if anything in `deploy/` changed. The
 next run rebuilds the test bundles by itself, because they are rebuilt whenever

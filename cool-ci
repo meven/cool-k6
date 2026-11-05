@@ -22,6 +22,9 @@ Configuration is all environment, so a Jenkins job needs no arguments:
     COOL_PERF_KEEP     how many runs to keep in the store (default 20)
     COOL_BUILDS_DIR    build snapshots, for cool-use-build (default: beside the tree)
     COOL_PERF_LABEL    label the runs with this instead of the built commit
+    COOL_PERF_BRANCH   the line of runs on the dashboard that the run belongs to
+                       (default main); deploy/run-branch sets it for a change
+    COOL_PERF_REF      what was built, recorded beside the branch (optional)
     PERF_EVENT         perf sampling event (default cycles, self-tested and
                        downgraded automatically when it captures nothing)
     COOL_PERF_PROBE_MAX      a run is busy when its machine probe is slower than the usual
@@ -108,6 +111,10 @@ def listening_ports() -> set:
 
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def branch() -> str:
+    return env("COOL_PERF_BRANCH") or "main"
 
 
 def build_label() -> tuple[str | None, str]:
@@ -480,6 +487,10 @@ def cmd_run(args) -> int:
                     float(env("COOL_PERF_STEAL_MAX", "2")))
     machine["busy"] = bool(reasons)
     (ROOT / "results" / runid / "machine.json").write_text(json.dumps(machine, indent=2) + "\n")
+    # The dashboard draws the runs of each branch as a line of their own.
+    (ROOT / "results" / runid / "build.json").write_text(json.dumps({
+        "branch": branch(), "ref": env("COOL_PERF_REF") or None, "label": label,
+    }, indent=2) + "\n")
     for why in reasons:
         print(f"busy machine: {why}")
 
@@ -565,9 +576,25 @@ def publish(runid: str, store: Path, keep: int, junit: Path | None = None) -> in
     if rc != 0:
         print("could not rebuild the store dashboard", file=sys.stderr)
         return rc
+    label = build_label()[0]
+    # The last label of each branch, which deploy/nightly compares the tip of main with:
+    # last-run.json names a change once one was measured after main. A store from before
+    # this file starts it from the run that last-run.json still names, which was of main.
+    last = store / "last-runs.json"
+    try:
+        labels = json.loads(last.read_text())
+    except (OSError, ValueError):
+        try:
+            prev = json.loads((store / "last-run.json").read_text())
+            labels = {prev.get("branch", "main"): prev["label"]}
+        except (OSError, ValueError, KeyError):
+            labels = {}
+    labels[branch()] = label
+    last.write_text(json.dumps(labels, indent=2) + "\n")
     (store / "last-run.json").write_text(json.dumps({
         "runid": runid,
-        "label": build_label()[0],
+        "label": label,
+        "branch": branch(),
         "published_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "runs_in_store": len(sorted(p for p in dst_results.iterdir() if p.is_dir())),
     }, indent=2) + "\n")
