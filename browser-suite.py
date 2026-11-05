@@ -56,7 +56,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 APPS = ("writer", "calc", "impress", "draw")
-DOCS = ("blank", "5mb", "10mb", "duplicate", "ooxml", "image5mb")
+DOCS = ("blank", "blank-vector", "5mb", "5mb-vector", "10mb", "duplicate", "duplicate-vector",
+        "ooxml", "ooxml-vector", "image5mb")
 
 # What each application has to open. "ooxml" is the same content as "5mb" in the Microsoft
 # format, so the two read as a comparison of the formats; Draw has no such format of its own,
@@ -64,10 +65,13 @@ DOCS = ("blank", "5mb", "10mb", "duplicate", "ooxml", "image5mb")
 # one service-level requirement is written about, and "image5mb" opens a blank text document
 # and inserts a 5 MB image into it, which is another, so only Writer has those two; "duplicate"
 # is the deck the slide-duplication requirement is measured on, so only Impress has that one.
+# A "-vector" document is the same test with vector rendering, which draws the slides from
+# the primitives the engine sends instead of from tiles, so it reads beside the tile one.
 DOCS_BY_APP = {
     "writer": ("blank", "5mb", "10mb", "ooxml", "image5mb"),
     "calc": ("blank", "5mb", "ooxml"),
-    "impress": ("blank", "5mb", "duplicate", "ooxml"),
+    "impress": ("blank", "blank-vector", "5mb", "5mb-vector", "duplicate", "duplicate-vector",
+                "ooxml", "ooxml-vector"),
     "draw": ("blank", "5mb"),
 }
 
@@ -843,7 +847,8 @@ def demo_history() -> dict:
     scen: dict = {}
     for app, doc in documents():
             ai = APPS.index(app)
-            big = {"5mb": 2.3, "ooxml": 2.3, "10mb": 3.6}.get(doc, 1.0)
+            base_doc = doc.removesuffix("-vector")
+            big = {"5mb": 2.3, "ooxml": 2.3, "10mb": 3.6}.get(base_doc, 1.0)
             for users in (1, 3):
                 base_dl = (900 + ai * 350) * big * (1.6 if users == 3 else 1.0)
                 # the client shell, near enough the same whatever the document
@@ -862,7 +867,7 @@ def demo_history() -> dict:
                         m["edit_ms"] = _stat(190 * big * drift * j())
                     if doc == "image5mb":
                         m["image_displayed_ms"] = _stat(1400 * drift * j())
-                    if doc == "duplicate":
+                    if base_doc == "duplicate":
                         m["slide_duplicated_ms"] = _stat(120 * users * drift * j())
                     pts.append({
                         "commit": commit,
@@ -1091,7 +1096,7 @@ const COMPARE = __COMPARE__;
 const SVGNS = "http://www.w3.org/2000/svg";
 const MS = [{m:"document_loaded_ms"},{m:"frame_ready_ms"},{m:"first_content_ms"},{m:"js_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"},{m:"image_displayed_ms"},{m:"slide_duplicated_ms"}];
 const NAMES={instr_kit:"document kit instructions",instr_wsd:"coolwsd instructions",document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",image_displayed_ms:"image displayed",slide_duplicated_ms:"slide duplicated",cool_mem:"COOL memory",browser_mem:"browser heap",tab_mem:"page process",master_mem:"coolwsd peak"};
-const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","5mb","10mb","duplicate","ooxml","image5mb"];
+const APP_ORDER=["writer","calc","impress","draw"],DOC_ORDER=["blank","blank-vector","5mb","5mb-vector","10mb","duplicate","duplicate-vector","ooxml","ooxml-vector","image5mb"];
 // Instructions count the same work whatever the load of the machine, while
 // the times follow it, so either group can be hidden to read the other.
 const INS=[{cls:"instr_kit",k:"kit"},{cls:"instr_wsd",k:"master"}];
