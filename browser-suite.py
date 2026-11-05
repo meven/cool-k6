@@ -45,6 +45,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import ssl
 import subprocess
 import sys
@@ -412,6 +413,11 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
                     freed = pd.stat().st_size
                     pd.unlink()
                     print(f"  pruned perf.data ({freed // 1048576} MB)")
+            if prune_perf_data:
+                # The binaries that perf copied for its symbols, a GB or more once
+                # the engine is in, which no graph needs once it is drawn. A failed
+                # capture keeps its perf.data for a look, and loses these too.
+                shutil.rmtree(out_abs / "buildid", ignore_errors=True)
             outcomes.append({"name": f"{app}-{doc}", "ok": ok, "rc": rc,
                              "out_rel": out_rel,
                              "samples": samples,

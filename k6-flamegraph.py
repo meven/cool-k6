@@ -92,6 +92,9 @@ def default_cool_cmd() -> str:
     return "make run-one"
 
 
+# The build-id cache of a capture, under its output directory.
+BUILDID_DIR = "buildid"
+
 # Every frame of coolwsd and forkit carries this annotation, which flamegraph.pl strips from
 # the name it shows and searches, so its frames can have colours of their own.
 WSD_TAG = "_[i]"
@@ -473,7 +476,8 @@ def _perf_event_captures(event: str, perf_freq: str, sudo_perf: list[str],
     # pipe. Same dwarf + mmap options as the real capture, so the test exercises
     # the real path.
     proc = subprocess.run(
-        [*sudo_perf, "perf", "record", f"-F{perf_freq}", "-e", event,
+        # -N: no symbols are read, so nothing goes into a build-id cache
+        [*sudo_perf, "perf", "record", "-N", f"-F{perf_freq}", "-e", event,
          "--call-graph", "dwarf,32768", *perf_mmap, "-o", str(tmp),
          "--", "sh", "-c", "timeout 0.5 yes >/dev/null 2>&1"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -761,6 +765,11 @@ def main() -> int:
                      lambda: http_ok(f"{wopi_base}/wopi/files/1"))
 
         perf_data = out_dir / "perf.data"
+        # perf record copies every binary it sampled into a build-id cache, by default
+        # ~/.debug, which nothing empties: a machine that builds every hour gained a
+        # 1.2 GB libmergedlo.so there per run. The capture keeps its own, beside
+        # perf.data, so that the two go together.
+        perf_cmd = [*sudo_perf, "perf", "--buildid-dir", str(out_dir / BUILDID_DIR)]
 
         def build_runner():
             # k6 runs inside docker; translate localhost -> HOST_IP so the
@@ -787,7 +796,7 @@ def main() -> int:
             # a hybrid P/E-core CPU perf record's implicit default event can
             # fail to open and capture nothing, while perf stat still counts.
             proc = subprocess.Popen(
-                [*sudo_perf, "perf", "record", f"-F{perf_freq}", "-e", perf_event,
+                [*perf_cmd, "record", f"-F{perf_freq}", "-e", perf_event,
                  "--call-graph", "dwarf,32768", *perf_mmap, *extra, *target,
                  "-o", str(perf_data)],
                 stdout=plog, stderr=subprocess.STDOUT)
@@ -1056,7 +1065,7 @@ def main() -> int:
         # perf script | stackcollapse-perf.pl --pid | tag_by_process | flamegraph.pl --cp
         p1 = subprocess.Popen(
             # +pid: the default fields carry the thread id only
-            [*sudo_perf, "perf", "script", "--no-inline", "-F", "+pid",
+            [*perf_cmd, "script", "--no-inline", "-F", "+pid",
              "-i", str(perf_data)],
             stdout=subprocess.PIPE,
         )
@@ -1073,14 +1082,14 @@ def main() -> int:
         # jailed-kit case under system-wide/cgroup capture and is not useful.
         try:
             dso = subprocess.run(
-                [*sudo_perf, "perf", "report", "--stdio", "--sort", "dso",
+                [*perf_cmd, "report", "--stdio", "--sort", "dso",
                  "-i", str(perf_data)],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                 timeout=180).stdout
             mu = re.search(r"^\s*([\d.]+)%.*\[unknown\]", dso, re.MULTILINE)
             unknown_pct = float(mu.group(1)) if mu else 0.0
             comm = subprocess.run(
-                [*sudo_perf, "perf", "report", "--stdio", "--sort", "comm",
+                [*perf_cmd, "report", "--stdio", "--sort", "comm",
                  "-i", str(perf_data)],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                 timeout=180).stdout
