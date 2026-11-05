@@ -25,9 +25,11 @@ import signal
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+import zlib
 from pathlib import Path
 
 from pylib.perfutils import (
@@ -88,6 +90,47 @@ def default_cool_cmd() -> str:
         except (OSError, subprocess.SubprocessError):
             pass
     return "make run-one"
+
+
+# Every frame of coolwsd and forkit carries this annotation, which flamegraph.pl strips from
+# the name it shows and searches, so its frames can have colours of their own.
+WSD_TAG = "_[i]"
+FLAME_LEGEND = "aqua: coolwsd and forkit, red to yellow: document kit"
+
+
+def tag_by_process(lines, wsd_pids: set[str]):
+    """Collapsed stacks from stackcollapse-perf.pl --pid, with every frame of coolwsd and
+    forkit tagged, so that it stands apart from the kits. The pid is dropped from the
+    root frame again, so the threads of all kits merge as before."""
+    for line in lines:
+        stack, _, count = line.rstrip("\n").rpartition(" ")
+        if not stack:
+            continue
+        frames = stack.split(";")
+        comm, _, pid = frames[0].rpartition("-")
+        if not comm or not pid.isdigit():
+            comm, pid = frames[0], ""
+        # a background save thread is named after its document
+        frames[0] = "kitbgsv" if comm.startswith("kitbgsv") else comm
+        tag = WSD_TAG if pid in wsd_pids else ""
+        yield ";".join(f + tag for f in frames) + f" {count}\n"
+
+
+def render_flamegraph(stacks: list[str], svg_path: Path) -> None:
+    """Draw tagged collapsed stacks. The kits keep the default hot palette, and the
+    coolwsd and forkit frames take an aqua from palette.map, which flamegraph.pl --cp
+    reads by the full frame name, annotation included."""
+    wsd_frames = {f for line in stacks if WSD_TAG in line
+                  for f in line.rpartition(" ")[0].split(";")}
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(Path(tmp) / "palette.map", "w") as pal:
+            for name in sorted(wsd_frames):
+                v = (zlib.crc32(name.encode()) % 1000) / 1000
+                pal.write(f"{name}->rgb({50 + int(60 * v)},{165 + int(55 * v)},"
+                          f"{165 + int(55 * v)})\n")
+        with svg_path.open("w") as svg:
+            subprocess.run(["flamegraph.pl", "--cp", "--subtitle", FLAME_LEGEND],
+                           input="".join(stacks), stdout=svg, text=True, cwd=tmp)
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -1010,25 +1053,19 @@ def main() -> int:
                   file=sys.stderr)
 
         print("rendering flamegraph ...")
-        # perf script | stackcollapse-perf.pl | sed | flamegraph.pl
+        # perf script | stackcollapse-perf.pl --pid | tag_by_process | flamegraph.pl --cp
         p1 = subprocess.Popen(
-            [*sudo_perf, "perf", "script", "--no-inline",
+            # +pid: the default fields carry the thread id only
+            [*sudo_perf, "perf", "script", "--no-inline", "-F", "+pid",
              "-i", str(perf_data)],
             stdout=subprocess.PIPE,
         )
-        p2 = subprocess.Popen(["stackcollapse-perf.pl"],
-                              stdin=p1.stdout, stdout=subprocess.PIPE)
+        p2 = subprocess.Popen(["stackcollapse-perf.pl", "--pid"],
+                              stdin=p1.stdout, stdout=subprocess.PIPE, text=True)
         p1.stdout.close()
-        p3 = subprocess.Popen(["sed", "-E", "-s",
-                               "s/^kitbgsv[^;]+/kitbgsv/"],
-                              stdin=p2.stdout, stdout=subprocess.PIPE)
-        p2.stdout.close()
-        with (out_dir / "flamegraph.svg").open("wb") as svg:
-            p4 = subprocess.Popen(["flamegraph.pl"],
-                                  stdin=p3.stdout, stdout=svg)
-            p3.stdout.close()
-            p4.wait()
-        for p in (p1, p2, p3):
+        stacks = list(tag_by_process(p2.stdout, set(mem_wsd_pids)))
+        render_flamegraph(stacks, out_dir / "flamegraph.svg")
+        for p in (p1, p2):
             p.wait()
 
         # Post-render sanity check: how much of the capture actually resolved,
