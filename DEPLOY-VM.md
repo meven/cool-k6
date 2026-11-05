@@ -381,10 +381,13 @@ The logs of each run are kept in the store, under
 
 **Measuring a change or a branch.** `deploy/run-branch` builds a change under
 review, or any ref, measures it, and publishes its runs as a branch of their own.
-The dashboard shows main by default. Its "branch" selector shows another branch,
-and "compare with" draws a second branch faded beside the first, with diamond
-points. Both choices are kept in the address, so a comparison can be sent as a
-link. Wait for the run of the timer to end, or stop the timer, then:
+The charts show main by default, and the "branch" selector shows another
+branch. "Compare two builds", above the charts, puts two sides against each
+other, each a measured commit or a range of them on one branch, and lists the
+metrics that moved past the noise: green when B is lower, red when higher, and
+lighter for a small change. It starts on the newest change against main at the
+commit the change is based on, which deploy/run-branch records. The choices are
+kept in the address, so a comparison can be sent as a link. Wait for the run of the timer to end, or stop the timer, then:
 
 ```
 sudo -iu collabora ~/perf-dashboard/deploy/run-branch --gerrit 18591 --runs 3

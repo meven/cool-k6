@@ -802,6 +802,7 @@ def collect(results_dir: Path) -> dict:
             "machine": _machine_of(mj, results_dir),
             "branch": _build_of(mj, results_dir).get("branch") or "main",
             "ref": _build_of(mj, results_dir).get("ref"),
+            "base": _build_of(mj, results_dir).get("base"),
             "file": d.get("file") or files.get(f"{app}|{doc}"),
         })
     for key, pts in scen.items():
@@ -986,11 +987,44 @@ DASHBOARD = r"""<!doctype html>
     padding:2px 10px;background:var(--surface);color:var(--ink-faint);text-decoration:line-through;}
   .vt[aria-pressed=true]{background:var(--panel);color:var(--ink);border-color:var(--ink-soft);text-decoration:none;}
   .legend .key.off{opacity:.35;}
-  /* the branch shown, and the one drawn faded beside it for a comparison */
+  /* the comparison of two builds: green when B is lower, red when higher, lighter when small */
+  :root{ --better:#1a9e4b; --worse:#d0312d; }
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){ --better:#35c46f; --worse:#f2506f; }}
+  :root[data-theme=dark]{ --better:#35c46f; --worse:#f2506f; }
+  /* the two views of the page */
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--hair);margin:12px 0 16px;}
+  .tabs[hidden],[role=tabpanel][hidden]{display:none;}
+  .tabs [role=tab]{font:inherit;font-size:13.5px;cursor:pointer;background:none;border:0;
+    border-bottom:2px solid transparent;color:var(--ink-soft);padding:6px 12px;margin-bottom:-1px;}
+  .tabs [role=tab][aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600;}
+  .tabs [role=tab]:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px;}
+  .cmp{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:14px 16px;margin:14px 0 18px;}
+  .cmp h2{font-size:15px;margin:0 0 10px;}
+  .cmp-pick{display:grid;gap:8px;font-size:12.5px;}
+  .cmp-pick .side{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;}
+  .cmp-pick .side b{width:1.2em;}
+  .cmp-pick label{display:inline-flex;gap:6px;align-items:center;min-width:0;max-width:100%;} .cmp-pick .all{color:var(--ink-soft);}
+  .cmp-pick select{font:inherit;font-size:12px;padding:2px 6px;border-radius:7px;max-width:min(360px,100%);min-width:0;
+    border:1px solid var(--hair);background:var(--surface);color:var(--ink);}
+  @media (max-width:600px){
+    .cmp-pick .side{display:grid;grid-template-columns:1.4em minmax(0,1fr);}
+    .cmp-pick .side label{grid-column:2;} .cmp-pick select{width:100%;max-width:100%;}
+    .cmp-pick .side label select{flex:1;width:auto;}}
+  .cmp-note{font-size:12.5px;color:var(--ink-soft);margin:10px 0;}
+  .cmp-scroll{overflow-x:auto;}
+  .cmp table{width:auto;min-width:560px;} .cmp td{white-space:nowrap;}
+  .cmp tbody th{text-align:left;vertical-align:top;font-weight:600;font-family:system-ui,sans-serif;
+    padding:6px 12px;border-bottom:1px solid var(--hair);white-space:nowrap;}
+  .cmp td.m{text-align:left;font-family:system-ui,sans-serif;} .cmp td.d{font-weight:600;}
+  .cmp td.better{background:color-mix(in srgb,var(--better) var(--k),transparent);}
+  .cmp td.worse{background:color-mix(in srgb,var(--worse) var(--k),transparent);}
+  .cmp td.same{color:var(--ink-faint);}
+  /* the branch that the charts show */
   .branches{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;}
   .branches select{font:inherit;font-size:12px;padding:2px 6px;border-radius:7px;
     border:1px solid var(--hair);background:var(--surface);color:var(--ink);}
-  .line.alt{stroke-opacity:.4;stroke-width:1.5;} .dot.alt{opacity:.55;} .sbar.alt{fill-opacity:.35;}
+  /* display:inline-flex would show them through the hidden attribute */
+  .branches[hidden]{display:none;}
   .sbar{stroke:none;fill-opacity:.85;} .sbar.lib{fill:var(--st-lib);} .sbar.other{fill:var(--st-other);}
   .sbar.inh{fill:var(--st-inh);} .sbar.own{fill:var(--st-own);}
   .dot{stroke:var(--panel);stroke-width:1.3;cursor:pointer;transition:r .12s ease;}
@@ -1061,12 +1095,15 @@ DASHBOARD = r"""<!doctype html>
 </style></head><body>
 <div class="wrap">
   <h1>Collabora Online browser tests</h1>
+  <div class="tabs" role="tablist" id="tabs" aria-label="views" hidden>
+    <button type="button" role="tab" id="tab-charts" aria-controls="view-charts" aria-selected="true">Charts</button>
+    <button type="button" role="tab" id="tab-compare" aria-controls="view-compare" aria-selected="false" tabindex="-1">Compare builds</button>
+  </div>
+  <div id="view-charts" role="tabpanel" aria-labelledby="tab-charts">
   <p class="sub">One chart per document and user pool, tracked across commits. The thick line is the instructions that the document kit executed, and the dashed grey line those of coolwsd. Left axis: load, feedback and edit times (ms), or the instructions (G) when the times are hidden. The buttons in the legend show or hide each group. Right axis: memory (MB), the document's own footprint, the browser heap, the page process, and the coolwsd process peak. Click a point for detail.</p>
   <div class="legend">
     <span class="views" role="group" aria-label="lines shown on the charts">show <button class="vt" type="button" data-v="instr" aria-pressed="true">instructions</button><button class="vt" type="button" data-v="times" aria-pressed="true">times</button><button class="vt" type="button" data-v="mem" aria-pressed="true">memory</button></span>
-    <span class="branches" id="branches" hidden><span class="sep"></span><label>branch <select id="brsel"></select></label>
-      <label>compare with <select id="brcmp"><option value="">none</option></select></label>
-      <span id="cmpkey" hidden><svg class="lswatch" viewBox="0 0 22 8"><rect x="7" y="0" width="8" height="8" transform="rotate(45 11 4)" fill="var(--ink-soft)" opacity=".55"/></svg> faded: <b id="cmpname"></b></span></span>
+    <span class="branches" id="branches" hidden><span class="sep"></span><label>branch <select id="brsel"></select></label></span>
     <span class="sep"></span>
     <span class="key" data-g="instr"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink)" stroke-width="3"/></svg> instructions, document kit (G)</span>
     <span class="key" data-g="instr"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink-soft)" stroke-width="2.5" stroke-dasharray="6 3"/></svg> instructions, coolwsd (G)</span>
@@ -1099,6 +1136,21 @@ high-water mark (VmHWM) of the capture's own coolwsd instead. The stacked bar be
     is up, so they describe the test and not a whole process life. A busy machine slows the
     times but does not change the instruction counts, so a busy run stays on the instruction
     lines. A rising line across commits is a regression. A faded point was measured on a busy machine: a fixed probe ran slower than usual during the run, or the hypervisor took CPU time from the VM, so its times are not comparable. The run detail of each point gives the commits since the previous point, as a git log range and, for a GitHub source, a link that lists them. When a run was also captured under perf, its point shows the plain times and the run detail lists the times under perf beside them. A ringed point is a capture with no plain run beside it, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
+  </div>
+  <div id="view-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
+  <section class="cmp" id="cmp" aria-labelledby="cmph">
+    <h2 id="cmph">Compare two builds</h2>
+    <div class="cmp-pick">
+      <div class="side"><b>A</b><select id="cmpa" aria-label="A, first measured commit"></select>
+        <label>through <select id="cmpa2"></select></label></div>
+      <div class="side"><b>B</b><select id="cmpb" aria-label="B, first measured commit"></select>
+        <label>through <select id="cmpb2"></select></label></div>
+      <label class="all"><input type="checkbox" id="cmpall"> show unchanged</label>
+    </div>
+    <p class="cmp-note" id="cmpnote"></p>
+    <div class="cmp-scroll"><table id="cmptab"></table></div>
+  </section>
+  </div>
 </div>
 <div id="tip" role="tooltip" hidden></div>
 <div class="modal" id="modal" hidden><div class="modal-card" id="mcard" role="dialog" aria-modal="true">
@@ -1209,7 +1261,7 @@ function render(svg, runs, W=520, H=300){
     let acc=0;
     sk.parts.forEach(part=>{
       const yTop=yMem(acc+part.v), h=Math.max(0.5,yMem(acc)-yTop);
-      const rect=el("rect",{class:"sbar "+part.cls+(r.branch!==BRANCH?" alt":""),x:cx-bw/2,y:yTop,width:bw,height:h});
+      const rect=el("rect",{class:"sbar "+part.cls,x:cx-bw/2,y:yTop,width:bw,height:h});
       const tip=`${shortLabel(r.commit)} · ${part.name}: ${Math.round(part.v)} MB of ${Math.round(sk.total)} resident`;
       rect.setAttribute("data-tip",tip);rect.setAttribute("aria-label",tip);
       svg.appendChild(rect);acc+=part.v;});});
@@ -1219,19 +1271,14 @@ function render(svg, runs, W=520, H=300){
     const pts=[];runs.forEach((r,i)=>{const v=getv(r);if(v!=null)pts.push([i,xAt(i),scale(v),v]);});
     if(!pts.length)return;
     drawn++;
-    // the line joins the runs of a quiet machine, and a busy run stays a faded dot beside it;
-    // each branch has a line of its own, the compared one faded
+    // the line joins the runs of a quiet machine, and a busy run stays a faded dot beside it
     const quiet=steady?pts:pts.filter(p=>!(runs[p[0]].machine&&runs[p[0]].machine.busy));
-    [...new Set(runs.map(r=>r.branch))].forEach(b=>{const q=quiet.filter(p=>runs[p[0]].branch===b);
-      if(q.length>1)svg.appendChild(el("polyline",{class:"line "+cls+(b!==BRANCH?" alt":""),points:q.map(p=>p[1]+","+p[2]).join(" ")}));});
+    if(quiet.length>1)svg.appendChild(el("polyline",{class:"line "+cls,points:quiet.map(p=>p[1]+","+p[2]).join(" ")}));
     pts.forEach(p=>{const r=runs[p[0]];
-      const busy=r.machine&&r.machine.busy,alt=r.branch!==BRANCH;
-      const dcls="dot "+cls.split(" ")[0]+(r.profiled?" prof":"")+(busy&&!steady?" busy":"")+(alt?" alt":"");
-      // a diamond for the compared branch, so the two read apart without the colour
-      const dot=alt?el("rect",{class:dcls,x:p[1]-3,y:p[2]-3,width:6,height:6,transform:`rotate(45 ${p[1]} ${p[2]})`,tabindex:0,role:"button"})
-                   :el("circle",{class:dcls,cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
+      const busy=r.machine&&r.machine.busy;
+      const dot=el("circle",{class:"dot "+cls.split(" ")[0]+(r.profiled?" prof":"")+(busy&&!steady?" busy":""),cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
       const short=cls.split(" ")[0],unit=cls.indexOf("mem")>=0?"MB":"ms";
-      const label=(alt?r.branch+" · ":"")+`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${fmt?fmt(p[3]):Math.round(p[3])+" "+unit}`+(r.profiled?" · profiled":"")+(busy?" · busy machine":"");
+      const label=`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${fmt?fmt(p[3]):Math.round(p[3])+" "+unit}`+(r.profiled?" · profiled":"")+(busy?" · busy machine":"");
       dot.setAttribute("data-tip",label);dot.setAttribute("aria-label",label);
       dot.addEventListener("click",()=>openDetail(runs,p[0]));svg.appendChild(dot);});
   }
@@ -1250,26 +1297,26 @@ function render(svg, runs, W=520, H=300){
   runs.forEach((r,i)=>{if(i%everyk)return;svg.appendChild(el("text",{class:"xlab",x:xAt(i),y:y1+15,"text-anchor":"middle"},r.commit?shortLabel(r.commit):("#"+i)));});
 }
 
-// The branch shown, and the one compared with it, from the address so that a
-// comparison can be passed on as a link. A run from before branches is of main.
+// The branch that the charts show, from the address so that the view can be
+// passed on as a link. A run from before branches is of main.
 const BRANCHES=[...new Set(Object.values(DATA).flatMap(rs=>rs.map(r=>r.branch||"main")))]
   .sort((a,b)=>(a!=="main")-(b!=="main")||a.localeCompare(b));
-let BRANCH="main",COMPARE_TO="";
+let BRANCH="main";
 let fullChart=null;  // the chart in full view, see setFull
 (function(){const h=new URLSearchParams(location.hash.slice(1));
-  BRANCH=BRANCHES.includes(h.get("branch"))?h.get("branch"):(BRANCHES.includes("main")?"main":BRANCHES[0]||"main");
-  COMPARE_TO=BRANCHES.includes(h.get("compare"))&&h.get("compare")!==BRANCH?h.get("compare"):"";})();
-function viewOf(key){return (DATA[key]||[]).filter(r=>{const b=r.branch||"main";return b===BRANCH||b===COMPARE_TO;});}
+  BRANCH=BRANCHES.includes(h.get("branch"))?h.get("branch"):(BRANCHES.includes("main")?"main":BRANCHES[0]||"main");})();
+function viewOf(key){return (DATA[key]||[]).filter(r=>(r.branch||"main")===BRANCH);}
 function renderAll(){
   document.querySelectorAll("section.chart").forEach(sec=>{const svg=sec.querySelector("svg[data-key]");
     const runs=viewOf(svg.dataset.key);sec.hidden=!runs.length;
     if(runs.length&&(!fullChart||fullChart===sec))fullChart===sec?drawFull():render(svg,runs);});}
 
 const host=document.getElementById("charts");
-Object.keys(DATA).sort((a,b)=>{const A=a.split("|"),B=b.split("|");
+function chartOrder(a,b){const A=a.split("|"),B=b.split("|");
   return (APP_ORDER.indexOf(A[0])-APP_ORDER.indexOf(B[0]))
       || (DOC_ORDER.indexOf(A[1])-DOC_ORDER.indexOf(B[1]))
-      || (Number(A[2])-Number(B[2]));}).forEach(key=>{
+      || (Number(A[2])-Number(B[2]));}
+Object.keys(DATA).sort(chartOrder).forEach(key=>{
   const [app,doc,users]=key.split("|");
   const runs=DATA[key];
   // the document under test, from the newest run that recorded one
@@ -1316,20 +1363,140 @@ document.querySelector(".views").addEventListener("click",e=>{const b=e.target.c
   if(fullChart)drawFull();});
 syncViews();
 
+// The address holds the branch of the charts and the two sides of the comparison.
+let VIEW=new URLSearchParams(location.hash.slice(1)).get("view")==="compare"?"compare":"charts";
+function writeHash(){const h=new URLSearchParams();if(VIEW!=="charts")h.set("view",VIEW);
+  if(BRANCH!=="main")h.set("branch",BRANCH);
+  if(CMP.a)h.set("a",CMP.a.from+(CMP.a.to?".."+CMP.a.to:""));
+  if(CMP.b)h.set("b",CMP.b.from+(CMP.b.to?".."+CMP.b.to:""));
+  history.replaceState(null,"",h.toString()?"#"+h:location.pathname+location.search);}
+
 (function(){if(BRANCHES.length<2)return;
-  const sel=document.getElementById("brsel"),cmp=document.getElementById("brcmp");
-  const fill=()=>{sel.innerHTML=BRANCHES.map(b=>`<option${b===BRANCH?" selected":""}>${esc(b)}</option>`).join("");
-    cmp.innerHTML=`<option value="">none</option>`+BRANCHES.filter(b=>b!==BRANCH)
-      .map(b=>`<option${b===COMPARE_TO?" selected":""}>${esc(b)}</option>`).join("");
-    document.getElementById("cmpkey").hidden=!COMPARE_TO;
-    document.getElementById("cmpname").textContent=COMPARE_TO;};
-  const apply=()=>{const h=new URLSearchParams();if(BRANCH!=="main")h.set("branch",BRANCH);
-    if(COMPARE_TO)h.set("compare",COMPARE_TO);
-    history.replaceState(null,"",h.toString()?"#"+h:location.pathname+location.search);
-    fill();renderAll();};
-  sel.addEventListener("change",()=>{BRANCH=sel.value;if(COMPARE_TO===BRANCH)COMPARE_TO="";apply();});
-  cmp.addEventListener("change",()=>{COMPARE_TO=cmp.value;apply();});
-  document.getElementById("branches").hidden=false;fill();})();
+  const sel=document.getElementById("brsel");
+  sel.innerHTML=BRANCHES.map(b=>`<option${b===BRANCH?" selected":""}>${esc(b)}</option>`).join("");
+  sel.addEventListener("change",()=>{BRANCH=sel.value;writeHash();renderAll();});
+  document.getElementById("branches").hidden=false;})();
+
+// ---- comparison of two sides, each a measured commit or a range of them --------------
+// A measured point: the runs of one branch, one after the other, that measured the
+// same commit. Grouping by the label alone would merge builds that share a label.
+const POINTS=(()=>{const first=new Map();
+  Object.values(DATA).forEach(rs=>rs.forEach(r=>{if(!r.runid)return;const o=first.get(r.runid);
+    if(!o||(r.ts||"")<o.ts)first.set(r.runid,{runid:r.runid,ts:r.ts||"",branch:r.branch||"main",commit:r.commit,base:r.base});}));
+  const byBranch={};
+  [...first.values()].sort((a,b)=>a.ts<b.ts?-1:a.ts>b.ts?1:0).forEach(r=>{
+    const list=byBranch[r.branch]||(byBranch[r.branch]=[]),last=list[list.length-1];
+    if(last&&last.commit===r.commit){last.runids.push(r.runid);last.ts2=r.ts;return;}
+    list.push({id:r.runid,branch:r.branch,commit:r.commit,base:r.base,ts:r.ts,ts2:r.ts,runids:[r.runid]});});
+  return byBranch;})();
+const POINT_BY_ID={};Object.values(POINTS).forEach(l=>l.forEach(p=>{POINT_BY_ID[p.id]=p;}));
+const day=ts=>String(ts||"").slice(0,16).replace("T"," ");
+const pointName=p=>`${p.branch} · ${shortLabel(p.commit||"?")} · ${day(p.ts)}`+(p.runids.length>1?` · ${p.runids.length} runs`:"");
+// the run ids of a side, from its first point through its last on the same branch
+function sideRuns(side){const f=POINT_BY_ID[side.from];if(!f)return new Set();
+  const list=POINTS[f.branch],t=side.to&&POINT_BY_ID[side.to]&&POINT_BY_ID[side.to].branch===f.branch?POINT_BY_ID[side.to]:f;
+  let i=list.indexOf(f),j=list.indexOf(t);if(i>j)[i,j]=[j,i];
+  return new Set(list.slice(i,j+1).flatMap(p=>p.runids));}
+function sideName(side){const f=POINT_BY_ID[side.from],t=side.to&&POINT_BY_ID[side.to];
+  if(!f)return "nothing";
+  return t&&t!==f?`${f.branch} · ${shortLabel(f.commit)} (${day(f.ts)}) to ${shortLabel(t.commit)} (${day(t.ts)}), ${sideRuns(side).size} runs`:pointName(f);}
+
+// What is compared, and how far a value has to move before it counts as a change. The
+// instruction counts hardly depend on the load of the machine, the times depend on it most.
+const heapOf=r=>{const x=r.metrics.browser_heap_mb;return x?x.avg:null;};
+const CMP_METRICS=[
+  {name:"instructions, document kit",get:r=>insOf(r,"kit"),fmt:v=>(v/1e9).toFixed(2)+" G",th:.01},
+  {name:"instructions, coolwsd",get:r=>insOf(r,"master"),fmt:v=>(v/1e9).toFixed(2)+" G",th:.01},
+  ...MS.map(s=>({name:NAMES[s.m]||s.m,get:r=>{const x=r.metrics[s.m];return x?x.avg:null;},fmt:v=>Math.round(v)+" ms",th:.05})),
+  {name:"COOL doc memory",get:memOf,fmt:v=>Math.round(v)+" MB",th:.03},
+  {name:"kit memory, resident",get:r=>{const s=stackOf(r);return s?s.total:null;},fmt:v=>Math.round(v)+" MB",th:.03},
+  {name:"coolwsd peak",get:masterOf,fmt:v=>Math.round(v)+" MB",th:.03},
+  {name:"browser heap",get:heapOf,fmt:v=>Math.round(v)+" MB",th:.03},
+  {name:"page process",get:tabOf,fmt:v=>Math.round(v)+" MB",th:.03},
+];
+const median=a=>{const s=a.slice().sort((x,y)=>x-y),n=s.length;return n?(n%2?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2):null;};
+
+let CMP={a:null,b:null},CMP_NOTE="";
+(function(){const h=new URLSearchParams(location.hash.slice(1));
+  const parse=v=>{if(!v)return null;const [from,to]=v.split("..");return POINT_BY_ID[from]?{from,to:to&&POINT_BY_ID[to]?to:""}:null;};
+  CMP.a=parse(h.get("a"));CMP.b=parse(h.get("b"));
+  if(CMP.a&&CMP.b)return;
+  // By default the newest change against main at the commit it is built on, or else the
+  // last two measured commits of main.
+  const all=Object.values(POINTS).flat().sort((x,y)=>x.ts<y.ts?-1:1);
+  const main=POINTS.main||[],other=all.filter(p=>p.branch!=="main");
+  const b=other.length?other[other.length-1]:main[main.length-1];
+  if(!b)return;
+  let a=null;
+  if(b.branch!=="main"){
+    const base=shaOf(b.base);
+    a=base?main.filter(p=>shaOf(p.commit)===base).pop():null;
+    if(!a){a=main.filter(p=>p.ts<b.ts).pop()||main[main.length-1];
+      if(a)CMP_NOTE=base?`The base of ${b.branch}, ${base}, was never measured on main, so A is the last run of main before it.`
+                        :`No base is recorded for ${b.branch}, so A is the last run of main before it.`;}
+  }else a=main[main.indexOf(b)-1];
+  if(a){CMP.a={from:a.id,to:""};CMP.b={from:b.id,to:""};}})();
+
+function fillSide(k){const side=CMP[k],from=document.getElementById("cmp"+k),to=document.getElementById("cmp"+k+"2");
+  from.innerHTML=Object.keys(POINTS).sort((a,b)=>(a!=="main")-(b!=="main")||a.localeCompare(b)).map(br=>
+    `<optgroup label="${esc(br)}">`+POINTS[br].slice().reverse().map(p=>
+      `<option value="${esc(p.id)}"${side&&p.id===side.from?" selected":""}>${esc(pointName(p))}</option>`).join("")+`</optgroup>`).join("");
+  const f=side&&POINT_BY_ID[side.from];
+  to.innerHTML=`<option value="">that commit only</option>`+(f?POINTS[f.branch].slice().reverse().filter(p=>p!==f).map(p=>
+    `<option value="${esc(p.id)}"${p.id===side.to?" selected":""}>${esc(pointName(p))}</option>`).join(""):"");}
+
+function renderCompare(){
+  const tab=document.getElementById("cmptab"),note=document.getElementById("cmpnote");
+  if(!CMP.a||!CMP.b){tab.innerHTML="";note.textContent="Pick two measured commits to compare.";return;}
+  const ra=sideRuns(CMP.a),rb=sideRuns(CMP.b),all=document.getElementById("cmpall").checked;
+  let rows="",changes=0,still=0,docs=0,missing=0;
+  Object.keys(DATA).sort(chartOrder).forEach(key=>{
+    const A=DATA[key].filter(r=>ra.has(r.runid)),B=DATA[key].filter(r=>rb.has(r.runid));
+    if(!A.length||!B.length){if(A.length||B.length)missing++;return;}
+    const lines=[];
+    CMP_METRICS.forEach(m=>{
+      const va=median(A.map(m.get).filter(v=>v!=null)),vb=median(B.map(m.get).filter(v=>v!=null));
+      if(va==null||vb==null||!va)return;
+      const d=(vb-va)/va,changed=Math.abs(d)>=m.th;
+      changed?changes++:still++;
+      if(!changed&&!all)return;
+      // lighter the closer the change is to its threshold, full past four times it
+      const k=changed?Math.min(1,(Math.abs(d)-m.th)/(3*m.th)):0;
+      const cls=!changed?"same":d<0?"better":"worse";
+      const pct=(d>0?"+":"")+(d*100).toFixed(1)+"%";
+      lines.push(`<td class="m">${esc(m.name)}</td><td>${m.fmt(va)}</td><td>${m.fmt(vb)}</td>`+
+        `<td class="d ${cls}" style="--k:${(18+k*50).toFixed(0)}%">${pct}</td>`);});
+    if(!lines.length)return;
+    docs++;
+    const [app,doc,users]=key.split("|");
+    rows+=lines.map((l,i)=>`<tr>${i?"":`<th scope="rowgroup" rowspan="${lines.length}">${esc(app)} · ${esc(doc)} · ${esc(users)} user${users==="1"?"":"s"}</th>`}${l}</tr>`).join("");});
+  tab.innerHTML=rows?`<thead><tr><th>test</th><th>metric</th><th>A</th><th>B</th><th>B against A</th></tr></thead><tbody>${rows}</tbody>`:"";
+  note.innerHTML=`<b>A</b> ${esc(sideName(CMP.a))}<br><b>B</b> ${esc(sideName(CMP.b))}<br>`+
+    (CMP_NOTE?esc(CMP_NOTE)+"<br>":"")+
+    `${changes} change${changes===1?"":"s"} in ${docs} test${docs===1?"":"s"}, ${still} metric${still===1?"":"s"} within the noise: `+
+    `1% for instructions, 3% for memory, 5% for times. Each value is the median over the runs of the side.`+
+    (missing?` ${missing} test${missing===1?" was":"s were"} measured on one side only.`:"");}
+
+(function(){const n=Object.values(POINTS).reduce((a,l)=>a+l.length,0);if(n<2)return;
+  // the tabs, with the arrow keys moving between them as a tab list does
+  const tabs=[...document.querySelectorAll("#tabs [role=tab]")];
+  const show=(v,focus,init)=>{VIEW=v;tabs.forEach(t=>{const on=t.id==="tab-"+v;
+      t.setAttribute("aria-selected",String(on));t.tabIndex=on?0:-1;
+      document.getElementById(t.getAttribute("aria-controls")).hidden=!on;if(on&&focus)t.focus();});
+    if(v!=="charts"&&fullChart)setFull(null);if(!init)writeHash();};
+  tabs.forEach((t,i)=>{t.addEventListener("click",()=>show(t.id.slice(4)));
+    t.addEventListener("keydown",e=>{const d=e.key==="ArrowRight"?1:e.key==="ArrowLeft"?-1:0;if(!d)return;
+      e.preventDefault();show(tabs[(i+d+tabs.length)%tabs.length].id.slice(4),true);});});
+  document.getElementById("tabs").hidden=false;
+  show(VIEW,false,true);
+  const pick=(k,which)=>{const v=document.getElementById("cmp"+k+which).value;
+    if(which===""){CMP[k]={from:v,to:""};}else CMP[k]={from:CMP[k].from,to:v};
+    CMP_NOTE="";fillSide(k);writeHash();renderCompare();};
+  ["a","b"].forEach(k=>{if(!CMP[k]){const l=Object.values(POINTS).flat();CMP[k]={from:l[l.length-1].id,to:""};}
+    document.getElementById("cmp"+k).addEventListener("change",()=>pick(k,""));
+    document.getElementById("cmp"+k+"2").addEventListener("change",()=>pick(k,"2"));fillSide(k);});
+  document.getElementById("cmpall").addEventListener("change",renderCompare);
+  renderCompare();})();
 
 const modal=document.getElementById("modal"),mb=document.getElementById("mb"),mt=document.getElementById("mt"),
   mmeta=document.getElementById("mmeta"),mfg=document.getElementById("mfg"),mcard=document.getElementById("mcard");
