@@ -66,6 +66,10 @@
                 let wopiClientUrl = payload['url'];
                 let accessToken =  payload['token'];
                 let wopiUrl = wopiClientUrl + 'WOPISrc=' + encodeURIComponent(wopiSrc);
+                // A test opens this page with ?vector=true to have Impress and Draw
+                // draw from vector primitives instead of tiles.
+                if (new URLSearchParams(window.location.search).get('vector') === 'true')
+                    wopiUrl += '&vector=true';
                 let submitForm = document.querySelector('#collabora-submit-form');
                 submitForm.action = wopiUrl;
                 document.querySelector('#access-token').value = accessToken;
