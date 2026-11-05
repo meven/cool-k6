@@ -1351,8 +1351,9 @@ function openDetail(runs,i){
   mmeta.innerHTML=meta;
   const cols=["avg","min","med","p90","p95","max"];
   let h='<table><thead><tr><th>metric</th>'+cols.map(c=>`<th>${c}</th>`).join("")+'</tr></thead><tbody>';
-  // a metric name ends in its unit: _ms for times, _mb for the browser heap
-  const metricLabel=name=>/_mb$/.test(name)?[name.replace(/_mb$/,""),"MB"]:[name.replace(/_ms$/,""),"ms"];
+  // a metric name ends in its unit: _ms for times, _mb for the browser heap, _n for a count
+  const metricLabel=name=>/_mb$/.test(name)?[name.replace(/_mb$/,""),"MB"]
+    :/_n$/.test(name)?[name.replace(/_n$/,""),"count"]:[name.replace(/_ms$/,""),"ms"];
   Object.keys(r.metrics).forEach(name=>{const s=r.metrics[name]||{};const [label,unit]=metricLabel(name);
     h+=`<tr><td>${label} (${unit})</td>`+cols.map(c=>`<td>${s[c]!=null?Math.round(s[c]):"-"}</td>`).join("")+"</tr>";});
   // the same test run again under perf for the flamegraph, slower by nature
