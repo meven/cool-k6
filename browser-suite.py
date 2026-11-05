@@ -938,12 +938,6 @@ DASHBOARD = r"""<!doctype html>
     padding:10px 0;z-index:5;border-bottom:1px solid var(--hair);}
   .legend .key{display:inline-flex;align-items:center;gap:7px;}
   .legend .sep{width:1px;height:15px;background:var(--hair);}
-  /* link to a document-process flamegraph, pushed to the right of the legend */
-  .fg-link{margin-left:auto;font-size:12.5px;color:var(--accent);text-decoration:none;
-    border:1px solid var(--hair);border-radius:7px;padding:4px 11px;background:var(--panel);
-    white-space:nowrap;}
-  .fg-link:hover{border-color:var(--accent);}
-  .fg-link[hidden]{display:none;}
   .meta a,.fg-inline{color:var(--accent);}
   .lswatch{width:22px;height:8px;}
   /* flex flow: charts wrap to as many per row as the view width allows,
@@ -1090,7 +1084,6 @@ DASHBOARD = r"""<!doctype html>
     <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--tmem)" stroke-width="2.5" stroke-dasharray="8 3"/></svg> page process, resident (MB, own scale at the far right)</span>
     <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--wmem)" stroke-width="2.5" stroke-dasharray="2 3"/></svg> coolwsd peak (MB, right)</span>
     <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><rect x="0" y="1" width="5" height="6" fill="var(--st-lib)"/><rect x="5.5" y="1" width="5" height="6" fill="var(--st-other)"/><rect x="11" y="1" width="5" height="6" fill="var(--st-inh)"/><rect x="16.5" y="1" width="5" height="6" fill="var(--st-own)"/></svg> kit memory stacked: libraries, other files, inherited, own (MB, right)</span>
-    <a id="fglink" class="fg-link" target="_blank" rel="noopener" hidden>document flamegraph &#8599;</a>
   </div>
   <div id="charts"></div>
   <footer>Each point is one run (one COOL commit) of the document named under the chart title, which is the file that test opens through the WOPI host. Times are ms averaged over the run (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint on a plain run, or the document kit's proportional set size sampled from /proc when the point comes from a flamegraph capture, which runs its own COOL, and browser heap is the page's JS heap. The page process is the resident size of the Chromium renderer that runs the page, sampled from /proc during the test: on top of the JS heap it holds the DOM, the decoded images and the canvas pixels of the tiles. The coolwsd peak is the largest resident size of
@@ -1337,15 +1330,6 @@ syncViews();
   sel.addEventListener("change",()=>{BRANCH=sel.value;if(COMPARE_TO===BRANCH)COMPARE_TO="";apply();});
   cmp.addEventListener("change",()=>{COMPARE_TO=cmp.value;apply();});
   document.getElementById("branches").hidden=false;fill();})();
-
-// document flamegraph: link the header to the most recent run that has one
-(function(){let best=null;
-  Object.values(DATA).forEach(runs=>runs.forEach(r=>{
-    if(r.flamegraph&&(!best||(r.ts||"")>(best.ts||"")))best=r;}));
-  const a=document.getElementById("fglink");
-  if(best&&best.flamegraph){a.href=best.flamegraph;
-    a.textContent="latest document flamegraph \u2197";
-    a.hidden=false;}})();
 
 const modal=document.getElementById("modal"),mb=document.getElementById("mb"),mt=document.getElementById("mt"),
   mmeta=document.getElementById("mmeta"),mfg=document.getElementById("mfg"),mcard=document.getElementById("mcard");
