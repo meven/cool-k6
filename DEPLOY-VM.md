@@ -393,6 +393,18 @@ kept in the address, so a comparison can be sent as a link. Wait for the run of 
 sudo -iu collabora ~/perf-dashboard/deploy/run-branch --gerrit 18591 --runs 3
 ```
 
+To run it later, schedule it with systemd-run, with the settings of
+cool-perf.service. `--wait` has it start once a run of the timer has ended, rather
+than give up, and the time limit leaves room for that wait:
+
+```
+sudo systemd-run --unit=cool-perf-gerrit-18591 --on-calendar='02:30' \
+  -p User=collabora -p Group=collabora -p EnvironmentFile=/etc/cool-perf.env \
+  -p WorkingDirectory=/home/collabora/perf-dashboard \
+  -p TimeoutStartSec=12h -p KillMode=control-group -p Delegate=yes \
+  /home/collabora/perf-dashboard/deploy/run-branch --gerrit 18591 --runs 3 --wait
+```
+
 `--gerrit` takes the current patch set of the change from Gerrit, or one patch
 set as `18591/2`, and names the branch `gerrit-18591`. `--name` and `--ref`
 measure anything else, with `--from` for a remote other than origin. A change to

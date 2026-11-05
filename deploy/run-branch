@@ -2,13 +2,15 @@
 # Build a change or a branch of online, measure it, and publish its runs as a line of
 # their own on the dashboard, beside main, which it can be compared with.
 #
-# Stop cool-perf.timer as root or wait for its run to end, then run as the service user:
+# Stop cool-perf.timer as root or wait for its run to end, then run as the service user,
+# or give --wait to have the run start once the run of the timer has ended:
 #
 #   deploy/run-branch --gerrit 18591                 the current patch set of a change
 #   deploy/run-branch --gerrit 18591/2               one patch set
 #   deploy/run-branch --name feature --ref origin/feature
 #   deploy/run-branch --name x --ref refs/heads/x --from https://example.org/online.git
 #   deploy/run-branch --gerrit 18591 --runs 3        measure the same build 3 times
+#   deploy/run-branch --gerrit 18591 --wait          queue behind a run of the timer
 #
 # The runs go on the branch that --name gives, gerrit-<change> for --gerrit, and each
 # is labelled with the commit it measured, so the patch sets of a change are points of
@@ -19,7 +21,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
 GERRIT_URL=${COOL_GERRIT_URL:-https://gerrit.collaboraoffice.com}
-name= ref= from= change= runs=1
+name= ref= from= change= runs=1 wait=
 while [ $# -gt 0 ]; do
     case $1 in
         --gerrit) change=$2; shift 2 ;;
@@ -27,7 +29,8 @@ while [ $# -gt 0 ]; do
         --ref) ref=$2; shift 2 ;;
         --from) from=$2; shift 2 ;;
         --runs) runs=$2; shift 2 ;;
-        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --wait) wait=1; shift ;;
+        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -59,7 +62,13 @@ set -a; . /etc/cool-perf.env; set +a
 # The same lock as deploy/nightly, so a timer run cannot start in between.
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
 exec 9>"$STATE/lock"
-flock -n 9 || { echo "a nightly run is running; stop cool-perf.timer or wait" >&2; exit 1; }
+if [ -n "$wait" ]; then
+    # deploy/nightly gives up on a held lock, so the timer skips its runs while this one
+    # waits and measures, and goes on once it has ended.
+    flock -n 9 || { echo "=== waiting for the run of the timer to end"; flock 9; }
+else
+    flock -n 9 || { echo "a nightly run is running; stop cool-perf.timer, wait, or give --wait" >&2; exit 1; }
+fi
 
 # The test bundles, rebuilt when the checkout moved, as deploy/nightly does.
 head=$(git rev-parse HEAD)
