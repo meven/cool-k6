@@ -99,12 +99,27 @@ BUILDID_DIR = "buildid"
 # the name it shows and searches, so its frames can have colours of their own.
 WSD_TAG = "_[i]"
 FLAME_LEGEND = "aqua: coolwsd and forkit, red to yellow: document kit"
+# A frame for each process side under the threads, so that each side is one block with
+# its share of the samples. flamegraph.pl sorts by name, which puts coolwsd first.
+WSD_ROOT = "[coolwsd and forkit]"
+KIT_ROOT = "[kit]"
+
+
+def process_stack(frames: list[str], wsd: bool) -> str:
+    """A collapsed stack, thread first, under the frame of its process side, with every
+    frame tagged when it is coolwsd or forkit."""
+    # a background save thread is named after its document
+    if frames[0].startswith("kitbgsv"):
+        frames = ["kitbgsv", *frames[1:]]
+    if wsd:
+        return ";".join(f + WSD_TAG for f in [WSD_ROOT, *frames])
+    return ";".join([KIT_ROOT, *frames])
 
 
 def tag_by_process(lines, wsd_pids: set[str]):
-    """Collapsed stacks from stackcollapse-perf.pl --pid, with every frame of coolwsd and
-    forkit tagged, so that it stands apart from the kits. The pid is dropped from the
-    root frame again, so the threads of all kits merge as before."""
+    """Collapsed stacks from stackcollapse-perf.pl --pid, put under the process side
+    they were sampled in. The pid is dropped from the thread frame again, so the
+    threads of all kits merge as before."""
     for line in lines:
         stack, _, count = line.rstrip("\n").rpartition(" ")
         if not stack:
@@ -113,10 +128,7 @@ def tag_by_process(lines, wsd_pids: set[str]):
         comm, _, pid = frames[0].rpartition("-")
         if not comm or not pid.isdigit():
             comm, pid = frames[0], ""
-        # a background save thread is named after its document
-        frames[0] = "kitbgsv" if comm.startswith("kitbgsv") else comm
-        tag = WSD_TAG if pid in wsd_pids else ""
-        yield ";".join(f + tag for f in frames) + f" {count}\n"
+        yield process_stack([comm, *frames[1:]], pid in wsd_pids) + f" {count}\n"
 
 
 def render_flamegraph(stacks: list[str], svg_path: Path) -> None:
