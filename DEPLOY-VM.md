@@ -390,7 +390,7 @@ commit the change is based on, which deploy/run-branch records. The choices are
 kept in the address, so a comparison can be sent as a link. Wait for the run of the timer to end, or stop the timer, then:
 
 ```
-sudo -iu collabora ~/perf-dashboard/deploy/run-branch --gerrit 18591 --runs 3
+sudo -iu collabora /home/collabora/perf-dashboard/deploy/run-branch --gerrit 18591 --runs 3
 ```
 
 To run it later, schedule it with systemd-run, with the settings of
