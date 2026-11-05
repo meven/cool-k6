@@ -25,6 +25,8 @@ Configuration is all environment, so a Jenkins job needs no arguments:
     COOL_PERF_BRANCH   the line of runs on the dashboard that the run belongs to
                        (default main); deploy/run-branch sets it for a change
     COOL_PERF_REF      what was built, recorded beside the branch (optional)
+    COOL_PERF_BASE     the commit of main that the build is based on, which the
+                       dashboard compares a branch with (optional)
     PERF_EVENT         perf sampling event (default cycles, self-tested and
                        downgraded automatically when it captures nothing)
     COOL_PERF_PROBE_MAX      a run is busy when its machine probe is slower than the usual
@@ -490,6 +492,7 @@ def cmd_run(args) -> int:
     # The dashboard draws the runs of each branch as a line of their own.
     (ROOT / "results" / runid / "build.json").write_text(json.dumps({
         "branch": branch(), "ref": env("COOL_PERF_REF") or None, "label": label,
+        "base": env("COOL_PERF_BASE") or None,
     }, indent=2) + "\n")
     for why in reasons:
         print(f"busy machine: {why}")

@@ -76,10 +76,17 @@ echo "=== $name: building $ref${from:+ from $from}"
 ./cool-build "${build_args[@]}"
 pkill -u "$(id -u)" -x coolwsd || true
 
+# The commit of main that the build is based on, which the dashboard compares it with.
+base=
+if git -C "$COOLWSD_DIR" fetch --no-tags --quiet origin main; then
+    base=$(git -C "$COOLWSD_DIR" merge-base HEAD FETCH_HEAD 2>/dev/null | cut -c1-12 || true)
+fi
+echo "=== $name is based on ${base:-an unknown commit} of main"
+
 for i in $(seq "$runs"); do
     echo "=== $name: measuring, run $i of $runs"
     # Publish even a busy run: a retry would measure the same build again.
-    COOL_PERF_BRANCH=$name COOL_PERF_REF=$ref COOL_PERF_BUSY_RETRIES=0 ./cool-ci run ||
+    COOL_PERF_BRANCH=$name COOL_PERF_REF=$ref COOL_PERF_BASE=$base COOL_PERF_BUSY_RETRIES=0 ./cool-ci run ||
         echo "cool-ci run $i failed" >&2
 done
 echo "the runs of $name are on the dashboard under the branch $name"
