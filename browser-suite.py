@@ -800,12 +800,24 @@ def collect(results_dir: Path) -> dict:
             "instructions": d.get("instructions") or _capture_instructions(mj),
             "flamegraph": flame, "profiled": profiled,
             "machine": _machine_of(mj, results_dir),
+            "branch": _build_of(mj, results_dir).get("branch") or "main",
+            "ref": _build_of(mj, results_dir).get("ref"),
             "file": d.get("file") or files.get(f"{app}|{doc}"),
         })
     for key, pts in scen.items():
         scen[key] = _merge_profiled(pts)
         scen[key].sort(key=lambda p: p["ts"])
     return scen
+
+
+def _build_of(mj: Path, results_dir: Path) -> dict:
+    """The build.json of the run that @p mj belongs to: the branch that cool-ci measured
+    it for, and the ref it was built from. A run from before build.json is of main."""
+    runid = _runid_of(mj, results_dir)
+    try:
+        return json.loads((results_dir / runid / "build.json").read_text()) if runid else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _machine_of(mj: Path, results_dir: Path) -> dict | None:
@@ -980,6 +992,11 @@ DASHBOARD = r"""<!doctype html>
     padding:2px 10px;background:var(--surface);color:var(--ink-faint);text-decoration:line-through;}
   .vt[aria-pressed=true]{background:var(--panel);color:var(--ink);border-color:var(--ink-soft);text-decoration:none;}
   .legend .key.off{opacity:.35;}
+  /* the branch shown, and the one drawn faded beside it for a comparison */
+  .branches{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;}
+  .branches select{font:inherit;font-size:12px;padding:2px 6px;border-radius:7px;
+    border:1px solid var(--hair);background:var(--surface);color:var(--ink);}
+  .line.alt{stroke-opacity:.4;stroke-width:1.5;} .dot.alt{opacity:.55;} .sbar.alt{fill-opacity:.35;}
   .sbar{stroke:none;fill-opacity:.85;} .sbar.lib{fill:var(--st-lib);} .sbar.other{fill:var(--st-other);}
   .sbar.inh{fill:var(--st-inh);} .sbar.own{fill:var(--st-own);}
   .dot{stroke:var(--panel);stroke-width:1.3;cursor:pointer;transition:r .12s ease;}
@@ -1053,6 +1070,9 @@ DASHBOARD = r"""<!doctype html>
   <p class="sub">One chart per document and user pool, tracked across commits. The thick line is the instructions that the document kit executed, and the dashed grey line those of coolwsd. Left axis: load, feedback and edit times (ms), or the instructions (G) when the times are hidden. The buttons in the legend show or hide each group. Right axis: memory (MB), the document's own footprint, the browser heap, the page process, and the coolwsd process peak. Click a point for detail.</p>
   <div class="legend">
     <span class="views" role="group" aria-label="lines shown on the charts">show <button class="vt" type="button" data-v="instr" aria-pressed="true">instructions</button><button class="vt" type="button" data-v="times" aria-pressed="true">times</button><button class="vt" type="button" data-v="mem" aria-pressed="true">memory</button></span>
+    <span class="branches" id="branches" hidden><span class="sep"></span><label>branch <select id="brsel"></select></label>
+      <label>compare with <select id="brcmp"><option value="">none</option></select></label>
+      <span id="cmpkey" hidden><svg class="lswatch" viewBox="0 0 22 8"><rect x="7" y="0" width="8" height="8" transform="rotate(45 11 4)" fill="var(--ink-soft)" opacity=".55"/></svg> faded: <b id="cmpname"></b></span></span>
     <span class="sep"></span>
     <span class="key" data-g="instr"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink)" stroke-width="3"/></svg> instructions, document kit (G)</span>
     <span class="key" data-g="instr"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink-soft)" stroke-width="2.5" stroke-dasharray="6 3"/></svg> instructions, coolwsd (G)</span>
@@ -1125,6 +1145,7 @@ function shaOf(c){const m=/^[0-9a-f]{7,40}/.exec(c||"");return m?m[0]:null;}
 function commitRange(runs,i){
   const to=shaOf(runs[i].commit);if(!to)return "";
   for(let j=i-1;j>=0;j--){const from=shaOf(runs[j].commit);if(!from||from===to)continue;
+    if((runs[j].branch||"main")!==(runs[i].branch||"main"))continue;
     const text=`${from}..${to}`;
     const link=COMPARE?`<a href="${esc(COMPARE+from+"..."+to)}" target="_blank" rel="noopener">${esc(text)}</a>`:esc(text);
     return `<br>commits since the previous run: ${link}  ·  <code>git log --oneline ${esc(text)}</code>`;}
@@ -1195,7 +1216,7 @@ function render(svg, runs, W=520, H=300){
     let acc=0;
     sk.parts.forEach(part=>{
       const yTop=yMem(acc+part.v), h=Math.max(0.5,yMem(acc)-yTop);
-      const rect=el("rect",{class:"sbar "+part.cls,x:cx-bw/2,y:yTop,width:bw,height:h});
+      const rect=el("rect",{class:"sbar "+part.cls+(r.branch!==BRANCH?" alt":""),x:cx-bw/2,y:yTop,width:bw,height:h});
       const tip=`${shortLabel(r.commit)} · ${part.name}: ${Math.round(part.v)} MB of ${Math.round(sk.total)} resident`;
       rect.setAttribute("data-tip",tip);rect.setAttribute("aria-label",tip);
       svg.appendChild(rect);acc+=part.v;});});
@@ -1205,14 +1226,19 @@ function render(svg, runs, W=520, H=300){
     const pts=[];runs.forEach((r,i)=>{const v=getv(r);if(v!=null)pts.push([i,xAt(i),scale(v),v]);});
     if(!pts.length)return;
     drawn++;
-    // the line joins the runs of a quiet machine, and a busy run stays a faded dot beside it
+    // the line joins the runs of a quiet machine, and a busy run stays a faded dot beside it;
+    // each branch has a line of its own, the compared one faded
     const quiet=steady?pts:pts.filter(p=>!(runs[p[0]].machine&&runs[p[0]].machine.busy));
-    if(quiet.length>1)svg.appendChild(el("polyline",{class:"line "+cls,points:quiet.map(p=>p[1]+","+p[2]).join(" ")}));
+    [...new Set(runs.map(r=>r.branch))].forEach(b=>{const q=quiet.filter(p=>runs[p[0]].branch===b);
+      if(q.length>1)svg.appendChild(el("polyline",{class:"line "+cls+(b!==BRANCH?" alt":""),points:q.map(p=>p[1]+","+p[2]).join(" ")}));});
     pts.forEach(p=>{const r=runs[p[0]];
-      const busy=r.machine&&r.machine.busy;
-      const dot=el("circle",{class:"dot "+cls.split(" ")[0]+(r.profiled?" prof":"")+(busy&&!steady?" busy":""),cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
+      const busy=r.machine&&r.machine.busy,alt=r.branch!==BRANCH;
+      const dcls="dot "+cls.split(" ")[0]+(r.profiled?" prof":"")+(busy&&!steady?" busy":"")+(alt?" alt":"");
+      // a diamond for the compared branch, so the two read apart without the colour
+      const dot=alt?el("rect",{class:dcls,x:p[1]-3,y:p[2]-3,width:6,height:6,transform:`rotate(45 ${p[1]} ${p[2]})`,tabindex:0,role:"button"})
+                   :el("circle",{class:dcls,cx:p[1],cy:p[2],r:3.5,tabindex:0,role:"button"});
       const short=cls.split(" ")[0],unit=cls.indexOf("mem")>=0?"MB":"ms";
-      const label=`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${fmt?fmt(p[3]):Math.round(p[3])+" "+unit}`+(r.profiled?" · profiled":"")+(busy?" · busy machine":"");
+      const label=(alt?r.branch+" · ":"")+`${shortLabel(r.commit)} · ${NAMES[short]||short}: ${fmt?fmt(p[3]):Math.round(p[3])+" "+unit}`+(r.profiled?" · profiled":"")+(busy?" · busy machine":"");
       dot.setAttribute("data-tip",label);dot.setAttribute("aria-label",label);
       dot.addEventListener("click",()=>openDetail(runs,p[0]));svg.appendChild(dot);});
   }
@@ -1231,6 +1257,21 @@ function render(svg, runs, W=520, H=300){
   runs.forEach((r,i)=>{if(i%everyk)return;svg.appendChild(el("text",{class:"xlab",x:xAt(i),y:y1+15,"text-anchor":"middle"},r.commit?shortLabel(r.commit):("#"+i)));});
 }
 
+// The branch shown, and the one compared with it, from the address so that a
+// comparison can be passed on as a link. A run from before branches is of main.
+const BRANCHES=[...new Set(Object.values(DATA).flatMap(rs=>rs.map(r=>r.branch||"main")))]
+  .sort((a,b)=>(a!=="main")-(b!=="main")||a.localeCompare(b));
+let BRANCH="main",COMPARE_TO="";
+let fullChart=null;  // the chart in full view, see setFull
+(function(){const h=new URLSearchParams(location.hash.slice(1));
+  BRANCH=BRANCHES.includes(h.get("branch"))?h.get("branch"):(BRANCHES.includes("main")?"main":BRANCHES[0]||"main");
+  COMPARE_TO=BRANCHES.includes(h.get("compare"))&&h.get("compare")!==BRANCH?h.get("compare"):"";})();
+function viewOf(key){return (DATA[key]||[]).filter(r=>{const b=r.branch||"main";return b===BRANCH||b===COMPARE_TO;});}
+function renderAll(){
+  document.querySelectorAll("section.chart").forEach(sec=>{const svg=sec.querySelector("svg[data-key]");
+    const runs=viewOf(svg.dataset.key);sec.hidden=!runs.length;
+    if(runs.length&&(!fullChart||fullChart===sec))fullChart===sec?drawFull():render(svg,runs);});}
+
 const host=document.getElementById("charts");
 Object.keys(DATA).sort((a,b)=>{const A=a.split("|"),B=b.split("|");
   return (APP_ORDER.indexOf(A[0])-APP_ORDER.indexOf(B[0]))
@@ -1246,19 +1287,18 @@ Object.keys(DATA).sort((a,b)=>{const A=a.split("|"),B=b.split("|");
     <svg data-key="${esc(key)}" viewBox="0 0 520 300" role="img" aria-label="${esc(key)}${file?" of "+esc(file):""} over commits"></svg>`;
   host.appendChild(sec);
 });
-document.querySelectorAll("svg[data-key]").forEach(svg=>render(svg,DATA[svg.dataset.key]));
+renderAll();
 
 // One chart at a time fills the window. It is drawn again at the size of the window, so the text
 // keeps its size and the axis has room for more commit labels.
-let fullChart=null;
 function drawFull(){const svg=fullChart.querySelector("svg[data-key]");
   const box=svg.getBoundingClientRect();
-  render(svg,DATA[svg.dataset.key],Math.max(520,Math.round(box.width)),Math.max(300,Math.round(box.height)));}
+  render(svg,viewOf(svg.dataset.key),Math.max(520,Math.round(box.width)),Math.max(300,Math.round(box.height)));}
 function setFull(sec){
   if(fullChart){const old=fullChart;fullChart=null;old.classList.remove("full");
     old.querySelector(".fullbtn").textContent="full view";
     old.querySelector(".fullbtn").setAttribute("aria-pressed","false");
-    const svg=old.querySelector("svg[data-key]");render(svg,DATA[svg.dataset.key]);}
+    const svg=old.querySelector("svg[data-key]");render(svg,viewOf(svg.dataset.key));}
   document.body.classList.toggle("has-full",!!sec);
   if(!sec)return;
   fullChart=sec;sec.classList.add("full");
@@ -1279,9 +1319,24 @@ document.querySelector(".views").addEventListener("click",e=>{const b=e.target.c
   try{localStorage.setItem("cool-perf-show",JSON.stringify(SHOW));}catch(e){}
   syncViews();
   document.querySelectorAll("svg[data-key]").forEach(svg=>{
-    if(!fullChart||!fullChart.contains(svg))render(svg,DATA[svg.dataset.key]);});
+    if(!fullChart||!fullChart.contains(svg))render(svg,viewOf(svg.dataset.key));});
   if(fullChart)drawFull();});
 syncViews();
+
+(function(){if(BRANCHES.length<2)return;
+  const sel=document.getElementById("brsel"),cmp=document.getElementById("brcmp");
+  const fill=()=>{sel.innerHTML=BRANCHES.map(b=>`<option${b===BRANCH?" selected":""}>${esc(b)}</option>`).join("");
+    cmp.innerHTML=`<option value="">none</option>`+BRANCHES.filter(b=>b!==BRANCH)
+      .map(b=>`<option${b===COMPARE_TO?" selected":""}>${esc(b)}</option>`).join("");
+    document.getElementById("cmpkey").hidden=!COMPARE_TO;
+    document.getElementById("cmpname").textContent=COMPARE_TO;};
+  const apply=()=>{const h=new URLSearchParams();if(BRANCH!=="main")h.set("branch",BRANCH);
+    if(COMPARE_TO)h.set("compare",COMPARE_TO);
+    history.replaceState(null,"",h.toString()?"#"+h:location.pathname+location.search);
+    fill();renderAll();};
+  sel.addEventListener("change",()=>{BRANCH=sel.value;if(COMPARE_TO===BRANCH)COMPARE_TO="";apply();});
+  cmp.addEventListener("change",()=>{COMPARE_TO=cmp.value;apply();});
+  document.getElementById("branches").hidden=false;fill();})();
 
 // document flamegraph: link the header to the most recent run that has one
 (function(){let best=null;
@@ -1345,6 +1400,7 @@ function openDetail(runs,i){
   mprev.disabled=i<=0;mnext.disabled=i>=runs.length-1;
   mpos.textContent=`${i+1} of ${runs.length}`;
   let meta=`commit ${esc(r.commit||"(unknown)")}  ·  ${esc(r.ts||"")}`;
+  if(BRANCHES.length>1)meta+=`  ·  branch ${esc(r.branch||"main")}`+(r.ref?` (${esc(r.ref)})`:"");
   if(r.file)meta+=`  ·  ${esc(r.file)}`;
   if(r.runid)meta+=`  ·  run ${esc(r.runid)}`;
   meta+=commitRange(runs,i);
