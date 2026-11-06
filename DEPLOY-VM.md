@@ -45,13 +45,13 @@ same time.
 | --- | --- | --- |
 | vCPUs | 8 | the engine build; the measurement itself uses few |
 | memory | 16 GB, 32 GB better | linking the engine with symbols |
-| disk | 150 GB | engine build with symbols (about 60 GB), ccache (30 GB), online, the store, the k6 image |
+| disk | 170 GB | engine build with symbols (about 60 GB), ccache (50 GB), online, the store, the k6 image |
 
 On incus, a VM with those resources:
 
 ```
 incus launch images:ubuntu/26.04 cool-perf --vm \
-    -c limits.cpu=8 -c limits.memory=32GiB -d root,size=150GiB
+    -c limits.cpu=8 -c limits.memory=32GiB -d root,size=170GiB
 ```
 
 Without `-d root,size=...`, incus gives a VM a 10 GB disk. `setup-vm` stops
@@ -471,8 +471,11 @@ environment loaded, as in the `doctor` line above. The next run builds
 `main` again.
 
 **Disk.** The store grows by about 8 MB a run up to `COOL_PERF_KEEP` runs.
-The compiler cache in `/home/collabora/.cache/ccache` grows up to its 30 GB
-limit. With
+The compiler cache in `/home/collabora/.cache/ccache` grows up to its 50 GB
+limit, which holds main beside the builds of changes and release tags. A full
+cache evicts the objects of main while another branch builds, and the next
+build of main then compiles them again. `ccache -s` shows how full it is, and
+`ccache --max-size` changes the limit. With
 `COOL_PERF_SAVE_BUILDS=1`, each run adds 4 GB under `COOL_BUILDS_DIR`, and
 nothing removes them, so delete old ones with `cool-use-build list` and `rm`.
 

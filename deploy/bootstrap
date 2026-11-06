@@ -76,8 +76,9 @@ if [ ! -d "$TREE/.git" ]; then
 fi
 
 # The engine build with symbols is large; the default 5 GB cache would only
-# hold part of it.
-ccache --max-size=30G >/dev/null
+# hold part of it. 50 GB holds main beside the builds of changes and release
+# tags, so that building one does not evict the other.
+ccache --max-size=50G >/dev/null
 
 step "configuring the engine"
 if [ ! -f "$TREE/engine/config_host.mk" ]; then
