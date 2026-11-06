@@ -460,8 +460,9 @@ def cmd_run(args) -> int:
                "--junit", str(junit), "--prune-perf-data",
                "--min-samples", str(args.min_samples),
                "-o", "browser-dashboard.html"]
+        cmd += ["--users", args.users]
         if args.suite:
-            cmd += ["--run", "--users", args.users]
+            cmd += ["--run"]
         if args.flamegraphs:
             cmd += ["--flamegraphs"]
         if args.strict:
@@ -630,9 +631,10 @@ def main() -> int:
                    help="run the plain timing suite (needs a coolwsd, which this "
                         "starts and stops itself)")
     r.add_argument("--flamegraphs", action=argparse.BooleanOptionalAction, default=True,
-                   help=f"capture a flamegraph per document ({DOC_COUNT})")
+                   help=f"capture a flamegraph per document ({DOC_COUNT}) and user count")
     r.add_argument("--users", default=env("COOL_PERF_USERS", "1,3"),
-                   help="user counts for the timing suite (env COOL_PERF_USERS)")
+                   help="user counts for the timing suite and the flamegraphs "
+                        "(env COOL_PERF_USERS)")
     r.add_argument("--publish", action=argparse.BooleanOptionalAction, default=True,
                    help="copy the run into COOL_PERF_STORE and rebuild its dashboard. "
                         "--no-publish leaves it in results/ and needs no store")

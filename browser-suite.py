@@ -18,7 +18,8 @@ axis (MB), which carries the document's own footprint, the browser heap and the
 peak of the coolwsd process that serves the client and caches the static files.
 Click a point for that run's detail.
 
-A document-process flamegraph can be captured per test document (--flamegraphs):
+A document-process flamegraph can be captured per test document and user count
+(--flamegraphs):
 for each document k6-flamegraph.py launches its own single-kit coolwsd
 (on its own free port, so it coexists with any COOL already running) and profiles
 the document kit. Each run's detail embeds its own capture, and can show a second
@@ -325,15 +326,17 @@ def capture_samples(out_abs: Path) -> int | None:
 def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
                         commit: str | None = None,
                         prune_perf_data: bool = False,
-                        min_samples: int = 0) -> list[dict]:
-    """Capture one document-process flamegraph per test document via
+                        min_samples: int = 0,
+                        users_list: list[int] = (1,)) -> list[dict]:
+    """Capture one document-process flamegraph per test document and user count via
     k6-flamegraph.py. For each document it launches its own single-kit coolwsd
     (make run-one, on its own free port via --new-instance, so it coexists with
     any coolwsd already on the default port), opens that document with its
     browser test so the kitbroker_* document kit loads it, and profiles that
-    kit. Output: results/<runid>/flamegraph/<app>-<doc>/flamegraph.svg, and the
-    browser test's own metrics.json one level down in browser/, which is what
-    puts this run on the dashboard as a profiled point.
+    kit. Output: results/<runid>/flamegraph/<app>-<doc>/flamegraph.svg for one user,
+    <app>-<doc>-<n>u/ for n users, and the browser test's own metrics.json one level
+    down in browser/, which is what puts this run on the dashboard as a profiled
+    point with the instructions of its user count.
 
     Returns one {name, ok, rc, out_rel, log} record per document, for a caller
     that has to report per-document outcomes (see --junit)."""
@@ -353,9 +356,11 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
               "before trusting these flamegraphs.", file=sys.stderr)
     failed = []
     outcomes = []
-    for app, doc in documents():
-            out_rel = (results_dir / runid / "flamegraph" / f"{app}-{doc}").as_posix()
-            print(f"flamegraph {app}-{doc}: own single-kit cool -> {out_rel} ...")
+    captures = [(app, doc, users) for app, doc in documents() for users in users_list]
+    for app, doc, users in captures:
+            name = f"{app}-{doc}" + (f"-{users}u" if users > 1 else "")
+            out_rel = (results_dir / runid / "flamegraph" / name).as_posix()
+            print(f"flamegraph {name}: own single-kit cool -> {out_rel} ...")
             # --cgroup counts and records the instance by cgroup from before
             # the document opens. pid mode attaches only once the kit is
             # found, so its counts miss a varying part of the load.
@@ -379,7 +384,7 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
             browser_abs.mkdir(parents=True, exist_ok=True)
             browser_abs.chmod(0o777)  # the k6 container user writes metrics.json here
             env["OUT_DIR"] = browser_rel
-            env["USERS"] = "1"
+            env["USERS"] = str(users)
             env["COMMIT"] = commit or ""
             with (out_abs / "harness.log").open("w") as log:
                 proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env, text=True,
@@ -397,14 +402,14 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
             if samples is not None:
                 print(f"  {samples} perf samples")
             if not ok:
-                failed.append(f"{app}-{doc}")
+                failed.append(name)
                 if rc != 0:
                     why = f"exit {rc}"
                 elif not svg.is_file():
                     why = "no flamegraph.svg was written"
                 else:
                     why = f"only {samples} perf samples, under --min-samples {min_samples}"
-                print(f"  flamegraph {app}-{doc} failed ({why}), see "
+                print(f"  flamegraph {name} failed ({why}), see "
                       f"{out_rel}/harness.log", file=sys.stderr)
             elif prune_perf_data:
                 # perf.data is by far the biggest thing a capture leaves (tens of
@@ -420,13 +425,13 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
                 # the engine is in, which no graph needs once it is drawn. A failed
                 # capture keeps its perf.data for a look, and loses these too.
                 shutil.rmtree(out_abs / "buildid", ignore_errors=True)
-            outcomes.append({"name": f"{app}-{doc}", "ok": ok, "rc": rc,
+            outcomes.append({"name": name, "ok": ok, "rc": rc,
                              "out_rel": out_rel,
                              "samples": samples,
                              "why": None if ok else why,
                              "log": f"{out_rel}/harness.log"})
-    done = len(documents()) - len(failed)
-    print(f"flamegraphs: {done}/{len(documents())} captured"
+    done = len(captures) - len(failed)
+    print(f"flamegraphs: {done}/{len(captures)} captured"
           + (f", failed: {', '.join(failed)}" if failed else ""))
     return outcomes
 
@@ -749,7 +754,7 @@ def browser_memory_of(mem: dict) -> dict | None:
 
 
 def _flamegraph_for(mj: Path, results_dir: Path,
-                    app: str, doc: str) -> tuple[str | None, bool]:
+                    app: str, doc: str, users: int) -> tuple[str | None, bool]:
     """(absolute path to this run's flamegraph or None, was this run profiled).
 
     Scoped to the run on purpose: a flamegraph is only evidence about the commit
@@ -759,15 +764,17 @@ def _flamegraph_for(mj: Path, results_dir: Path,
     --flamegraphs pass sits in browser/ under the directory holding its own SVG,
     and it is profiled: perf was attached while it ran, so its times are not
     comparable with a plain run. A plain suite run picks up the capture taken for
-    the same document in the same runid."""
+    the same document and user count in the same runid, or else the 1-user one,
+    which is the only capture of a run from before the multi-user captures."""
     here = mj.parent.parent / "flamegraph.svg"
     if mj.parent.name == "browser" and here.is_file():
         return str(here.resolve()), True
     runid = _runid_of(mj, results_dir)
     if runid:
-        same_run = results_dir / runid / "flamegraph" / f"{app}-{doc}" / "flamegraph.svg"
-        if same_run.is_file():
-            return str(same_run.resolve()), False
+        for name in ([f"{app}-{doc}-{users}u"] if users > 1 else []) + [f"{app}-{doc}"]:
+            same_run = results_dir / runid / "flamegraph" / name / "flamegraph.svg"
+            if same_run.is_file():
+                return str(same_run.resolve()), False
     return None, False
 
 
@@ -792,7 +799,7 @@ def collect(results_dir: Path) -> dict:
         metrics = {k: v for k, v in d.get("metrics", {}).items()
                    if not (isinstance(v, dict) and v.get("count") == 0)}
         # Absolute path here, write_dashboard makes it relative to the html.
-        flame, profiled = _flamegraph_for(mj, results_dir, app, doc)
+        flame, profiled = _flamegraph_for(mj, results_dir, app, doc, users)
         scen.setdefault(f"{app}|{doc}|{users}", []).append({
             "commit": d.get("commit"), "ts": ts,
             "runid": _runid_of(mj, results_dir),
@@ -1316,9 +1323,9 @@ function render(svg, runs, W=520, H=300){
     plot("tab_mem mem",yTab,tabOf);}
   // drawn last, so they stay on top of the other lines
   if(SHOW.instr)INS.forEach(s=>plot(s.cls,yIns,r=>insOf(r,s.k),v=>(v/1e9).toFixed(2)+" G",true));
-  // perf counts the instructions of the 1-user runs only
+  // a run from before the multi-user captures has instructions for one user only
   if(!drawn)svg.appendChild(el("text",{class:"axtitle",x:x0+pW/2,y:m.top+pH/2,"text-anchor":"middle"},
-    SHOW.instr&&!SHOW.times&&!SHOW.mem?"no instruction counts: perf measures the 1-user runs only":"nothing to show for the lines selected"));
+    SHOW.instr&&!SHOW.times&&!SHOW.mem?"no instruction counts for this run":"nothing to show for the lines selected"));
   // x labels: short commit, thinned if crowded
   const everyk=Math.ceil(n/Math.max(6,Math.floor(pW/75)));
   runs.forEach((r,i)=>{if(i%everyk)return;svg.appendChild(el("text",{class:"xlab",x:xAt(i),y:y1+15,"text-anchor":"middle"},r.commit?shortLabel(r.commit):("#"+i)));});
@@ -1833,7 +1840,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Run browser tests over time and build a dashboard.")
     ap.add_argument("--results", default="results", help="history directory (default results/)")
     ap.add_argument("--run", action="store_true", help="run the suite first (needs docker/k6)")
-    ap.add_argument("--users", default="1,3", help="comma-separated user counts to run")
+    ap.add_argument("--users", default="1,3", help="comma-separated user counts to run and to capture")
     ap.add_argument("--commit", help="commit label for this run (default: git HEAD of --coolwsd-dir)")
     ap.add_argument("--coolwsd-dir", default=os.environ.get("COOLWSD_DIR"),
                     help="online checkout, to read the commit under test "
@@ -1885,7 +1892,9 @@ def main() -> int:
                 # needs docker/k6, perf and the FlameGraph tools.
                 cases += capture_flamegraphs(results, runid, args.coolwsd_dir,
                                              commit, args.prune_perf_data,
-                                             args.min_samples)
+                                             args.min_samples,
+                                             [int(u) for u in args.users.split(",")
+                                              if u.strip()])
             if args.junit:
                 write_junit(Path(args.junit), f"cool-perf.{runid}", cases)
         with dashboard_lock(Path(args.out)):
