@@ -20,6 +20,8 @@ Configuration is all environment, so a Jenkins job needs no arguments:
     COOLWSD_DIR        the prebuilt online tree to measure (required)
     COOL_PERF_STORE    durable results store (default /var/lib/cool-perf)
     COOL_PERF_KEEP     how many runs to keep in the store (default 20)
+    COOL_PERF_KEEP_RESULTS  1 to keep a published run in results/ as well, for a
+                       CI job that archives it from the workspace (default 0)
     COOL_BUILDS_DIR    build snapshots, for cool-use-build (default: beside the tree)
     COOL_PERF_LABEL    label the runs with this instead of the built commit
     COOL_PERF_BRANCH   the line of runs on the dashboard that the run belongs to
@@ -578,7 +580,8 @@ def latest_runid(results: Path) -> str | None:
 
 
 def publish(runid: str, store: Path, keep: int, junit: Path | None = None) -> int:
-    """Copy one run into the store, prune old ones, rebuild the store dashboard.
+    """Copy one run into the store, delete it from results/ unless COOL_PERF_KEEP_RESULTS=1,
+    prune old ones, rebuild the store dashboard.
 
     The store is the durable half: a CI workspace is wiped between builds, so
     the history that the charts plot has to live outside it. The dashboard is
@@ -598,6 +601,10 @@ def publish(runid: str, store: Path, keep: int, junit: Path | None = None) -> in
     if junit and junit.is_file():
         (store / "junit").mkdir(parents=True, exist_ok=True)
         shutil.copy2(junit, store / "junit" / f"{runid}.xml")
+    # The dashboard reads the store copy, so the workspace keeps no run once it is published,
+    # unless a CI job archives it from there.
+    if env("COOL_PERF_KEEP_RESULTS", "0") != "1":
+        shutil.rmtree(src, ignore_errors=True)
 
     runs = sorted(p for p in dst_results.iterdir() if p.is_dir())
     if keep > 0 and len(runs) > keep:

@@ -288,7 +288,8 @@ Command line flags for `cool-ci run`: `--no-suite`, `--no-flamegraphs`,
 ```
 ./cool-ci doctor        # every prerequisite, exits non-zero with what to fix
 ./cool-ci run           # doctor, measure, publish
-./cool-ci publish       # re-publish the newest run in results/ (rarely needed)
+./cool-ci publish       # re-publish the newest run in results/ (rarely needed;
+                        # a published run leaves results/ unless COOL_PERF_KEEP_RESULTS=1)
 ```
 
 `run` does, in order:
@@ -326,6 +327,7 @@ pipeline {
     COOL_SRC_REF    = 'origin/main'
     COOL_PERF_STORE = '/var/lib/cool-perf'
     COOL_PERF_KEEP  = '20'
+    COOL_PERF_KEEP_RESULTS = '1'       // archiveArtifacts below reads results/
   }
 
   stages {
