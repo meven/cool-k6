@@ -37,6 +37,8 @@ Configuration is all environment, so a Jenkins job needs no arguments:
     COOL_PERF_PROBE_INTERVAL seconds between two machine probes during a run (default 20)
     HOST_IP            IP the k6 container reaches the host on (default: auto)
     WOPI_PORT          port for the test WOPI host (default 3000)
+    COOL_PERF_MIN_FREE_GB    a run does not start with less free space than this on a
+                             filesystem that it writes to (default 5)
 
 See CI-JENKINS.md for the pipeline and the machine setup.
 """
@@ -293,14 +295,30 @@ def checks(publishing: bool = True, flamegraphs: bool = True) -> list[tuple[str,
             f"directory you own such as $HOME/cool-perf, or measure without it: "
             f"`cool-ci run --no-publish` keeps the run in results/")
 
-    for label_, path in (("workspace", ROOT), ("store", s if s.exists() else ROOT)):
+    # A run writes the results and the perf captures into the workspace, the kit's jails into
+    # the tree, the k6 container's browser profile into the docker data, and temporary files
+    # into /tmp and $HOME. On a full disk, the browser loads the host page but the client never
+    # starts, and every test waits for its timeout. Each filesystem is checked once.
+    min_gb = float(env("COOL_PERF_MIN_FREE_GB", "5"))
+    places = [("workspace", ROOT), ("store", s), ("tree", t), ("tmp", Path("/tmp")),
+              ("home", Path.home())]
+    if shutil.which("docker"):
+        d = run(["docker", "info", "--format", "{{.DockerRootDir}}"])
+        if d.returncode == 0 and d.stdout.strip():
+            places.append(("docker", Path(d.stdout.strip())))
+    by_fs: dict = {}
+    for label_, path in places:
         try:
             st = os.statvfs(path)
-            gb = st.f_bavail * st.f_frsize / 1e9
-            add(OK if gb >= 5 else WARN, f"free space ({label_})",
-                f"{gb:.1f} GB free" + ("" if gb >= 5 else ", a full run needs a few GB"))
-        except Exception:
-            pass
+            dev = os.stat(path).st_dev
+        except (OSError, TypeError):
+            continue
+        by_fs.setdefault(dev, [st.f_bavail * st.f_frsize / 1e9, []])[1].append(label_)
+    for gb, labels in by_fs.values():
+        status = FAIL if gb < min_gb else WARN if gb < 2 * min_gb else OK
+        add(status, f"free space ({', '.join(labels)})",
+            f"{gb:.1f} GB free" + ("" if status == OK else
+                                   f", a run needs {min_gb:g} GB (COOL_PERF_MIN_FREE_GB)"))
     return res
 
 
