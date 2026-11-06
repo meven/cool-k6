@@ -88,10 +88,11 @@ function render(svg, runs, W=520, H=300){
   const n=runs.length,pad=n>1?18:pW/2;
   const xAt=i=>x0+pad+(n>1?i*(pW-2*pad)/(n-1):0);
   // One stacked bar per run, on the same MB axis as the memory lines so its
-  // height can be read off that axis rather than taken on trust.
+  // height can be read off that axis rather than taken on trust. Each bar is
+  // centred on its run and drawn first, behind the lines and points.
   if(SHOW.mem)runs.forEach((r,i)=>{const sk=stackOf(r);if(!sk)return;
     const bw=Math.max(4,Math.min(13,pW/(runs.length*3)));
-    const cx=xAt(i)+bw*1.6;
+    const cx=xAt(i);
     let acc=0;
     sk.parts.forEach(part=>{
       const yTop=yMem(acc+part.v), h=Math.max(0.5,yMem(acc)-yTop);
