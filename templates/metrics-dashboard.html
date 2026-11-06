@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>k6-flamegraph dashboard</title>
+</head>
+<body>
+
+<style>
+$css</style>
+
+<div class="wrap">
+  <header>
+    <h1>k6-flamegraph metrics</h1>
+    <p class="sub">One plot per test scenario. Left axis is CPU instructions, right axis is peak memory. Click any point to open that run's flamegraph.</p>
+  </header>
+  <div class="legend">
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s0)" stroke-width="2.5"/></svg> coolwsd instructions</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s1)" stroke-width="2.5"/></svg> kit instructions</span>
+    <span class="sep"></span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s2)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> coolwsd memory</span>
+    <span class="key"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s3)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> kit memory</span>
+  </div>
+  <div id="scenarios"></div>
+  <footer>
+    Runs are grouped by their k6 test scenario. Each plot has two axes: CPU
+    instructions (giga, retired) on the left carry the solid lines, peak memory
+    (MB, PSS) on the right carry the dashed lines. Each of the four series has
+    its own colour, so identity never relies on line style alone. Click any
+    point to open that run's flamegraph.svg (with a link to the raw file).
+  </footer>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-head">
+      <strong id="modal-title">Flamegraph</strong>
+      <span class="modal-actions">
+        <a id="modal-link" href="#" target="_blank" rel="noopener" hidden>Open .svg &#8599;</a>
+        <button id="modal-close" type="button">Close</button>
+      </span>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+const SCENARIOS = $scenarios;
+$js</script>
+
+</body>
+</html>

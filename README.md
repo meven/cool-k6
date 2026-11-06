@@ -22,7 +22,7 @@ with a systemd timer, without Jenkins.
 | Tool | What it does |
 | --- | --- |
 | `browser-suite.py` | runs the browser tests over a document corpus, records each run under `results/`, and builds `browser-dashboard.html` from the whole history |
-| `templates/` | the dashboard page that `browser-suite.py` fills: its html, css and script |
+| `templates/` | the dashboard pages that `browser-suite.py` and `plot-metrics.py --html` fill: their html, css and script |
 | `cool-ci` | the Jenkins entry point. Derives the coolwsd command line from the target tree instead of running make, so a job measures the build it was pointed at |
 | `cool-use-build` | installs a kept-aside build into an Online tree, and prints that coolwsd command line |
 | `k6-flamegraph.py` | one profiled run: starts the WOPI host and coolwsd, drives a k6 test, and renders a flamegraph scoped to the coolwsd and kit processes |
