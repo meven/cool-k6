@@ -1167,7 +1167,7 @@ high-water mark (VmHWM) of the capture's own coolwsd instead. The stacked bar be
   <div id="view-runs" role="tabpanel" aria-labelledby="tab-runs" hidden>
   <section class="cmp runs" aria-labelledby="runsh">
     <h2 id="runsh">Runs</h2>
-    <p class="cmp-note">Every run on the charts, newest first, with the time it started (UTC).
+    <p class="cmp-note">Every run on the charts, newest first, with the time it started, in the time zone of this browser.
       The commits are those the run measured for the first time: since the previous run of
       its branch, or since its base on main for a change. The data link opens the run's
       folder, with its logs, metrics and flamegraphs. A deleted run leaves the store and the
@@ -1417,7 +1417,12 @@ const POINTS=(()=>{const first=new Map();
     list.push({id:r.runid,branch:r.branch,commit:r.commit,base:r.base,ts:r.ts,ts2:r.ts,runids:[r.runid]});});
   return byBranch;})();
 const POINT_BY_ID={};Object.values(POINTS).forEach(l=>l.forEach(p=>{POINT_BY_ID[p.id]=p;}));
-const day=ts=>String(ts||"").slice(0,16).replace("T"," ");
+// A run time in the time zone of the browser; the data holds it in UTC.
+const TZ=Intl.DateTimeFormat().resolvedOptions().timeZone;
+const two=n=>String(n).padStart(2,"0");
+const day=ts=>{const d=new Date(ts);
+  return isNaN(d)?String(ts||"").slice(0,16).replace("T"," "):
+    `${d.getFullYear()}-${two(d.getMonth()+1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;};
 const pointName=p=>`${p.branch} · ${shortLabel(p.commit||"?")} · ${day(p.ts)}`+(p.runids.length>1?` · ${p.runids.length} runs`:"");
 // the run ids of a side, from its first point through its last on the same branch
 function sideRuns(side){const f=POINT_BY_ID[side.from];if(!f)return new Set();
@@ -1590,7 +1595,7 @@ function runRange(r){const to=shaOf(r.commit);
 const modal=document.getElementById("modal"),mb=document.getElementById("mb"),mt=document.getElementById("mt"),
   mmeta=document.getElementById("mmeta"),mfg=document.getElementById("mfg"),mcard=document.getElementById("mcard");
 
-function fgLabel(r){return (r.commit?shortLabel(r.commit):"local")+" · "+String(r.ts||"").replace("T"," ").slice(0,16);}
+function fgLabel(r){return (r.commit?shortLabel(r.commit):"local")+" · "+day(r.ts);}
 function fgFrame(r){
   // <object>, not <img>: the capture carries its own script, so search and zoom
   // keep working inside the frame
@@ -1639,7 +1644,7 @@ function openDetail(runs,i){
   detailRuns=runs;detailIdx=i;
   mprev.disabled=i<=0;mnext.disabled=i>=runs.length-1;
   mpos.textContent=`${i+1} of ${runs.length}`;
-  let meta=`commit ${esc(r.commit||"(unknown)")}  ·  ${esc(r.ts||"")}`;
+  let meta=`commit ${esc(r.commit||"(unknown)")}  ·  ${esc(day(r.ts))} ${esc(TZ)}`;
   if(BRANCHES.length>1)meta+=`  ·  branch ${esc(r.branch||"main")}`+(r.ref?` (${esc(r.ref)})`:"");
   if(r.file)meta+=`  ·  ${esc(r.file)}`;
   if(r.runid)meta+=`  ·  run ${esc(r.runid)}`;
