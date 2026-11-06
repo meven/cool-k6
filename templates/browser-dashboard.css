@@ -444,6 +444,9 @@ body.has-full::before {
   text-align: left;
   font-family: system-ui, sans-serif;
 }
+.runs a {
+  color: var(--accent);
+}
 .runs .ref {
   display: block;
   font-size: 11.5px;
