@@ -674,7 +674,9 @@ const CMP_METRICS = [
     abs: 10,
   },
   { name: "coolwsd peak", get: masterOf, fmt: (v) => Math.round(v) + " MB", th: 0.03, abs: 10 },
-  { name: "browser heap", get: heapOf, fmt: (v) => Math.round(v) + " MB", th: 0.03, abs: 10 },
+  // The JavaScript heap is 25 to 50 MB and moves by up to a third between runs with the
+  // garbage collector, so it counts by its share alone.
+  { name: "browser heap", get: heapOf, fmt: (v) => Math.round(v) + " MB", th: 0.1, abs: 0 },
   { name: "page process", get: tabOf, fmt: (v) => Math.round(v) + " MB", th: 0.03, abs: 10 },
 ];
 const median = (a) => {
@@ -818,7 +820,7 @@ function renderCompare() {
     `<b>A</b> ${esc(sideName(CMP.a))}<br><b>B</b> ${esc(sideName(CMP.b))}<br>` +
     (CMP_NOTE ? esc(CMP_NOTE) + "<br>" : "") +
     `${changes} change${changes === 1 ? "" : "s"} in ${docs} test${docs === 1 ? "" : "s"}, ${still} metric${still === 1 ? "" : "s"} within the noise: ` +
-    `a change counts from 1% and 0.05 G for instructions, 3% and 10 MB for memory, 5% and 50 ms for times. ` +
+    `a change counts from 1% and 0.05 G for instructions, 3% and 10 MB for memory, 10% for the browser heap, 5% and 50 ms for times. ` +
     `Each value is the median over the runs of the side.` +
     (missing
       ? ` ${missing} test${missing === 1 ? " was" : "s were"} measured on one side only.`
