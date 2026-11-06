@@ -2,8 +2,8 @@
 # the checkout after /etc/cool-perf.env.
 
 # Take the lock of deploy/nightly on file descriptor 9, so that no timer run starts during this
-# one. With $1 set, wait for a timer run that holds the lock to end; deploy/nightly gives up on a
-# held lock, so the timer skips its runs while this one waits and measures.
+# one. With $1 set, wait for the run that holds the lock to end. A timer run that starts
+# meanwhile waits in turn, and runs once this one has ended.
 take_lock() {
     local state=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
     exec 9>"$state/lock"
