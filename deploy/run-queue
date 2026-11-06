@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Run the jobs that the Schedule tab of the dashboard queues, one at a time, in the order they
+are due. cool-perf-queue.service runs it, with the settings of cool-perf.service, so that a job
+measures as a run of the timer does:
+
+    sudo systemctl status cool-perf-queue.service
+    journalctl -u cool-perf-queue.service -f
+
+Each job is deploy/run-branch --gerrit <change>/<patch set> --runs <n> --wait, which takes the
+lock of deploy/nightly, so a job and a run of the timer never measure at the same time. The
+output of a job goes to its log in the queue directory, which the Schedule tab shows.
+"""
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "deploy"))
+import runqueue  # noqa: E402
+
+POLL_S = 15
+
+
+def run(job: dict) -> int:
+    cmd = [str(REPO / "deploy" / "run-branch"),
+           "--gerrit", f"{job['change']}/{job['patchset']}", "--runs", str(job["runs"]), "--wait"]
+    print(f"job {job['id']}: {' '.join(cmd)}", flush=True)
+    with open(runqueue.log_path(job["id"]), "ab") as log:
+        return subprocess.run(cmd, cwd=REPO, stdin=subprocess.DEVNULL,
+                              stdout=log, stderr=subprocess.STDOUT).returncode
+
+
+def main() -> int:
+    runqueue.recover()
+    print(f"watching {runqueue.queue_dir()}", flush=True)
+    while True:
+        job = runqueue.claim()
+        if not job:
+            time.sleep(POLL_S)
+            continue
+        code = run(job)
+        print(f"job {job['id']}: exit {code}", flush=True)
+        runqueue.finish(job, code)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

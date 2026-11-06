@@ -163,7 +163,7 @@ fi
 chmod 644 "$ENV_FILE"
 
 step "systemd units"
-for unit in cool-perf.service cool-perf.timer cool-perf-api.service; do
+for unit in cool-perf.service cool-perf.timer cool-perf-api.service cool-perf-queue.service; do
     sed -e "s|@REPO@|$REPO|g" -e "s|@USER@|$SVC_USER|g" \
         "$REPO/deploy/systemd/$unit" > "/etc/systemd/system/$unit"
 done
@@ -175,6 +175,9 @@ systemctl start cool-perf.timer
 # The Runs tab deletes runs through this service.
 systemctl enable cool-perf-api.service
 systemctl restart cool-perf-api.service
+# The Schedule tab queues runs of Gerrit changes, which this service runs.
+systemctl enable cool-perf-queue.service
+systemctl restart cool-perf-queue.service
 
 step "nginx site for the dashboard"
 API_PORT=$(sed -n 's/^COOL_PERF_API_PORT=//p' "$ENV_FILE" | tail -1)

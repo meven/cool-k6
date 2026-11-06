@@ -514,7 +514,7 @@ document.querySelector(".views").addEventListener("click", (e) => {
 syncViews();
 
 // The address holds the branch of the charts and the two sides of the comparison.
-let VIEW = ((v) => (["compare", "runs"].includes(v) ? v : "charts"))(
+let VIEW = ((v) => (["compare", "runs", "schedule"].includes(v) ? v : "charts"))(
   new URLSearchParams(location.hash.slice(1)).get("view"),
 );
 function writeHash() {
@@ -839,6 +839,7 @@ function renderCompare() {
     });
     if (v !== "charts" && fullChart) setFull(null);
     if (!init) writeHash();
+    document.dispatchEvent(new CustomEvent("viewshown", { detail: v }));
   };
   tabs.forEach((t, i) => {
     t.addEventListener("click", () => show(t.id.slice(4)));
@@ -1021,6 +1022,269 @@ function runBranch(r) {
     }
   });
   sync();
+})();
+
+// ---- the schedule: the runs of main, the queue of Gerrit changes, and the units started by
+// hand, read from deploy/runs-api.py while the tab is open
+(function () {
+  const tl = document.getElementById("schtl"),
+    tab = document.getElementById("schtab"),
+    form = document.getElementById("schform"),
+    change = document.getElementById("schchange"),
+    runsSel = document.getElementById("schruns"),
+    at = document.getElementById("schat"),
+    go = document.getElementById("schgo"),
+    msg = document.getElementById("schmsg");
+  const say = (text, err) => {
+    msg.textContent = text;
+    msg.classList.toggle("err", !!err);
+  };
+  const served = location.protocol === "http:" || location.protocol === "https:";
+  const HOUR = 3600e3;
+  let state = null,
+    timer = null;
+  for (let n = 1; n <= 5; n++) runsSel.add(new Option(String(n), String(n), n === 3, n === 3));
+
+  const jobName = (j) => `${j.change}/${j.patchset}`;
+  const STATES = {
+    queued: "queued",
+    running: "running",
+    done: "done",
+    failed: "failed",
+    cancelled: "cancelled",
+  };
+
+  // One lane per kind of run, on a 24-hour axis centred on now.
+  function drawTimeline() {
+    const W = Math.max(tl.clientWidth, 300),
+      lanes = ["main", "queue", "by hand"],
+      LH = 30,
+      top = 8,
+      left = 70,
+      H = top + lanes.length * LH + 24;
+    const now = Date.parse(state.now),
+      t0 = now - 12 * HOUR,
+      t1 = now + 12 * HOUR;
+    const x = (t) => left + ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * (W - left - 8);
+    const y = (lane) => top + lanes.indexOf(lane) * LH + LH / 2;
+    const parts = [];
+    const add = (s) => parts.push(s);
+    lanes.forEach((l) => {
+      add(
+        `<text x="0" y="${y(l) + 4}" class="lane">${l}</text>` +
+          `<line x1="${left}" x2="${W - 8}" y1="${y(l)}" y2="${y(l)}" class="track"/>`,
+      );
+    });
+    // a label every 3 hours, or every 6 on a narrow screen
+    const step = (W < 600 ? 6 : 3) * HOUR;
+    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+      const d = new Date(t);
+      add(
+        `<line x1="${x(t)}" x2="${x(t)}" y1="${top}" y2="${H - 20}" class="grid"/>` +
+          `<text x="${x(t)}" y="${H - 6}" class="tick">${two(d.getHours())}:${two(d.getMinutes())}</text>`,
+      );
+    }
+    const bar = (lane, a, b, cls, tip) =>
+      add(
+        `<rect x="${x(a)}" y="${y(lane) - 7}" width="${Math.max(x(b) - x(a), 3)}" height="14" rx="3" class="${cls}" data-tip="${esc(tip)}" tabindex="0"/>`,
+      );
+    const mark = (lane, t, cls, tip) =>
+      add(
+        `<path d="M${x(t)} ${y(lane) - 7}l7 7l-7 7l-7 -7z" class="${cls}" data-tip="${esc(tip)}" tabindex="0"/>`,
+      );
+    // main: the published runs, then the timer's next starts, each a run only if main moved
+    RUNS.filter((r) => r.branch === "main" && Date.parse(r.ts) >= t0).forEach((r) =>
+      mark("main", Date.parse(r.ts), "done", `main ${shortLabel(r.commit || "?")}, ${day(r.ts)}`),
+    );
+    if (state.main.running && state.main.since)
+      bar(
+        "main",
+        Date.parse(state.main.since),
+        now,
+        "running",
+        `main, running since ${day(state.main.since)}`,
+      );
+    if (state.main.next)
+      for (let t = Date.parse(state.main.next); t <= t1; t += HOUR)
+        mark(
+          "main",
+          t,
+          "planned",
+          `timer at ${day(new Date(t).toISOString())}, a run if main has moved`,
+        );
+    state.jobs.forEach((j) => {
+      const label = `${j.branch} patch set ${j.patchset}, ${j.runs} run${j.runs === 1 ? "" : "s"}`;
+      if (j.state === "queued") {
+        const t = j.not_before ? Date.parse(j.not_before) : now;
+        mark(
+          "queue",
+          Math.max(t, now),
+          "queued",
+          `${label}: queued, ${j.not_before ? "from " + day(j.not_before) : "as soon as possible"}`,
+        );
+      } else if (j.started && j.state !== "cancelled") {
+        const end = j.ended ? Date.parse(j.ended) : now;
+        bar(
+          "queue",
+          Date.parse(j.started),
+          end,
+          j.state,
+          `${label}: ${j.state}, ${day(j.started)}${j.ended ? " to " + day(j.ended) : ""}`,
+        );
+      }
+    });
+    state.by_hand.forEach((u) => {
+      if (u.state === "running")
+        bar(
+          "by hand",
+          Date.parse(u.since),
+          now,
+          "running",
+          `${u.unit}, running since ${day(u.since)}`,
+        );
+      else mark("by hand", Date.parse(u.at), "queued", `${u.unit}, starts ${day(u.at)}`);
+    });
+    add(`<line x1="${x(now)}" x2="${x(now)}" y1="${top - 4}" y2="${H - 20}" class="now"/>`);
+    tl.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="runs of the last and the next 12 hours">${parts.join("")}</svg>`;
+  }
+
+  function drawTable() {
+    const rows = state.jobs.slice().reverse();
+    const by = state.by_hand.map(
+      (u) =>
+        `<tr><td class="l">${u.state}</td><td class="l" colspan="4"><code>${esc(u.unit)}</code>` +
+        `<span class="ref">started by hand with systemd-run</span></td>` +
+        `<td class="l">${esc(day(u.state === "running" ? u.since : u.at))}</td><td></td></tr>`,
+    );
+    const main =
+      `<tr><td class="l">${state.main.running ? "running" : "timer"}</td>` +
+      `<td class="l" colspan="4">main<span class="ref">every hour, when main has a new commit</span></td>` +
+      `<td class="l">${esc(state.main.running ? "since " + day(state.main.since) : state.main.next ? "next " + day(state.main.next) : "-")}</td><td></td></tr>`;
+    tab.innerHTML =
+      `<thead><tr><th class="l">state</th><th class="l">change</th><th class="l">patch set</th>` +
+      `<th class="l">subject</th><th>runs</th><th class="l">start</th><th class="l"></th></tr></thead><tbody>` +
+      main +
+      by.join("") +
+      rows
+        .map((j) => {
+          const start =
+            j.state === "queued"
+              ? j.not_before
+                ? "from " + day(j.not_before)
+                : "as soon as possible"
+              : j.started
+                ? day(j.started) + (j.ended ? " to " + day(j.ended) : "")
+                : day(j.ended || j.created);
+          const acts = [];
+          if (j.state === "queued")
+            acts.push(`<button type="button" data-cancel="${esc(j.id)}">Cancel</button>`);
+          if (j.started)
+            acts.push(
+              `<a href="api/schedule/${encodeURIComponent(j.id)}/log" target="_blank" rel="noopener">log</a>`,
+            );
+          if (j.state === "done")
+            acts.push(
+              `<a href="#view=charts&branch=${encodeURIComponent(j.branch)}" data-reload>charts</a>`,
+            );
+          return (
+            `<tr class="st-${j.state}"><td class="l">${STATES[j.state] || esc(j.state)}${j.exit ? ` <span class="ref">exit ${esc(j.exit)}</span>` : ""}</td>` +
+            `<td class="l">${gerritLink(j.branch, String(j.change))}</td>` +
+            `<td class="l">${gerritLink(String(j.patchset), j.change + "/" + j.patchset)}<span class="ref">${esc(j.revision.slice(0, 12))}</span></td>` +
+            `<td class="l subj">${esc(j.subject)}<span class="ref">${esc(j.uploader)}</span></td>` +
+            `<td>${j.runs}</td><td class="l">${esc(start)}</td><td class="l acts">${acts.join(" ")}</td></tr>`
+          );
+        })
+        .join("") +
+      `</tbody>`;
+  }
+
+  async function load() {
+    if (!served) {
+      say("Open the dashboard from its web server to see and change the schedule.");
+      go.disabled = true;
+      return;
+    }
+    try {
+      const res = await fetch("api/schedule", { cache: "no-store" });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      state = await res.json();
+    } catch (e) {
+      say("The schedule could not be read: " + e.message, true);
+      return;
+    }
+    document.getElementById("schdomains").textContent = state.domains.join(" or ");
+    if (state.runner && state.runner !== "active")
+      say(`cool-perf-queue.service is ${state.runner}: queued changes wait until it runs.`, true);
+    drawTimeline();
+    drawTable();
+  }
+
+  tab.addEventListener("click", async (e) => {
+    const id = e.target.dataset && e.target.dataset.cancel;
+    if (e.target.hasAttribute && e.target.hasAttribute("data-reload")) {
+      // the charts of a branch that has new runs since this page was built
+      setTimeout(() => location.reload(), 0);
+      return;
+    }
+    if (!id) return;
+    e.target.disabled = true;
+    try {
+      const res = await fetch(`api/schedule/${encodeURIComponent(id)}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
+      say(`Cancelled ${jobName(body.job)}.`);
+    } catch (err) {
+      say("Not cancelled: " + err.message, true);
+    }
+    load();
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    go.disabled = true;
+    say("Checking the change on Gerrit...");
+    try {
+      const when = at.value ? new Date(at.value) : null;
+      if (when && isNaN(when)) throw new Error("the start is not a date and time");
+      const res = await fetch("api/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          change: change.value,
+          runs: Number(runsSel.value),
+          at: when ? when.toISOString() : null,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
+      say(`Queued ${jobName(body.job)}: ${body.job.subject}`);
+      change.value = "";
+      at.value = "";
+    } catch (err) {
+      say("Not queued: " + err.message, true);
+    }
+    go.disabled = false;
+    load();
+  });
+
+  // Read the schedule while the tab is shown, every 30 seconds.
+  document.addEventListener("viewshown", (e) => {
+    clearInterval(timer);
+    if (e.detail !== "schedule") return;
+    load();
+    timer = setInterval(() => {
+      if (!document.hidden) load();
+    }, 30e3);
+  });
+  window.addEventListener("resize", () => {
+    if (state && VIEW === "schedule") drawTimeline();
+  });
+  // The tabs showed the view of the address before this listened.
+  if (VIEW === "schedule") document.dispatchEvent(new CustomEvent("viewshown", { detail: VIEW }));
 })();
 
 const modal = document.getElementById("modal"),

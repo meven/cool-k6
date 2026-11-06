@@ -27,7 +27,8 @@ Everything after that runs by itself.
 | `/var/lib/cool-perf/` | the results store: every published run, and `index.html`, the dashboard |
 | `/etc/cool-perf.env` | the configuration, see [Configuration](#configuration) |
 | `/etc/systemd/system/cool-perf.{service,timer}` | the hourly job |
-| `/etc/systemd/system/cool-perf-api.service` | deletes runs from the dashboard's Runs tab |
+| `/etc/systemd/system/cool-perf-api.service` | deletes runs from the Runs tab, and queues changes from the Schedule tab |
+| `/etc/systemd/system/cool-perf-queue.service` | builds and measures the changes that the Schedule tab queued |
 | `/etc/nginx/sites-available/cool-perf.conf` | serves `/var/lib/cool-perf` on port 80 |
 | `/etc/sysctl.d/90-cool-perf.conf` | the two kernel settings the suite needs |
 | `/opt/FlameGraph/` | the scripts that turn perf output into flamegraphs |
@@ -298,6 +299,7 @@ as a copy of `deploy/cool-perf.env`, which explains each one:
 | `COOL_SRC_REF` | `origin/main` | what each run builds |
 | `COOL_PERF_STORE` | `/var/lib/cool-perf` | the published runs and the dashboard |
 | `COOL_PERF_KEEP` | `240` | how many runs the store keeps, about 2 GB |
+| `COOL_PERF_SCHEDULE_DOMAINS` | `collabora.com,collabora.co.uk` | whose patch sets the Schedule tab accepts |
 | `COOL_PERF_PROBE_MAX` | `1.2` | a run is busy when the machine probe is slower than usual by this factor |
 | `COOL_PERF_STEAL_MAX` | `2` | a run is busy when the hypervisor took more than this percentage of the CPU time |
 | `COOL_PERF_BUSY_RETRIES` | `3` | busy runs of a commit that are not published before one is published with a busy mark |
@@ -407,7 +409,31 @@ kept in the address, so a comparison can be sent as a link. Wait for the run of 
 sudo -iu collabora /home/collabora/perf-dashboard/deploy/run-branch --gerrit 18591 --runs 3
 ```
 
-To run it later, schedule it with systemd-run, with the settings of
+**Queuing a change from the dashboard.** The Schedule tab shows the runs of the
+last and the next 12 hours: the runs of main, the queued Gerrit changes and the
+units started by hand with systemd-run. Its form queues a change, as `18591`, `18591/3`
+or the address of the change, with the number of runs and a time to start from.
+`cool-perf-queue.service` runs `deploy/run-queue`, which takes the queued changes
+one at a time once they are due and runs `deploy/run-branch --gerrit <change>/<patch
+set> --runs <n> --wait` for each, with the settings of cool-perf.service, so a
+change and a run of the timer never measure at the same time. The tab links the
+log of each job; `journalctl -u cool-perf-queue.service` lists the jobs.
+
+A queued change builds and runs the code of its patch set on the VM, and the
+dashboard has no login, so `deploy/runs-api.py` accepts a change of online only
+when its patch set was uploaded by an account of `COOL_PERF_SCHEDULE_DOMAINS`
+(default `collabora.com,collabora.co.uk`), and queues that patch set, not
+whatever is uploaded later. The queue is under
+`/home/collabora/.local/state/cool-perf/queue/`, one JSON file and one log per
+job, and keeps the 30 newest finished jobs. A queued job can be cancelled from
+the tab. To stop the job that is running, restart the service, which stops the
+job's coolwsd with it and marks the job failed:
+
+```
+sudo systemctl restart cool-perf-queue.service
+```
+
+To run it later from the command line, schedule it with systemd-run, with the settings of
 cool-perf.service. `--wait` has it start once a run of the timer has ended, rather
 than give up, and the time limit leaves room for that wait:
 

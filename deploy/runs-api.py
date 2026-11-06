@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The service behind the Runs tab of the dashboard: it deletes runs from the store.
+"""The service behind the Runs and Schedule tabs of the dashboard: it deletes runs from the
+store, and queues runs of Gerrit changes for deploy/run-queue.
 
 nginx passes /api/ to it (deploy/nginx/cool-perf.conf), and cool-perf-api.service
 runs it as the service user, which owns the store. It listens on localhost only.
@@ -9,6 +10,14 @@ runs it as the service user, which owns the store. It listens on localhost only.
 removes each run folder and its JUnit report, then rebuilds index.html, and
 answers {"deleted": [...]}. A run id that is not in the store fails the whole
 request, and nothing is deleted.
+
+    GET  /api/schedule                  the queue, the next run of the timer, and the
+                                        cool-perf units started by hand
+    POST /api/schedule                  {"change": "18591/3", "runs": 3, "at": null or ISO time}
+    POST /api/schedule/<job>/cancel     a queued job
+    GET  /api/schedule/<job>/log        the end of the log of a job
+
+deploy/runqueue.py checks a change before it is queued.
 """
 import os
 import re
@@ -17,9 +26,13 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import runqueue  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 STORE = Path(os.environ.get("COOL_PERF_STORE", "/var/lib/cool-perf"))
@@ -36,15 +49,21 @@ def fail(status: int, error: str):
     return jsonify(error=error), status
 
 
-@app.post("/api/runs/delete")
-def delete_runs():
-    # There is no login, so at least refuse a request that another site's page sends:
-    # a form cannot post JSON, and a script of another origin carries its Origin.
+def foreign():
+    """There is no login, so at least refuse a request that another site's page sends: a
+    form cannot post JSON, and a script of another origin carries its Origin."""
     if not request.is_json:
         return fail(415, "the request must be JSON")
     origin = request.headers.get("Origin")
     if origin and urlsplit(origin).netloc != request.host:
         return fail(403, f"requests from {origin} are not accepted")
+    return None
+
+
+@app.post("/api/runs/delete")
+def delete_runs():
+    if refused := foreign():
+        return refused
     body = request.get_json(silent=True)
     runids = body.get("runids") if isinstance(body, dict) else None
     if not isinstance(runids, list) or not runids:
@@ -76,6 +95,127 @@ def delete_runs():
         return fail(500, "the runs are deleted, but the dashboard was not rebuilt: "
                     + (build.stderr.strip() or build.stdout.strip())[-500:])
     return jsonify(deleted=runids)
+
+
+# The units of the VM, read with systemctl, which the service user may do. The tab shows these
+# by themselves, so they are not among the units started by hand.
+OWN_UNITS = {"cool-perf-api.service", "cool-perf-queue.service", "cool-perf.service",
+             "cool-perf.timer"}
+
+
+def systemctl_show(units: list[str], props: list[str]) -> list[dict]:
+    if not units:
+        return []
+    try:
+        out = subprocess.run(["systemctl", "show", "--timestamp=unix", *units,
+                              *[f"--property={p}" for p in props]],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    blocks = []
+    for block in out.strip().split("\n\n"):
+        blocks.append(dict(line.split("=", 1) for line in block.splitlines() if "=" in line))
+    return blocks
+
+
+def when(value: str | None) -> str | None:
+    """A systemd time of --timestamp=unix, @<seconds>, in ISO form."""
+    if not value or not value.startswith("@"):
+        return None
+    return runqueue.iso(datetime.fromtimestamp(int(value[1:]), timezone.utc))
+
+
+def units_by_hand() -> list[dict]:
+    """The cool-perf units that someone started with systemd-run, running or waiting for their
+    time, as the units of DEPLOY-VM.md are."""
+    try:
+        out = subprocess.run(["systemctl", "list-units", "--all", "--plain", "--no-legend",
+                              "cool-perf-*"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    names = [line.split()[0] for line in out.splitlines() if line.split()]
+    names = [n for n in names if n not in OWN_UNITS]
+    found = []
+    for u in systemctl_show(names, ["Id", "ActiveState", "ActiveEnterTimestamp",
+                                    "NextElapseUSecRealtime", "Description"]):
+        if u.get("Id", "").endswith(".timer"):
+            if when(u.get("NextElapseUSecRealtime")):
+                found.append({"unit": u["Id"], "state": "waiting",
+                              "at": when(u.get("NextElapseUSecRealtime"))})
+        elif u.get("ActiveState") in ("active", "activating"):
+            found.append({"unit": u["Id"], "state": "running",
+                          "since": when(u.get("ActiveEnterTimestamp"))})
+    return found
+
+
+@app.get("/api/schedule")
+def schedule():
+    timer = (systemctl_show(["cool-perf.timer"], ["NextElapseUSecRealtime", "LastTriggerUSec"])
+             or [{}])[0]
+    service = (systemctl_show(["cool-perf.service"], ["ActiveState", "ActiveEnterTimestamp"])
+               or [{}])[0]
+    queue = (systemctl_show(["cool-perf-queue.service"], ["ActiveState"]) or [{}])[0]
+    return jsonify(
+        now=runqueue.iso(runqueue.now()),
+        main={"next": when(timer.get("NextElapseUSecRealtime")),
+              "last": when(timer.get("LastTriggerUSec")),
+              "running": service.get("ActiveState") in ("active", "activating"),
+              "since": when(service.get("ActiveEnterTimestamp"))},
+        runner=queue.get("ActiveState"),
+        jobs=runqueue.jobs(), by_hand=units_by_hand(),
+        domains=runqueue.DOMAINS, max_runs=runqueue.MAX_RUNS)
+
+
+@app.post("/api/schedule")
+def schedule_add():
+    if refused := foreign():
+        return refused
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return fail(400, "give change, runs and at")
+    at = None
+    if body.get("at"):
+        try:
+            at = datetime.fromisoformat(str(body["at"]).replace("Z", "+00:00"))
+        except ValueError:
+            return fail(400, "at is an ISO date and time")
+        if at.tzinfo is None:
+            return fail(400, "at needs its time zone")
+    try:
+        job = runqueue.add(str(body.get("change", "")), body.get("runs", 3), at)
+    except runqueue.Refused as e:
+        return fail(400, str(e))
+    app.logger.info("queued %s: change %s/%s, %s runs", job["id"], job["change"],
+                    job["patchset"], job["runs"])
+    return jsonify(job=job)
+
+
+@app.post("/api/schedule/<jobid>/cancel")
+def schedule_cancel(jobid: str):
+    if refused := foreign():
+        return refused
+    if not runqueue.JOBID.fullmatch(jobid):
+        return fail(400, "not a job id")
+    try:
+        return jsonify(job=runqueue.cancel(jobid))
+    except runqueue.Refused as e:
+        return fail(409, str(e))
+
+
+@app.get("/api/schedule/<jobid>/log")
+def schedule_log(jobid: str):
+    if not runqueue.JOBID.fullmatch(jobid):
+        return fail(400, "not a job id")
+    try:
+        with open(runqueue.log_path(jobid), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 64 * 1024))
+            text = f.read().decode(errors="replace")
+    except FileNotFoundError:
+        text = "" if runqueue.read(jobid) else None
+    if text is None:
+        return fail(404, f"there is no job {jobid}")
+    return Response(text, mimetype="text/plain")
 
 
 if __name__ == "__main__":

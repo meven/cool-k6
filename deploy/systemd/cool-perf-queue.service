@@ -1,0 +1,22 @@
+[Unit]
+Description=Run the Gerrit changes queued from the dashboard's Schedule tab
+Documentation=file://@REPO@/DEPLOY-VM.md
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+User=@USER@
+Group=@USER@
+EnvironmentFile=/etc/cool-perf.env
+WorkingDirectory=@REPO@
+ExecStart=/usr/bin/python3 @REPO@/deploy/run-queue
+Restart=on-failure
+# The settings of cool-perf.service, so that a job measures as a run of the timer does.
+# Stopping the service stops the job in progress with coolwsd, its kits and the WOPI host.
+KillMode=control-group
+# k6-flamegraph.py --cgroup creates a cgroup for its coolwsd under this one.
+Delegate=yes
+
+[Install]
+WantedBy=multi-user.target
