@@ -1,0 +1,3 @@
+# Only the dashboard pages are formatted; the k6 tests keep their own layout.
+/*
+!/templates/

@@ -32,6 +32,9 @@ with a systemd timer, without Jenkins.
 `cool-ci doctor` self-checks everything a run needs, and every tool takes
 `--help`.
 
+`npm run format` formats the pages in `templates/` with Prettier, and
+`npm run format:check` checks them.
+
 ## Test documents
 
 The corpus is generated, not committed: `documents/gen-docs.py` builds the

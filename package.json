@@ -7,6 +7,8 @@
   "scripts": {
     "build": "webpack",
     "server": "./server/index.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {
@@ -15,13 +17,14 @@
   "author": "Collabora Productivity",
   "license": "MPL-2.0",
   "dependencies": {
+    "@xmldom/xmldom": "^0.8.0",
     "debug": "~2.6.9",
     "express": "~5",
     "morgan": "~1.10",
-    "@xmldom/xmldom": "^0.8.0",
     "xpath": "0.0.32"
   },
   "devDependencies": {
+    "prettier": "3.9.10",
     "puppeteer": "^23",
     "webpack": "^5",
     "webpack-cli": "^6.0.1",
