@@ -488,8 +488,12 @@ def _perf_event_captures(event: str, perf_freq: str, sudo_perf: list[str],
     # pipe. Same dwarf + mmap options as the real capture, so the test exercises
     # the real path.
     proc = subprocess.run(
-        # -N: no symbols are read, so nothing goes into a build-id cache
-        [*sudo_perf, "perf", "record", "-N", f"-F{perf_freq}", "-e", event,
+        # Not -N: perf counts the samples in its build-id pass, and perf 7.3,
+        # which puts the build ids in the mmap events, skips that pass under -N
+        # and prints no "(N samples)". The capture's own cache takes the few
+        # binaries of the test instead.
+        [*sudo_perf, "perf", "--buildid-dir", str(out_dir / BUILDID_DIR),
+         "record", f"-F{perf_freq}", "-e", event,
          "--call-graph", "dwarf,32768", *perf_mmap, "-o", str(tmp),
          "--", "sh", "-c", "timeout 0.5 yes >/dev/null 2>&1"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
