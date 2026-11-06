@@ -42,6 +42,8 @@ admin:admin).
 """
 import argparse
 import base64
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -1000,6 +1002,16 @@ DASHBOARD = r"""<!doctype html>
   .tabs [role=tab]:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px;}
   .cmp{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:14px 16px;margin:14px 0 18px;}
   .cmp h2{font-size:15px;margin:0 0 10px;}
+  .runs-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0;}
+  .runs-bar button{font:inherit;font-size:13px;cursor:pointer;padding:4px 12px;border-radius:7px;
+    border:1px solid var(--worse);background:var(--surface);color:var(--ink);}
+  .runs-bar button:disabled{cursor:default;opacity:.5;border-color:var(--hair);}
+  .runs-bar [role=status]{font-size:12.5px;color:var(--ink-soft);}
+  .runs-bar [role=status].err{color:var(--worse);}
+  .runs table{width:auto;min-width:560px;} .runs td{white-space:nowrap;}
+  .runs td.l,.runs th{text-align:left;font-family:system-ui,sans-serif;}
+  .runs .ref{display:block;font-size:11.5px;color:var(--ink-faint);}
+  .runs tr.sel td{background:color-mix(in srgb,var(--worse) 12%,transparent);}
   .cmp-pick{display:grid;gap:8px;font-size:12.5px;}
   .cmp-pick .side{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;}
   .cmp-pick .side b{width:1.2em;}
@@ -1098,6 +1110,7 @@ DASHBOARD = r"""<!doctype html>
   <div class="tabs" role="tablist" id="tabs" aria-label="views" hidden>
     <button type="button" role="tab" id="tab-charts" aria-controls="view-charts" aria-selected="true">Charts</button>
     <button type="button" role="tab" id="tab-compare" aria-controls="view-compare" aria-selected="false" tabindex="-1">Compare builds</button>
+    <button type="button" role="tab" id="tab-runs" aria-controls="view-runs" aria-selected="false" tabindex="-1">Runs</button>
   </div>
   <div id="view-charts" role="tabpanel" aria-labelledby="tab-charts">
   <p class="sub">One chart per document and user pool, tracked across commits. The thick line is the instructions that the document kit executed, and the dashed grey line those of coolwsd. Left axis: load, feedback and edit times (ms), or the instructions (G) when the times are hidden. The buttons in the legend show or hide each group. Right axis: memory (MB), the document's own footprint, the browser heap, the page process, and the coolwsd process peak. Click a point for detail.</p>
@@ -1151,6 +1164,19 @@ high-water mark (VmHWM) of the capture's own coolwsd instead. The stacked bar be
     <div class="cmp-scroll"><table id="cmptab"></table></div>
   </section>
   </div>
+  <div id="view-runs" role="tabpanel" aria-labelledby="tab-runs" hidden>
+  <section class="cmp runs" aria-labelledby="runsh">
+    <h2 id="runsh">Runs</h2>
+    <p class="cmp-note">Every run on the charts, newest first, with the time it started (UTC).
+      The commits are those the run measured for the first time: since the previous run of
+      its branch, or since its base on main for a change. The data link opens the run's
+      folder, with its logs, metrics and flamegraphs. A deleted run leaves the store and the
+      charts.</p>
+    <div class="runs-bar"><button type="button" id="rundel" disabled>Delete selected runs</button>
+      <span id="runmsg" role="status"></span></div>
+    <div class="cmp-scroll"><table id="runtab"></table></div>
+  </section>
+  </div>
 </div>
 <div id="tip" role="tooltip" hidden></div>
 <div class="modal" id="modal" hidden><div class="modal-card" id="mcard" role="dialog" aria-modal="true">
@@ -1164,6 +1190,7 @@ high-water mark (VmHWM) of the capture's own coolwsd instead. The stacked bar be
 <script>
 const DATA = __DATA__;
 const COMPARE = __COMPARE__;
+const RESULTS = __RESULTS__;
 const SVGNS = "http://www.w3.org/2000/svg";
 const MS = [{m:"document_loaded_ms"},{m:"frame_ready_ms"},{m:"first_content_ms"},{m:"js_ready_ms"},{m:"page_load_ms"},{m:"edit_ms"},{m:"image_displayed_ms"},{m:"slide_duplicated_ms"}];
 const NAMES={instr_kit:"document kit instructions",instr_wsd:"coolwsd instructions",document_loaded_ms:"document loaded",frame_ready_ms:"frame ready",first_content_ms:"first content",js_ready_ms:"js ready",page_load_ms:"page load",edit_ms:"edit",image_displayed_ms:"image displayed",slide_duplicated_ms:"slide duplicated",cool_mem:"COOL memory",browser_mem:"browser heap",tab_mem:"page process",master_mem:"coolwsd peak"};
@@ -1364,7 +1391,7 @@ document.querySelector(".views").addEventListener("click",e=>{const b=e.target.c
 syncViews();
 
 // The address holds the branch of the charts and the two sides of the comparison.
-let VIEW=new URLSearchParams(location.hash.slice(1)).get("view")==="compare"?"compare":"charts";
+let VIEW=(v=>["compare","runs"].includes(v)?v:"charts")(new URLSearchParams(location.hash.slice(1)).get("view"));
 function writeHash(){const h=new URLSearchParams();if(VIEW!=="charts")h.set("view",VIEW);
   if(BRANCH!=="main")h.set("branch",BRANCH);
   if(CMP.a)h.set("a",CMP.a.from+(CMP.a.to?".."+CMP.a.to:""));
@@ -1480,7 +1507,7 @@ function renderCompare(){
     `Each value is the median over the runs of the side.`+
     (missing?` ${missing} test${missing===1?" was":"s were"} measured on one side only.`:"");}
 
-(function(){const n=Object.values(POINTS).reduce((a,l)=>a+l.length,0);if(n<2)return;
+(function(){const n=Object.values(POINTS).reduce((a,l)=>a+l.length,0);if(!n)return;
   // the tabs, with the arrow keys moving between them as a tab list does
   const tabs=[...document.querySelectorAll("#tabs [role=tab]")];
   const show=(v,focus,init)=>{VIEW=v;tabs.forEach(t=>{const on=t.id==="tab-"+v;
@@ -1500,6 +1527,65 @@ function renderCompare(){
     document.getElementById("cmp"+k+"2").addEventListener("change",()=>pick(k,"2"));fillSide(k);});
   document.getElementById("cmpall").addEventListener("change",renderCompare);
   renderCompare();})();
+
+// ---- the list of runs, and their deletion -------------------------------------------
+// One row per run, gathered from the points that the run left on every chart.
+const RUNS=(()=>{const m=new Map();
+  Object.values(DATA).forEach(rs=>rs.forEach(r=>{if(!r.runid)return;let o=m.get(r.runid);
+    if(!o)m.set(r.runid,o={runid:r.runid,ts:r.ts||"",branch:r.branch||"main",commit:r.commit,
+      base:r.base,ref:r.ref,tests:0,busy:false,flames:0});
+    if((r.ts||"")<o.ts)o.ts=r.ts||"";
+    o.tests++;if(r.machine&&r.machine.busy)o.busy=true;if(r.flamegraph)o.flames++;}));
+  return [...m.values()].sort((a,b)=>a.ts<b.ts?1:a.ts>b.ts?-1:0);})();
+// A change is read against its base on main, a run of a branch against the previous run of
+// that branch with another commit.
+function runRange(r){const to=shaOf(r.commit);
+  if(!to)return `<code>${esc(r.commit||"?")}</code>`;
+  let from=r.branch!=="main"?shaOf(r.base):null;
+  if(!from){const prev=RUNS.find(o=>o.branch===r.branch&&o.ts<r.ts&&shaOf(o.commit)&&shaOf(o.commit)!==to);
+    from=prev?shaOf(prev.commit):null;}
+  const label=r.commit.length>to.length?` <span class="ref">${esc(r.commit)}</span>`:"";
+  if(!from)return `<code>${esc(to.slice(0,12))}</code> first run${label}`;
+  const text=`${from.slice(0,12)}..${to.slice(0,12)}`;
+  return (COMPARE?`<a href="${esc(COMPARE+from+"..."+to)}" target="_blank" rel="noopener"><code>${esc(text)}</code></a>`
+                 :`<code>${esc(text)}</code>`)+label;}
+(function(){const tab=document.getElementById("runtab"),btn=document.getElementById("rundel"),
+    msg=document.getElementById("runmsg"),picked=new Set();
+  const say=(text,err)=>{msg.textContent=text;msg.classList.toggle("err",!!err);};
+  // The page can only delete when it comes from the store's web server, which runs the
+  // delete service beside it.
+  const served=location.protocol==="http:"||location.protocol==="https:";
+  if(!served)say("Open the dashboard from its web server to delete runs.");
+  function sync(){btn.disabled=!served||!picked.size;
+    btn.textContent=picked.size?`Delete ${picked.size} selected run${picked.size===1?"":"s"}`:"Delete selected runs";
+    tab.querySelectorAll("tbody tr").forEach(tr=>tr.classList.toggle("sel",picked.has(tr.dataset.run)));
+    const all=tab.querySelector("thead input");
+    if(all){all.checked=picked.size===RUNS.length;all.indeterminate=picked.size>0&&picked.size<RUNS.length;}}
+  tab.innerHTML=`<thead><tr><th><input type="checkbox" aria-label="select every run"></th>`+
+    `<th class="l">measured</th><th class="l">branch</th><th class="l">commits</th><th>tests</th>`+
+    `<th>flamegraphs</th><th class="l">data</th></tr></thead><tbody>`+
+    RUNS.map(r=>`<tr data-run="${esc(r.runid)}"><td><input type="checkbox" aria-label="select ${esc(r.runid)}"></td>`+
+      `<td class="l">${esc(day(r.ts))}${r.busy?` <span class="ref">busy machine</span>`:""}</td>`+
+      `<td class="l">${esc(r.branch)}${r.ref&&r.ref!==r.branch?`<span class="ref">${esc(r.ref)}</span>`:""}</td>`+
+      `<td class="l">${runRange(r)}</td><td>${r.tests}</td><td>${r.flames||""}</td>`+
+      `<td class="l"><a href="${esc(RESULTS+encodeURIComponent(r.runid)+"/")}">${esc(r.runid)}</a></td></tr>`).join("")+
+    `</tbody>`;
+  tab.querySelector("thead input").addEventListener("change",e=>{
+    RUNS.forEach(r=>e.target.checked?picked.add(r.runid):picked.delete(r.runid));
+    tab.querySelectorAll("tbody input").forEach(i=>{i.checked=e.target.checked;});sync();});
+  tab.querySelectorAll("tbody tr").forEach(tr=>tr.querySelector("input").addEventListener("change",e=>{
+    e.target.checked?picked.add(tr.dataset.run):picked.delete(tr.dataset.run);sync();}));
+  btn.addEventListener("click",async()=>{const ids=[...picked];
+    if(!confirm(`Delete ${ids.length} run${ids.length===1?"":"s"} and all their data from the store?\n\n${ids.join("\n")}`))return;
+    btn.disabled=true;say("Deleting...");
+    try{const res=await fetch("api/runs/delete",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({runids:ids})});
+      const body=await res.json().catch(()=>({}));
+      if(!res.ok)throw new Error(body.error||`${res.status} ${res.statusText}`);
+      say(`Deleted ${body.deleted.length} run${body.deleted.length===1?"":"s"}. Reloading...`);
+      location.reload();
+    }catch(e){say("The runs were not deleted: "+e.message,true);sync();}});
+  sync();})();
 
 const modal=document.getElementById("modal"),mb=document.getElementById("mb"),mt=document.getElementById("mt"),
   mmeta=document.getElementById("mmeta"),mfg=document.getElementById("mfg"),mcard=document.getElementById("mcard");
@@ -1699,7 +1785,19 @@ def compare_url_base() -> str:
     return f"https://github.com/{m.group(1)}/{m.group(2)}/compare/" if m else ""
 
 
-def write_dashboard(scen: dict, out: str) -> None:
+@contextlib.contextmanager
+def dashboard_lock(out: Path):
+    """Hold the lock of the dashboard at @p out while its runs are read and it is written.
+
+    The hourly run publishes into the store while a run can be deleted from the page, and
+    each rebuilds the same dashboard."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out.parent / f".{out.name}.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
+def write_dashboard(scen: dict, out: str, results_dir: Path | None = None) -> None:
     # Flamegraph paths are stored absolute; rewrite them relative to the html
     # file's directory so the links work from wherever the dashboard is opened.
     out_dir = Path(out).resolve().parent
@@ -1711,8 +1809,17 @@ def write_dashboard(scen: dict, out: str) -> None:
                 p["fg_aspect"] = _svg_aspect(Path(fg))
                 p["flamegraph"] = os.path.relpath(fg, out_dir).replace(os.sep, "/")
                 flames += 1
-    Path(out).write_text(DASHBOARD.replace("__DATA__", json.dumps(scen))
-                          .replace("__COMPARE__", json.dumps(compare_url_base())))
+    # The run folders are linked from the list of runs, relative to the html like the
+    # flamegraphs.
+    results_rel = ""
+    if results_dir is not None:
+        results_rel = os.path.relpath(results_dir.resolve(), out_dir).replace(os.sep, "/") + "/"
+    # A reader never sees half a page, since nginx serves it while a run is published.
+    tmp = Path(out).with_name(f".{Path(out).name}.tmp")
+    tmp.write_text(DASHBOARD.replace("__DATA__", json.dumps(scen))
+                   .replace("__COMPARE__", json.dumps(compare_url_base()))
+                   .replace("__RESULTS__", json.dumps(results_rel)))
+    os.replace(tmp, out)
     runs = sum(len(v) for v in scen.values())
     print(f"wrote {out}  ({len(scen)} chart(s), {runs} run(s), {flames} flamegraph link(s))")
 
@@ -1751,7 +1858,7 @@ def main() -> int:
 
     cases: list[dict] = []
     if args.demo:
-        scen = demo_history()
+        write_dashboard(demo_history(), args.out)
     else:
         results = Path(args.results)
         if args.run or args.flamegraphs:
@@ -1776,11 +1883,12 @@ def main() -> int:
                                              args.min_samples)
             if args.junit:
                 write_junit(Path(args.junit), f"cool-perf.{runid}", cases)
-        scen = collect(results)
-        if not scen:
-            return (f"no metrics.json found under {results}/ - run the suite first "
-                    f"(./browser-suite.py --run) or pass --demo")
-    write_dashboard(scen, args.out)
+        with dashboard_lock(Path(args.out)):
+            scen = collect(results)
+            if not scen:
+                return (f"no metrics.json found under {results}/ - run the suite first "
+                        f"(./browser-suite.py --run) or pass --demo")
+            write_dashboard(scen, args.out, results)
     # A pass where every document failed is a broken run, not an empty one, and
     # CI wants to hear about it. --strict makes any single failure fatal.
     failed = [c["name"] for c in cases if not c["ok"]]

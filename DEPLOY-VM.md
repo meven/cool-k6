@@ -27,6 +27,7 @@ Everything after that runs by itself.
 | `/var/lib/cool-perf/` | the results store: every published run, and `index.html`, the dashboard |
 | `/etc/cool-perf.env` | the configuration, see [Configuration](#configuration) |
 | `/etc/systemd/system/cool-perf.{service,timer}` | the hourly job |
+| `/etc/systemd/system/cool-perf-api.service` | deletes runs from the dashboard's Runs tab |
 | `/etc/nginx/sites-available/cool-perf.conf` | serves `/var/lib/cool-perf` on port 80 |
 | `/etc/sysctl.d/90-cool-perf.conf` | the two kernel settings the suite needs |
 | `/opt/FlameGraph/` | the scripts that turn perf output into flamegraphs |
@@ -262,7 +263,20 @@ incus config device add cool-perf dashboard proxy nat=true \
 ```
 
 The dashboard is then at `http://<host address>:8080/`. It has no login, so
-publish it only on a network where everyone may see it.
+publish it only on a network where everyone may see it: whoever opens it can
+also delete runs.
+
+**Deleting runs.** The Runs tab lists every run with its date, branch, the
+commits it measured and a link to its folder. Ticked runs are deleted with the
+button above the list: `cool-perf-api.service` runs `deploy/runs-api.py`, a
+small Flask service on `127.0.0.1:8090` (`COOL_PERF_API_PORT`), and nginx
+passes `/api/` to it. It removes the run folders and their JUnit reports, then
+rebuilds `index.html`. Its log is `journalctl -u cool-perf-api.service`.
+A copy of the store opened from disk cannot delete anything.
+
+Deleting the last run of main does not make the next hour measure that commit
+again, because `last-runs.json` still names it. Set
+`COOL_PERF_SKIP_UNCHANGED=0` for one run, or use `deploy/rerun`.
 
 **With no network access at all.** The dashboard is static, and it links every
 run with paths relative to itself, so a copy of the store works anywhere:
