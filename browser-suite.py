@@ -1561,6 +1561,15 @@ function runRange(r){const to=shaOf(r.commit);
   const text=`${from.slice(0,12)}..${to.slice(0,12)}`;
   return (COMPARE?`<a href="${esc(COMPARE+from+"..."+to)}" target="_blank" rel="noopener"><code>${esc(text)}</code></a>`
                  :`<code>${esc(text)}</code>`)+label;}
+// A run of a Gerrit change links its branch to the change and its ref to the patch set.
+const GERRIT="https://gerrit.collaboraoffice.com/c/online/+/";
+function gerritLink(text,path){
+  return `<a href="${esc(GERRIT+path)}" target="_blank" rel="noopener">${esc(text)}</a>`;}
+function runBranch(r){const b=/^gerrit-(\d+)$/.exec(r.branch);
+  const name=b?gerritLink(r.branch,b[1]):esc(r.branch);
+  if(!r.ref||r.ref===r.branch)return name;
+  const ps=/^refs\/changes\/\d+\/(\d+)\/(\d+)$/.exec(r.ref);
+  return name+`<span class="ref">${ps?gerritLink(r.ref,ps[1]+"/"+ps[2]):esc(r.ref)}</span>`;}
 (function(){const tab=document.getElementById("runtab"),btn=document.getElementById("rundel"),
     msg=document.getElementById("runmsg"),picked=new Set();
   const say=(text,err)=>{msg.textContent=text;msg.classList.toggle("err",!!err);};
@@ -1578,7 +1587,7 @@ function runRange(r){const to=shaOf(r.commit);
     `<th>flamegraphs</th><th class="l">data</th></tr></thead><tbody>`+
     RUNS.map(r=>`<tr data-run="${esc(r.runid)}"><td><input type="checkbox" aria-label="select ${esc(r.runid)}"></td>`+
       `<td class="l">${esc(day(r.ts))}${r.busy?` <span class="ref">busy machine</span>`:""}</td>`+
-      `<td class="l">${esc(r.branch)}${r.ref&&r.ref!==r.branch?`<span class="ref">${esc(r.ref)}</span>`:""}</td>`+
+      `<td class="l">${runBranch(r)}</td>`+
       `<td class="l">${runRange(r)}</td><td>${r.tests}</td><td>${r.flames||""}</td>`+
       `<td class="l"><a href="${esc(RESULTS+encodeURIComponent(r.runid)+"/")}">${esc(r.runid)}</a></td></tr>`).join("")+
     `</tbody>`;
