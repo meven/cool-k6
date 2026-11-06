@@ -22,11 +22,17 @@
 #   EXECUTABLE     - browser for Puppeteer      (default: chromium or google-chrome on PATH)
 #   NO_PERF=1, NO_BROWSER=1 - skip either profile
 #   PRUNE_PERF_DATA=1 - delete perf.data once flamegraph.svg is drawn
+#   SERVER_CPUS    - cores coolwsd, forkit and the kits may run on, e.g. 0-3 (default: all)
+#   SERVER_MEMORY  - memory they may use together, e.g. 8G, with no swap  (default: no limit)
+#                    Both need a cgroup v2 that this script may write, as under systemd-run with
+#                    Delegate=yes. k6, perf, the samplers and the browser user stay outside.
 #   METRICS_INTERVAL - seconds between two samples of coolwsd's /cool/getMetrics (default 10)
 #   METRICS_AUTH   - admin console user:password for /cool/getMetrics (default admin:admin)
 #
 # Outputs in OUT_DIR: coolwsd.log and wopi.log when started here, k6.log, capacity.json, perf.data
-# (coolwsd, forkit and kits), perf.log, flamegraph.svg, browser.cpuprofile
+# (coolwsd, forkit and kits), perf.log, flamegraph.svg, and with a server cgroup perf-stat.csv
+# (instructions, cycles and CPU time of the server every 5 s), perf-stat-total.txt and
+# server-cgroup.txt (its limits, peak memory and OOM kills), browser.cpuprofile
 # (open it in Chrome DevTools > Performance, or https://www.speedscope.app),
 # browser-latency.json (keystroke latency of the browser user, its summary also on the LATENCY:
 # line of browser.log), browser-memory.csv (the browser user's Chromium processes and JS heap),
@@ -97,13 +103,52 @@ if [ ! -s "$TLS_DIR/wopi-cert.pem" ] || [ ! -s "$TLS_DIR/ca-cert.pem" ]; then
 fi
 
 STARTED_PIDS=()
+# The cgroup that coolwsd, forkit and the kits run in when SERVER_CPUS or SERVER_MEMORY is set.
+SERVER_CG=
+if [ -n "${SERVER_CPUS:-}${SERVER_MEMORY:-}" ]; then
+    own=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)
+    [ -w "$own/cgroup.subtree_control" ] \
+        || die "SERVER_CPUS and SERVER_MEMORY need a delegated cgroup v2, run under systemd-run" \
+               "with -p Delegate=yes"
+    # cgroup v2 enables a controller for the children of a cgroup only when that cgroup holds no
+    # process itself, so the processes of this run move to a runner child first.
+    mkdir -p "$own/runner"
+    for pid in $(cat "$own/cgroup.procs"); do echo "$pid" > "$own/runner/cgroup.procs" 2>/dev/null || true; done
+    echo "+cpuset +memory" > "$own/cgroup.subtree_control" \
+        || die "cannot enable the cpuset and memory controllers in $own"
+    SERVER_CG=$own/server
+    mkdir -p "$SERVER_CG"
+    [ -z "${SERVER_CPUS:-}" ] || echo "$SERVER_CPUS" > "$SERVER_CG/cpuset.cpus"
+    if [ -n "${SERVER_MEMORY:-}" ]; then
+        echo "$SERVER_MEMORY" > "$SERVER_CG/memory.max"
+        echo 0 > "$SERVER_CG/memory.swap.max"
+    fi
+    echo "server cgroup $SERVER_CG: cores ${SERVER_CPUS:-all}, memory ${SERVER_MEMORY:-unlimited}"
+fi
+
 stop_started() {
-    local pid
+    local pid i
     for pid in "${STARTED_PIDS[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
     STARTED_PIDS=()
+    if [ -n "$SERVER_CG" ] && [ -d "$SERVER_CG" ]; then
+        # How close the server came to its limit, and how often the kernel killed in it.
+        { echo "cpuset.cpus: $(cat "$SERVER_CG/cpuset.cpus")"
+          echo "memory.max: $(cat "$SERVER_CG/memory.max")"
+          echo "memory.peak: $(cat "$SERVER_CG/memory.peak" 2>/dev/null || echo unknown)"
+          cat "$SERVER_CG/memory.events"; } > "$OUT_DIR/server-cgroup.txt" 2>/dev/null || true
+        for i in $(seq 30); do
+            [ -s "$SERVER_CG/cgroup.procs" ] || break
+            [ "$i" -lt 15 ] || kill -KILL $(cat "$SERVER_CG/cgroup.procs") 2>/dev/null || true
+            sleep 1
+        done
+        rmdir "$SERVER_CG" 2>/dev/null || true
+    fi
 }
 trap stop_started EXIT
 
+if [ -n "$SERVER_CG" ] && cool_up; then
+    die "a coolwsd already answers at $WOPI_URL, outside the limits of SERVER_CPUS and SERVER_MEMORY"
+fi
 if ! cool_up; then
     [ -n "${COOLWSD_DIR:-}" ] || die "no coolwsd answering at $WOPI_URL; set COOLWSD_DIR to start one"
     [ -x "$COOLWSD_DIR/coolwsd" ] || die "$COOLWSD_DIR/coolwsd is missing or not built"
@@ -117,7 +162,8 @@ if ! cool_up; then
     cool_cmd+=" --o:storage.ssl.ca_file_path=$TLS_DIR/ca-cert.pem"
     echo "starting coolwsd: $cool_cmd"
     # shellcheck disable=SC2086 # the command line is split into its words on purpose
-    (cd "$COOLWSD_DIR" && exec setsid $cool_cmd) > "$OUT_DIR/coolwsd.log" 2>&1 < /dev/null &
+    (if [ -n "$SERVER_CG" ]; then echo "$BASHPID" > "$SERVER_CG/cgroup.procs"; fi
+     cd "$COOLWSD_DIR" && exec setsid $cool_cmd) > "$OUT_DIR/coolwsd.log" 2>&1 < /dev/null &
     STARTED_PIDS+=($!)
     wait_up cool_up 90 || die "coolwsd did not come up, see $OUT_DIR/coolwsd.log"
 fi
@@ -175,6 +221,8 @@ fi
 # perf copies every binary it samples into a build-id cache, ~/.debug by default, which nothing
 # empties: about 1.2 GB of engine library per build. The run keeps its own, deleted at the end.
 BUILDID_DIR=$OUT_DIR/buildid
+# The perf stat of the server, by its command line, which stop_perf ends.
+PERF_STAT_PATTERN="perf stat .* -o $OUT_DIR/perf-stat.csv"
 
 # Delete files that perf wrote, which belong to root under PERF="sudo perf".
 rm_perf_files() {
@@ -198,6 +246,16 @@ if [ -z "${NO_PERF:-}" ]; then
     kill -0 "$PERF_PID" 2>/dev/null || die "perf did not start, see $OUT_DIR/perf.log"
 fi
 
+# The instructions, cycles and CPU time of the whole server, every 5 s, so that each step of the
+# staircase can be read off. Counting by cgroup takes in every kit, whenever it was forked, and
+# needs the server cgroup of SERVER_CPUS or SERVER_MEMORY.
+if [ -z "${NO_PERF:-}" ] && [ -n "$SERVER_CG" ]; then
+    echo "perf stat: counting the server cgroup every 5 s into perf-stat.csv"
+    LC_ALL=C "${PERF_CMD[@]}" stat -e instructions,cycles,task-clock -a \
+        -G "${SERVER_CG#/sys/fs/cgroup/}" -I 5000 -x , -o "$OUT_DIR/perf-stat.csv" \
+        >> "$OUT_DIR/perf.log" 2>&1 &
+fi
+
 BROWSER_PID=
 if [ -z "${NO_BROWSER:-}" ]; then
     echo "browser user: starts ${BROWSER_AT}s into the run"
@@ -213,6 +271,9 @@ fi
 # perf record finishes its file on SIGTERM. The perf of this run writes under OUT_DIR, which
 # finds it under sudo too, where a signal to sudo from its own process group is not relayed.
 stop_perf() {
+    local stat_signal=(pkill -INT -f)
+    if [ "${PERF_CMD[0]}" = sudo ]; then stat_signal=(sudo "${stat_signal[@]}"); fi
+    "${stat_signal[@]}" "$PERF_STAT_PATTERN" 2>/dev/null || true
     [ -n "$PERF_PID" ] || return 0
     local pattern="perf record .* -o $OUT_DIR/" signal=(pkill -TERM -f) i
     if [ "${PERF_CMD[0]}" = sudo ]; then signal=(sudo "${signal[@]}"); fi
@@ -338,6 +399,13 @@ if [ -z "${NO_PERF:-}" ] && [ -s "$OUT_DIR/perf.data" ]; then
     [ -z "${PRUNE_PERF_DATA:-}" ] || rm_perf_files "$OUT_DIR/perf.data" "$OUT_DIR/perf.data.old"
 fi
 rm_perf_files "$BUILDID_DIR"
+
+if [ -s "$OUT_DIR/perf-stat.csv" ]; then
+    awk -F, '$4 ~ /instructions/ { i += $2 } $4 ~ /cycles/ { c += $2 }
+             END { if (c) printf "server: %.1f G instructions, %.1f G cycles, IPC %.2f\n",
+                                 i / 1e9, c / 1e9, i / c }' "$OUT_DIR/perf-stat.csv" \
+        | tee "$OUT_DIR/perf-stat-total.txt"
+fi
 
 echo
 ls -la "$OUT_DIR"
