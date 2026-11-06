@@ -1,5 +1,5 @@
 [Unit]
-Description=Delete runs of the performance dashboard from its Runs tab
+Description=Delete and queue runs of the performance dashboard from its Schedule tab
 Documentation=file://@REPO@/DEPLOY-VM.md
 After=network.target
 

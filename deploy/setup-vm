@@ -175,7 +175,7 @@ systemctl daemon-reload
 # deploy/bootstrap has built the tree a run could only fail.
 systemctl enable cool-perf.timer
 systemctl start cool-perf.timer
-# The Runs tab deletes runs through this service.
+# The Schedule tab deletes and queues runs through this service.
 systemctl enable cool-perf-api.service
 systemctl restart cool-perf-api.service
 # The Schedule tab queues runs of Gerrit changes, which this service runs.

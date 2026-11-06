@@ -514,7 +514,9 @@ document.querySelector(".views").addEventListener("click", (e) => {
 syncViews();
 
 // The address holds the branch of the charts and the two sides of the comparison.
-let VIEW = ((v) => (["compare", "runs", "schedule"].includes(v) ? v : "charts"))(
+// The history of the runs was a Runs tab of its own, so an old #view=runs opens the schedule.
+let VIEW = ((v) =>
+  v === "runs" ? "schedule" : ["compare", "schedule"].includes(v) ? v : "charts")(
   new URLSearchParams(location.hash.slice(1)).get("view"),
 );
 function writeHash() {
