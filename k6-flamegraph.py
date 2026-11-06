@@ -300,6 +300,18 @@ def parse_args() -> argparse.Namespace:
              "already running before this invocation. "
              "(env STOP_COOLWSD=1/0)",
     )
+    p.add_argument(
+        "--defer-render",
+        action="store_true",
+        help="stop after the capture and leave the flamegraph to a later "
+             "--render-only run, so that a caller can draw several captures "
+             "at once after its tests",
+    )
+    p.add_argument(
+        "--render-only",
+        action="store_true",
+        help="draw the flamegraph of the --defer-render capture in --out-dir",
+    )
     return p.parse_args()
 
 
@@ -566,8 +578,71 @@ class Phases:
         print(f"[phase] {name}: {took:.1f}s", flush=True)
 
 
+RENDER_JOB = "render-job.json"
+
+
+def render_capture(out_dir: Path, perf_cmd: list[str], wsd_pids: list[str],
+                   phases: "Phases") -> None:
+    """Draw out_dir/flamegraph.svg from out_dir/perf.data, and print the share of the
+    kit and of the unresolved frames."""
+    print("rendering flamegraph ...")
+    # perf script | stackcollapse-perf.pl --pid | tag_by_process | flamegraph.pl --cp
+    p1 = subprocess.Popen(
+        # +pid: the default fields carry the thread id only
+        [*perf_cmd, "script", "--no-inline", "-F", "+pid",
+         "-i", str(out_dir / "perf.data")],
+        stdout=subprocess.PIPE,
+    )
+    p2 = subprocess.Popen(["stackcollapse-perf.pl", "--pid"],
+                          stdin=p1.stdout, stdout=subprocess.PIPE, text=True)
+    p1.stdout.close()
+    stacks = list(tag_by_process(p2.stdout, set(wsd_pids)))
+    render_flamegraph(stacks, out_dir / "flamegraph.svg")
+    for p in (p1, p2):
+        p.wait()
+    phases.end("perf script and drawing the flamegraph")
+
+    # Post-render sanity check: how much of the capture went to the kit, and how much did not
+    # resolve. A flamegraph dominated by [unknown] is the jailed-kit case under system-wide or
+    # cgroup capture and is not useful. Both figures come from the stacks drawn above.
+    kit_pct, unknown_pct = stack_shares(stacks)
+    print(f"flamegraph: {out_dir}/flamegraph.svg  "
+          f"(kit {kit_pct:.0f}%, unresolved {unknown_pct:.0f}%)")
+    if unknown_pct >= 50.0:
+        print(f"WARNING: {unknown_pct:.0f}% of samples are [unknown] - "
+              "symbols did not resolve. This is the jailed-kit case under "
+              "system-wide/cgroup capture; use pid mode (drop --cgroup) "
+              "and profile a single document for a symbolised flamegraph.",
+              file=sys.stderr)
+    phases.end("sanity check of the stacks")
+
+
+def render_deferred(out_dir: Path) -> int:
+    """Draw the flamegraph of a capture made with --defer-render, and add the time it
+    took to the phases in its metrics.json."""
+    job_path = out_dir / RENDER_JOB
+    try:
+        job = json.loads(job_path.read_text())
+    except (OSError, ValueError) as e:
+        print(f"no render job in {out_dir}: {e}", file=sys.stderr)
+        return 1
+    phases = Phases()
+    render_capture(out_dir, job["perf_cmd"], job["wsd_pids"], phases)
+    metrics_path = out_dir / "metrics.json"
+    try:
+        metrics = json.loads(metrics_path.read_text())
+        metrics.setdefault("phases_s", {}).update(phases.seconds)
+        metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
+    except (OSError, ValueError):
+        pass
+    job_path.unlink()
+    return 0 if (out_dir / "flamegraph.svg").is_file() else 1
+
+
 def main() -> int:
     args = parse_args()
+    if args.render_only:
+        return render_deferred(Path(args.out_dir))
     start_ts = time.monotonic()
     phases = Phases()
 
@@ -1121,36 +1196,12 @@ def main() -> int:
             print(f"{runner} test failed (rc={runner_rc}); see {out_dir}/browser.log",
                   file=sys.stderr)
 
-        print("rendering flamegraph ...")
-        # perf script | stackcollapse-perf.pl --pid | tag_by_process | flamegraph.pl --cp
-        p1 = subprocess.Popen(
-            # +pid: the default fields carry the thread id only
-            [*perf_cmd, "script", "--no-inline", "-F", "+pid",
-             "-i", str(perf_data)],
-            stdout=subprocess.PIPE,
-        )
-        p2 = subprocess.Popen(["stackcollapse-perf.pl", "--pid"],
-                              stdin=p1.stdout, stdout=subprocess.PIPE, text=True)
-        p1.stdout.close()
-        stacks = list(tag_by_process(p2.stdout, set(mem_wsd_pids)))
-        render_flamegraph(stacks, out_dir / "flamegraph.svg")
-        for p in (p1, p2):
-            p.wait()
-        phases.end("perf script and drawing the flamegraph")
-
-        # Post-render sanity check: how much of the capture went to the kit, and how much did not
-        # resolve. A flamegraph dominated by [unknown] is the jailed-kit case under system-wide or
-        # cgroup capture and is not useful. Both figures come from the stacks drawn above.
-        kit_pct, unknown_pct = stack_shares(stacks)
-        print(f"flamegraph: {out_dir}/flamegraph.svg  "
-              f"(kit {kit_pct:.0f}%, unresolved {unknown_pct:.0f}%)")
-        if unknown_pct >= 50.0:
-            print(f"WARNING: {unknown_pct:.0f}% of samples are [unknown] - "
-                  "symbols did not resolve. This is the jailed-kit case under "
-                  "system-wide/cgroup capture; use pid mode (drop --cgroup) "
-                  "and profile a single document for a symbolised flamegraph.",
-                  file=sys.stderr)
-        phases.end("sanity check of the stacks")
+        if args.defer_render:
+            (out_dir / RENDER_JOB).write_text(json.dumps(
+                {"perf_cmd": perf_cmd, "wsd_pids": mem_wsd_pids}) + "\n")
+            print(f"flamegraph: deferred, run --render-only --out-dir {out_dir}")
+        else:
+            render_capture(out_dir, perf_cmd, mem_wsd_pids, phases)
 
         total_elapsed = int(time.monotonic() - start_ts)
         print()

@@ -44,6 +44,7 @@ admin:admin).
 import argparse
 import base64
 import contextlib
+import concurrent.futures
 import fcntl
 import json
 import os
@@ -324,6 +325,34 @@ def capture_samples(out_abs: Path) -> int | None:
         return None
 
 
+def render_all(out_dirs: list[Path]) -> None:
+    """Draw the flamegraphs of deferred captures, several at a time. Each one is a
+    perf script piped into stackcollapse-perf.pl, two processes of one thread each.
+    COOL_PERF_RENDER_JOBS sets how many run at once."""
+    if not out_dirs:
+        return
+    jobs = int(os.environ.get("COOL_PERF_RENDER_JOBS")
+               or max(1, min(6, (os.cpu_count() or 2) // 2)))
+    print(f"flamegraphs: drawing {len(out_dirs)}, {jobs} at a time ...")
+    start = time.monotonic()
+
+    def render(out_abs: Path) -> None:
+        proc = subprocess.run(
+            [sys.executable, "k6-flamegraph.py", "--render-only",
+             "--out-dir", str(out_abs)],
+            cwd=str(ROOT), text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT)
+        with (out_abs / "harness.log").open("a") as log:
+            log.write(proc.stdout)
+        drawn = [l for l in proc.stdout.splitlines() if l.startswith("flamegraph: ")]
+        print(f"  {out_abs.name}: " + (drawn[-1].rpartition("  ")[2] if drawn
+                                         else f"failed, see {out_abs}/harness.log"))
+
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+        list(pool.map(render, out_dirs))
+    print(f"flamegraphs: drawn in {time.monotonic() - start:.0f}s")
+
+
 def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
                         commit: str | None = None,
                         prune_perf_data: bool = False,
@@ -358,6 +387,7 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
     failed = []
     outcomes = []
     captures = [(app, doc, users) for app, doc in documents() for users in users_list]
+    ran = []
     for app, doc, users in captures:
             name = f"{app}-{doc}" + (f"-{users}u" if users > 1 else "")
             out_rel = (results_dir / runid / "flamegraph" / name).as_posix()
@@ -367,7 +397,7 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
             # found, so its counts miss a varying part of the load.
             cmd = [sys.executable, "k6-flamegraph.py", test_script(app, doc),
                    "--out-dir", out_rel, "--coolwsd-dir", coolwsd_dir,
-                   "--new-instance", "--cgroup"]
+                   "--new-instance", "--cgroup", "--defer-render"]
             # Tee the harness output into the run directory. Without this a
             # failed document left only coolwsd.log behind, which says nothing
             # about why the harness itself gave up.
@@ -395,42 +425,49 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
                     sys.stdout.write(line)
                     log.write(line)
                 rc = proc.wait()
-            svg = out_abs / "flamegraph.svg"
-            samples = capture_samples(out_abs)
-            thin = (min_samples > 0 and samples is not None
-                    and samples < min_samples)
-            ok = rc == 0 and svg.is_file() and not thin
-            if samples is not None:
-                print(f"  {samples} perf samples")
-            if not ok:
-                failed.append(name)
-                if rc != 0:
-                    why = f"exit {rc}"
-                elif not svg.is_file():
-                    why = "no flamegraph.svg was written"
-                else:
-                    why = f"only {samples} perf samples, under --min-samples {min_samples}"
-                print(f"  flamegraph {name} failed ({why}), see "
-                      f"{out_rel}/harness.log", file=sys.stderr)
-            elif prune_perf_data:
-                # perf.data is by far the biggest thing a capture leaves (tens of
-                # MB per document) and the SVG is what gets read afterwards, so a
-                # durable history keeps the graph and drops the raw samples.
-                pd = out_abs / "perf.data"
-                if pd.is_file():
-                    freed = pd.stat().st_size
-                    pd.unlink()
-                    print(f"  pruned perf.data ({freed // 1048576} MB)")
-            if prune_perf_data:
-                # The binaries that perf copied for its symbols, a GB or more once
-                # the engine is in, which no graph needs once it is drawn. A failed
-                # capture keeps its perf.data for a look, and loses these too.
-                shutil.rmtree(out_abs / "buildid", ignore_errors=True)
-            outcomes.append({"name": name, "ok": ok, "rc": rc,
-                             "out_rel": out_rel,
-                             "samples": samples,
-                             "why": None if ok else why,
-                             "log": f"{out_rel}/harness.log"})
+            ran.append((name, out_rel, out_abs, rc))
+
+    # The flamegraphs are drawn after the last test, so that the work of perf script,
+    # which unwinds every sample, never runs beside a measurement.
+    render_all([out_abs for _, _, out_abs, rc in ran if rc == 0])
+
+    for name, out_rel, out_abs, rc in ran:
+        svg = out_abs / "flamegraph.svg"
+        samples = capture_samples(out_abs)
+        thin = (min_samples > 0 and samples is not None
+                and samples < min_samples)
+        ok = rc == 0 and svg.is_file() and not thin
+        if samples is not None:
+            print(f"  {name}: {samples} perf samples")
+        if not ok:
+            failed.append(name)
+            if rc != 0:
+                why = f"exit {rc}"
+            elif not svg.is_file():
+                why = "no flamegraph.svg was written"
+            else:
+                why = f"only {samples} perf samples, under --min-samples {min_samples}"
+            print(f"  flamegraph {name} failed ({why}), see "
+                  f"{out_rel}/harness.log", file=sys.stderr)
+        elif prune_perf_data:
+            # perf.data is by far the biggest thing a capture leaves (tens of
+            # MB per document) and the SVG is what gets read afterwards, so a
+            # durable history keeps the graph and drops the raw samples.
+            pd = out_abs / "perf.data"
+            if pd.is_file():
+                freed = pd.stat().st_size
+                pd.unlink()
+                print(f"  pruned perf.data ({freed // 1048576} MB)")
+        if prune_perf_data:
+            # The binaries that perf copied for its symbols, a GB or more once
+            # the engine is in, which no graph needs once it is drawn. A failed
+            # capture keeps its perf.data for a look, and loses these too.
+            shutil.rmtree(out_abs / "buildid", ignore_errors=True)
+        outcomes.append({"name": name, "ok": ok, "rc": rc,
+                         "out_rel": out_rel,
+                         "samples": samples,
+                         "why": None if ok else why,
+                         "log": f"{out_rel}/harness.log"})
     done = len(captures) - len(failed)
     print(f"flamegraphs: {done}/{len(captures)} captured"
           + (f", failed: {', '.join(failed)}" if failed else ""))

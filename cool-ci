@@ -43,6 +43,8 @@ Configuration is all environment, so a Jenkins job needs no arguments:
                        profiled captures give the times, memory and instructions)
     COOL_PERF_MIN_FREE_GB    a run does not start with less free space than this on a
                              filesystem that it writes to (default 5)
+    COOL_PERF_RENDER_JOBS    how many flamegraphs are drawn at once after the last
+                             capture (default half the cores, at most 6)
 
 See CI-JENKINS.md for the pipeline and the machine setup.
 """
