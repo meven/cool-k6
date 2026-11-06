@@ -250,10 +250,12 @@ def parse_args() -> argparse.Namespace:
         default=env_default("OUT_DIR", "profile-out"),
         help="output directory (env OUT_DIR)",
     )
+    # A 10 s test at 999 Hz gives a flamegraph of about 1750 samples. An odd rate keeps the
+    # sampling out of step with the timers of the kernel and of the processes.
     p.add_argument(
         "--perf-freq",
         type=int,
-        default=int(env_default("PERF_FREQ", "200")),
+        default=int(env_default("PERF_FREQ", "999")),
         help="perf sampling frequency Hz (env PERF_FREQ)",
     )
     p.add_argument(
