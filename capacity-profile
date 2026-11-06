@@ -1,0 +1,345 @@
+#!/bin/bash
+# Run cool-capacity-test.js and profile it: a perf flamegraph of coolwsd and every kit, plus a V8
+# CPU profile of one real browser user that joins at the start of the last plateau.
+#
+# A coolwsd or WOPI host that does not answer yet is started, and stopped again at the end: coolwsd
+# from COOLWSD_DIR with the command line cool-use-build derives (no make, logging at warning), the
+# WOPI host with npm run server. One perf records coolwsd, the forkit and the kits already forked;
+# perf record -p follows the processes these fork later, so it also records the kits the forkit
+# spawns during the run and their background saves.
+#
+# Env (the CAP_* variables of cool-capacity-test.js are passed through to k6):
+#   COOLWSD_DIR    - online checkout to start coolwsd from, when none is running
+#   OUT_DIR        - output directory              (default results/capacity-<UTC time>)
+#   WOPI_URL       - COOL server                   (default https://localhost:9980/)
+#   WOPI_HOST      - WOPI host                     (default https://localhost:3000/)
+#   PERF           - perf command, e.g. "sudo perf" (default perf)
+#   PERF_FREQ      - sampling frequency in Hz      (default 49)
+#   PERF_CALLGRAPH - perf --call-graph value       (default dwarf,16384)
+#   MEM_FLOOR_MB   - stop the run when MemAvailable drops under this (default 3072, 0 to disable)
+#   BROWSER_AT     - seconds into the run the browser user starts (default: start of the last hold)
+#   TYPE_REPEATS   - sentences the browser user types (default 10)
+#   EXECUTABLE     - browser for Puppeteer      (default: chromium or google-chrome on PATH)
+#   NO_PERF=1, NO_BROWSER=1 - skip either profile
+#   PRUNE_PERF_DATA=1 - delete perf.data once flamegraph.svg is drawn
+#   METRICS_INTERVAL - seconds between two samples of coolwsd's /cool/getMetrics (default 10)
+#   METRICS_AUTH   - admin console user:password for /cool/getMetrics (default admin:admin)
+#
+# Outputs in OUT_DIR: coolwsd.log and wopi.log when started here, k6.log, capacity.json, perf.data
+# (coolwsd, forkit and kits), perf.log, flamegraph.svg, browser.cpuprofile
+# (open it in Chrome DevTools > Performance, or https://www.speedscope.app),
+# browser-latency.json (keystroke latency of the browser user, its summary also on the LATENCY:
+# line of browser.log), browser-memory.csv (the browser user's Chromium processes and JS heap),
+# server-memory.csv (coolwsd, forkit and kits from /cool/getMetrics, plus the host's available
+# memory), metrics.prom (every /cool/getMetrics sample in full), timeline.csv, kit-cpu.csv and
+# events.csv (timeline-sampler.py: host memory, swap and CPU, the CPU of each COOL process, and the
+# background saves, every 0.5 s), browser.log. latency-spikes.py OUT_DIR lines the slow edits that
+# k6 logs on its EDIT lines up with that timeline.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")" && pwd)
+OUT_DIR=${OUT_DIR:-$ROOT/results/capacity-$(date -u +%Y%m%dT%H%M%SZ)}
+WOPI_URL=${WOPI_URL:-https://localhost:9980/}
+WOPI_HOST=${WOPI_HOST:-https://localhost:3000/}
+read -r -a PERF_CMD <<< "${PERF:-perf}"
+PERF_FREQ=${PERF_FREQ:-49}
+PERF_CALLGRAPH=${PERF_CALLGRAPH:-dwarf,16384}
+MEM_FLOOR_MB=${MEM_FLOOR_MB:-3072}
+TYPE_REPEATS=${TYPE_REPEATS:-10}
+EXECUTABLE=${EXECUTABLE:-$(command -v chromium || command -v google-chrome || true)}
+TEST=$ROOT/dist/cool-capacity-test.js
+
+die() { echo "capacity-profile: $*" >&2; exit 1; }
+
+# A k6 duration ("90s", "1m", "1.5m") in whole seconds.
+seconds() {
+    awk -v d="$1" 'BEGIN {
+        n = d + 0; u = d; sub(/^[0-9.]+/, "", u)
+        f = (u == "ms") ? 0.001 : (u == "m") ? 60 : (u == "h") ? 3600 : 1
+        printf "%d", n * f }'
+}
+
+cool_up() { curl -skf -o /dev/null --max-time 3 "${WOPI_URL}hosting/discovery"; }
+wopi_up() { curl -skf -o /dev/null --max-time 3 "${WOPI_HOST}wopi/files/11"; }
+
+# Polls a check function once a second, up to $2 seconds.
+wait_up() {
+    local i
+    for ((i = 0; i < $2; i++)); do "$1" && return 0; sleep 1; done
+    return 1
+}
+
+[ -f "$TEST" ] || die "$TEST is missing, run npm run build first"
+mkdir -p "$OUT_DIR"
+chmod o+w "$OUT_DIR"
+echo "output: $OUT_DIR"
+
+# The WOPI host's certificate is signed by a local CA that coolwsd is told to trust, so coolwsd
+# verifies the host as it would in production. Both are created the first time they are missing.
+TLS_DIR=$ROOT/server/tls
+if [ ! -s "$TLS_DIR/wopi-cert.pem" ] || [ ! -s "$TLS_DIR/ca-cert.pem" ]; then
+    echo "creating the rig CA and the WOPI host certificate in $TLS_DIR"
+    mkdir -p "$TLS_DIR"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 825 -subj "/CN=COOL perf rig CA" \
+        -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -keyout "$TLS_DIR/ca-key.pem" -out "$TLS_DIR/ca-cert.pem" 2>/dev/null \
+        || die "openssl could not create the CA"
+    openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" \
+        -keyout "$TLS_DIR/wopi-key.pem" -out "$TLS_DIR/wopi.csr" 2>/dev/null \
+        || die "openssl could not create the WOPI host key"
+    openssl x509 -req -in "$TLS_DIR/wopi.csr" -CA "$TLS_DIR/ca-cert.pem" -CAkey "$TLS_DIR/ca-key.pem" \
+        -CAcreateserial -days 825 -out "$TLS_DIR/wopi-cert.pem" \
+        -extfile <(printf '%s\n' "basicConstraints=CA:FALSE" "extendedKeyUsage=serverAuth" \
+                                 "subjectAltName=DNS:localhost,IP:127.0.0.1") 2>/dev/null \
+        || die "openssl could not sign the WOPI host certificate"
+    rm -f "$TLS_DIR/wopi.csr"
+fi
+
+STARTED_PIDS=()
+stop_started() {
+    local pid
+    for pid in "${STARTED_PIDS[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
+    STARTED_PIDS=()
+}
+trap stop_started EXIT
+
+if ! cool_up; then
+    [ -n "${COOLWSD_DIR:-}" ] || die "no coolwsd answering at $WOPI_URL; set COOLWSD_DIR to start one"
+    [ -x "$COOLWSD_DIR/coolwsd" ] || die "$COOLWSD_DIR/coolwsd is missing or not built"
+    cool_cmd=$(COOLWSD_DIR=$COOLWSD_DIR python3 "$ROOT/cool-use-build" run-cmd) \
+        || die "cool-use-build run-cmd failed"
+    # A fixed port for k6, and trace logging off: it takes cpu from what is being measured.
+    cool_cmd=$(sed -e 's/--find-free-port//' -e 's/logging\.level=[a-z]*/logging.level=warning/' \
+                   -e 's/logging_ui_cmd\.file\[@enable\]=true/logging_ui_cmd.file[@enable]=false/' \
+                   <<< "$cool_cmd")
+    # A release build verifies the WOPI host (SSL_VERIFY in configure.ac), against this CA.
+    cool_cmd+=" --o:storage.ssl.ca_file_path=$TLS_DIR/ca-cert.pem"
+    echo "starting coolwsd: $cool_cmd"
+    # shellcheck disable=SC2086 # the command line is split into its words on purpose
+    (cd "$COOLWSD_DIR" && exec setsid $cool_cmd) > "$OUT_DIR/coolwsd.log" 2>&1 < /dev/null &
+    STARTED_PIDS+=($!)
+    wait_up cool_up 90 || die "coolwsd did not come up, see $OUT_DIR/coolwsd.log"
+fi
+
+if ! wopi_up; then
+    wopi_port=$(sed -E 's#^[a-z]+://[^:/]+:?([0-9]*).*#\1#' <<< "$WOPI_HOST")
+    echo "starting the WOPI host on port ${wopi_port:-3000}"
+    # It fetches coolwsd's discovery for the browser user, and coolwsd's certificate is self-signed.
+    (cd "$ROOT" && PORT=${wopi_port:-3000} SSL_KEY_FILE=$TLS_DIR/wopi-key.pem \
+        SSL_CRT_FILE=$TLS_DIR/wopi-cert.pem NODE_TLS_REJECT_UNAUTHORIZED=0 \
+        exec setsid npm run server) \
+        > "$OUT_DIR/wopi.log" 2>&1 < /dev/null &
+    STARTED_PIDS+=($!)
+    wait_up wopi_up 30 || die "the WOPI host did not come up, see $OUT_DIR/wopi.log"
+fi
+
+# A WOPI host that was already running may present another certificate, which coolwsd refuses.
+wopi_hostport=$(sed -E 's#^[a-z]+://([^/]+).*#\1#' <<< "$WOPI_HOST")
+openssl s_client -connect "$wopi_hostport" -servername localhost -CAfile "$TLS_DIR/ca-cert.pem" \
+    -verify_return_error < /dev/null > /dev/null 2>&1 \
+    || echo "warning: the WOPI host at $WOPI_HOST does not present a certificate from" \
+            "$TLS_DIR/ca-cert.pem, coolwsd will refuse it" >&2
+
+if [ -z "${NO_PERF:-}" ]; then
+    command -v stackcollapse-perf.pl >/dev/null && command -v flamegraph.pl >/dev/null \
+        || die "stackcollapse-perf.pl and flamegraph.pl must be on PATH (FlameGraph), or set NO_PERF=1"
+    COOLWSD_PID=$(pgrep -o -x coolwsd) || die "no coolwsd process"
+    FORKIT_PID=$(pgrep -o -x forkit) || die "no forkit process"
+    if [ "$(cat /proc/sys/kernel/perf_event_paranoid)" -gt 1 ] && [ "${PERF_CMD[0]}" != sudo ]; then
+        echo "perf_event_paranoid is above 1: perf will likely fail, set PERF=\"sudo perf\"" \
+             "or lower it with: echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid" >&2
+    fi
+fi
+
+if command -v k6 >/dev/null; then
+    K6=(k6 run --no-color "$TEST")
+else
+    # The repo's k6-run passes --vus, which replaces the test's staircase, and k6-wrap does not
+    # forward CAP_*, so the container is started here.
+    CAP_ENV=()
+    for v in $(compgen -e | grep '^CAP_' || true); do CAP_ENV+=(-e "$v"); done
+    K6=(docker run --network host --rm -i -v "$ROOT:/app:Z" -v "$OUT_DIR:/out:Z" -w /out
+        -e WOPI_URL="$WOPI_URL" -e WOPI_HOST="$WOPI_HOST" "${CAP_ENV[@]}"
+        grafana/k6:1.7.1 run --no-color /app/dist/cool-capacity-test.js)
+fi
+
+# The start of the last hold, from the same defaults as the test.
+if [ -z "${BROWSER_AT:-}" ]; then
+    plateaus=$(tr ',' '\n' <<< "${CAP_VUS:-10,20,40,80}" | grep -c .)
+    ramp=$(seconds "${CAP_RAMP:-1m}")
+    hold=$(seconds "${CAP_HOLD:-3m}")
+    BROWSER_AT=$(( plateaus * ramp + (plateaus - 1) * hold ))
+fi
+
+# perf copies every binary it samples into a build-id cache, ~/.debug by default, which nothing
+# empties: about 1.2 GB of engine library per build. The run keeps its own, deleted at the end.
+BUILDID_DIR=$OUT_DIR/buildid
+
+# Delete files that perf wrote, which belong to root under PERF="sudo perf".
+rm_perf_files() {
+    if [ "${PERF_CMD[0]}" = sudo ]; then sudo rm -rf "$@"; else rm -rf "$@"; fi
+}
+
+perf_record() {
+    "${PERF_CMD[@]}" --buildid-dir "$BUILDID_DIR" record -F "$PERF_FREQ" --call-graph "$PERF_CALLGRAPH" -p "$1" -o "$2" \
+        >> "$OUT_DIR/perf.log" 2>&1
+}
+
+PERF_PID=
+if [ -z "${NO_PERF:-}" ]; then
+    # The spare kits were forked before this perf starts, so they are named here.
+    KIT_PIDS=$(pgrep -d, '^(kit_spare|kitbroker)_' || true)
+    echo "perf: recording coolwsd $COOLWSD_PID, forkit $FORKIT_PID, kits ${KIT_PIDS:-none}" \
+         "and what they fork at $PERF_FREQ Hz"
+    perf_record "$COOLWSD_PID,$FORKIT_PID${KIT_PIDS:+,$KIT_PIDS}" "$OUT_DIR/perf.data" &
+    PERF_PID=$!
+    sleep 2
+    kill -0 "$PERF_PID" 2>/dev/null || die "perf did not start, see $OUT_DIR/perf.log"
+fi
+
+BROWSER_PID=
+if [ -z "${NO_BROWSER:-}" ]; then
+    echo "browser user: starts ${BROWSER_AT}s into the run"
+    # Its own document, so the profile is of one user rather than of a shared document.
+    ( sleep "$BROWSER_AT"
+      touch "$OUT_DIR/.browser-started"
+      WOPI_URL=$WOPI_URL WOPI_HOST=$WOPI_HOST FILE_ID=${CAP_FILE_ID:-11}~browser TYPE_REPEATS=$TYPE_REPEATS EXECUTABLE=$EXECUTABLE \
+          OUT_PATH=$OUT_DIR/browser.cpuprofile NODE_TLS_REJECT_UNAUTHORIZED=0 \
+          node "$ROOT/cool-puppeteer-profile.js" ) > "$OUT_DIR/browser.log" 2>&1 &
+    BROWSER_PID=$!
+fi
+
+# perf record finishes its file on SIGTERM. The perf of this run writes under OUT_DIR, which
+# finds it under sudo too, where a signal to sudo from its own process group is not relayed.
+stop_perf() {
+    [ -n "$PERF_PID" ] || return 0
+    local pattern="perf record .* -o $OUT_DIR/" signal=(pkill -TERM -f) i
+    if [ "${PERF_CMD[0]}" = sudo ]; then signal=(sudo "${signal[@]}"); fi
+    "${signal[@]}" "$pattern" || true
+    # dwarf captures take a while to flush.
+    for ((i = 0; i < 120; i++)); do pgrep -f "$pattern" >/dev/null || break; sleep 1; done
+    PERF_PID=
+}
+
+stop_browser() {
+    [ -n "$BROWSER_PID" ] || return 0
+    pkill -P "$BROWSER_PID" 2>/dev/null || true
+    kill "$BROWSER_PID" 2>/dev/null || true
+    wait "$BROWSER_PID" 2>/dev/null || true
+    BROWSER_PID=
+}
+K6_PID=
+stop_k6() {
+    [ -n "$K6_PID" ] || return 0
+    kill -TERM "$K6_PID" 2>/dev/null || true
+    wait "$K6_PID" 2>/dev/null || true
+    K6_PID=
+}
+
+# Sends k6 a SIGTERM when MemAvailable drops under MEM_FLOOR_MB. k6 then stops its users, so the
+# kits close their documents, and the perf captures so far are still written out.
+mem_watch() {
+    local avail
+    while sleep 2; do
+        avail=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024 }' /proc/meminfo)
+        [ "$avail" -lt "$MEM_FLOOR_MB" ] || continue
+        echo "capacity-profile: MemAvailable is ${avail} MB, under MEM_FLOOR_MB=$MEM_FLOOR_MB," \
+             "stopping k6" >&2
+        touch "$OUT_DIR/.memory-floor"
+        kill -TERM "$1" 2>/dev/null || true
+        return
+    done
+}
+# Server memory as coolwsd reports it: coolwsd (PSS), the forkit (RSS) and the document kits. Each
+# /cool/getMetrics answer is kept whole in metrics.prom, and server-memory.csv has one row of
+# memory columns per sample, with the host's available memory for comparison.
+metrics_sample() {
+    local start=$1 body t avail
+    echo "elapsed_s,coolwsd_mb,forkit_mb,kits_mb,kit_max_mb,kit_count,kit_assigned,kit_killed_oom,host_available_mb" \
+        > "$OUT_DIR/server-memory.csv"
+    while :; do
+        t=$(( $(date +%s) - start ))
+        avail=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024 }' /proc/meminfo)
+        if body=$(curl -skf --max-time 5 -u "$METRICS_AUTH" "${WOPI_URL}cool/getMetrics"); then
+            printf '# sample elapsed_s=%s\n%s\n' "$t" "$body" >> "$OUT_DIR/metrics.prom"
+            awk -v t="$t" -v avail="$avail" '
+                NF == 2 { v[$1] = $2 }
+                END {
+                    mb = 1048576
+                    printf "%d,%.0f,%.0f,%.0f,%.0f,%d,%d,%d,%d\n", t,
+                        v["coolwsd_memory_used_bytes"] / mb, v["forkit_memory_used_bytes"] / mb,
+                        v["kit_memory_used_total_bytes"] / mb, v["kit_memory_used_max_bytes"] / mb,
+                        v["kit_count"], v["kit_assigned_count"], v["kit_killed_oom_count"], avail
+                }' <<< "$body" >> "$OUT_DIR/server-memory.csv"
+        else
+            # coolwsd did not answer in time: the row keeps the gap visible.
+            echo "$t,,,,,,,,$avail" >> "$OUT_DIR/server-memory.csv"
+        fi
+        sleep "${METRICS_INTERVAL:-10}"
+    done
+}
+METRICS_AUTH=${METRICS_AUTH:-admin:admin}
+
+MEM_WATCH_PID=
+METRICS_PID=
+TIMELINE_PID=
+trap '[ -z "$MEM_WATCH_PID" ] || kill "$MEM_WATCH_PID" 2>/dev/null || true; [ -z "$METRICS_PID" ] || kill "$METRICS_PID" 2>/dev/null || true; [ -z "$TIMELINE_PID" ] || kill "$TIMELINE_PID" 2>/dev/null || true; stop_k6; stop_perf; stop_browser; stop_started; exit 130' INT TERM
+
+echo "k6: ${K6[*]}"
+k6_status=0
+# k6 runs in the background so that mem_watch has its pid to signal.
+( cd "$OUT_DIR" && exec env WOPI_URL="$WOPI_URL" WOPI_HOST="$WOPI_HOST" "${K6[@]}" ) \
+    > >(tee "$OUT_DIR/k6.log") 2>&1 &
+K6_PID=$!
+if [ "$MEM_FLOOR_MB" -gt 0 ]; then
+    mem_watch "$K6_PID" &
+    MEM_WATCH_PID=$!
+fi
+metrics_sample "$(date +%s)" &
+METRICS_PID=$!
+python3 "$ROOT/timeline-sampler.py" "$OUT_DIR" &
+TIMELINE_PID=$!
+wait "$K6_PID" || k6_status=$?
+K6_PID=
+[ -z "$MEM_WATCH_PID" ] || kill "$MEM_WATCH_PID" 2>/dev/null || true
+kill "$METRICS_PID" 2>/dev/null || true
+METRICS_PID=
+kill "$TIMELINE_PID" 2>/dev/null || true
+wait "$TIMELINE_PID" 2>/dev/null || true
+TIMELINE_PID=
+stop_perf
+
+memory_floor=
+if [ -e "$OUT_DIR/.memory-floor" ]; then
+    memory_floor=1
+    rm -f "$OUT_DIR/.memory-floor"
+    [ "$k6_status" -ne 0 ] || k6_status=1
+fi
+
+if [ -n "$BROWSER_PID" ]; then
+    if [ -n "$memory_floor" ]; then
+        stop_browser
+    elif [ ! -e "$OUT_DIR/.browser-started" ]; then
+        echo "the run ended before the browser user's start, no browser profile" >&2
+        stop_browser
+    elif ! wait "$BROWSER_PID"; then
+        echo "browser profile failed, see $OUT_DIR/browser.log" >&2
+    fi
+    rm -f "$OUT_DIR/.browser-started"
+fi
+
+if [ -z "${NO_PERF:-}" ] && [ -s "$OUT_DIR/perf.data" ]; then
+    echo "rendering flamegraph.svg ..."
+    "${PERF_CMD[@]}" --buildid-dir "$BUILDID_DIR" script --no-inline -i "$OUT_DIR/perf.data" \
+        2>/dev/null | stackcollapse-perf.pl \
+        | sed -E 's/^kitbgsv[^;]+/kitbgsv/; s/^kitbroker_[^;]+/kitbroker/' \
+        | flamegraph.pl --title "COOL capacity run $(basename "$OUT_DIR")" > "$OUT_DIR/flamegraph.svg"
+    [ -z "${PRUNE_PERF_DATA:-}" ] || rm_perf_files "$OUT_DIR/perf.data" "$OUT_DIR/perf.data.old"
+fi
+rm_perf_files "$BUILDID_DIR"
+
+echo
+ls -la "$OUT_DIR"
+[ -z "$memory_floor" ] || echo "the run was stopped early: MemAvailable dropped under ${MEM_FLOOR_MB} MB" >&2
+exit "$k6_status"
