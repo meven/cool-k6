@@ -131,6 +131,26 @@ def tag_by_process(lines, wsd_pids: set[str]):
         yield process_stack([comm, *frames[1:]], pid in wsd_pids) + f" {count}\n"
 
 
+def stack_shares(stacks: list[str]) -> tuple[float, float]:
+    """(kit %, unresolved %) of the samples in tagged collapsed stacks: the share under the
+    kit frame, and the share whose innermost frame perf could not name."""
+    total = kit = unknown = 0
+    for line in stacks:
+        stack, _, count = line.rstrip("\n").rpartition(" ")
+        if not stack or not count.isdigit():
+            continue
+        n = int(count)
+        frames = stack.split(";")
+        total += n
+        if frames[0] == KIT_ROOT:
+            kit += n
+        if frames[-1].removesuffix(WSD_TAG) == "[unknown]":
+            unknown += n
+    if not total:
+        return 0.0, 0.0
+    return 100.0 * kit / total, 100.0 * unknown / total
+
+
 def render_flamegraph(stacks: list[str], svg_path: Path) -> None:
     """Draw tagged collapsed stacks. The kits keep the default hot palette, and the
     coolwsd and forkit frames take an aqua from palette.map, which flamegraph.pl --cp
@@ -1116,35 +1136,19 @@ def main() -> int:
             p.wait()
         phases.end("perf script and drawing the flamegraph")
 
-        # Post-render sanity check: how much of the capture actually resolved,
-        # and to which process. A flamegraph dominated by [unknown] is the
-        # jailed-kit case under system-wide/cgroup capture and is not useful.
-        try:
-            dso = subprocess.run(
-                [*perf_cmd, "report", "--stdio", "--sort", "dso",
-                 "-i", str(perf_data)],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                timeout=180).stdout
-            mu = re.search(r"^\s*([\d.]+)%.*\[unknown\]", dso, re.MULTILINE)
-            unknown_pct = float(mu.group(1)) if mu else 0.0
-            comm = subprocess.run(
-                [*perf_cmd, "report", "--stdio", "--sort", "comm",
-                 "-i", str(perf_data)],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                timeout=180).stdout
-            mk = re.search(r"^\s*([\d.]+)%.*kitbroker", comm, re.MULTILINE)
-            kit_pct = float(mk.group(1)) if mk else 0.0
-            print(f"flamegraph: {out_dir}/flamegraph.svg  "
-                  f"(kit {kit_pct:.0f}%, unresolved {unknown_pct:.0f}%)")
-            if unknown_pct >= 50.0:
-                print(f"WARNING: {unknown_pct:.0f}% of samples are [unknown] - "
-                      "symbols did not resolve. This is the jailed-kit case under "
-                      "system-wide/cgroup capture; use pid mode (drop --cgroup) "
-                      "and profile a single document for a symbolised flamegraph.",
-                      file=sys.stderr)
-        except Exception:
-            pass
-        phases.end("perf report checks")
+        # Post-render sanity check: how much of the capture went to the kit, and how much did not
+        # resolve. A flamegraph dominated by [unknown] is the jailed-kit case under system-wide or
+        # cgroup capture and is not useful. Both figures come from the stacks drawn above.
+        kit_pct, unknown_pct = stack_shares(stacks)
+        print(f"flamegraph: {out_dir}/flamegraph.svg  "
+              f"(kit {kit_pct:.0f}%, unresolved {unknown_pct:.0f}%)")
+        if unknown_pct >= 50.0:
+            print(f"WARNING: {unknown_pct:.0f}% of samples are [unknown] - "
+                  "symbols did not resolve. This is the jailed-kit case under "
+                  "system-wide/cgroup capture; use pid mode (drop --cgroup) "
+                  "and profile a single document for a symbolised flamegraph.",
+                  file=sys.stderr)
+        phases.end("sanity check of the stacks")
 
         total_elapsed = int(time.monotonic() - start_ts)
         print()
