@@ -30,7 +30,7 @@ Everything after that runs by itself.
 | `/etc/systemd/system/cool-perf-api.service` | deletes runs from the Runs tab, and queues changes from the Schedule tab |
 | `/etc/systemd/system/cool-perf-queue.service` | builds and measures the changes that the Schedule tab queued |
 | `/etc/nginx/sites-available/cool-perf.conf` | serves `/var/lib/cool-perf` on port 80 |
-| `/etc/sysctl.d/90-cool-perf.conf` | the two kernel settings the suite needs |
+| `/etc/sysctl.d/90-cool-perf.conf` | the kernel settings the suite needs |
 | `/opt/FlameGraph/` | the scripts that turn perf output into flamegraphs |
 
 The files that `setup-vm` installs come from `deploy/` in this repository, so a
@@ -153,9 +153,10 @@ It does the following, and prints a heading for each step:
 - installs FlameGraph in `/opt/FlameGraph`
 - writes `/etc/sysctl.d/90-cool-perf.conf` and applies it:
   `kernel.perf_event_paranoid = 0` lets perf count and record the cgroup of
-  the suite's coolwsd, `kernel.perf_event_mlock_kb = 32768` gives the dwarf
+  the suite's coolwsd, `kernel.kptr_restrict = 0` lets perf name the kernel
+  functions in that recording, `kernel.perf_event_mlock_kb = 32768` gives the dwarf
   call graphs their ring buffer, and `kernel.apparmor_restrict_unprivileged_userns = 0` lets the document kit
-  build its jail. Ubuntu restricts both by default
+  build its jail. Ubuntu restricts all three by default
 - adds the `collabora` user to the `docker` group, because the k6 browser
   tests run in a container. It creates the user if it does not exist yet
 - copies `deploy/cool-perf.env` to `/etc/cool-perf.env`, only if that file does

@@ -249,6 +249,18 @@ def checks(publishing: bool = True, flamegraphs: bool = True) -> list[tuple[str,
             "set kernel.perf_event_paranoid=0 (sysctl) or grant NOPASSWD perf"
             + ("" if flamegraphs else ", which only the flamegraph pass needs"))
 
+    # A cgroup capture records kernel time too, and perf names its frames only when it may read
+    # the kernel's symbol addresses. Otherwise they show as [unknown], a third of the samples.
+    try:
+        kptr = int(Path("/proc/sys/kernel/kptr_restrict").read_text().strip())
+    except Exception:
+        kptr = None
+    if kptr is not None:
+        add(OK if kptr == 0 else (WARN if flamegraphs else OK), "kernel symbols",
+            "kptr_restrict=0, perf names the kernel frames" if kptr == 0 else
+            f"kptr_restrict={kptr}: the kernel frames of the flamegraphs stay [unknown]. "
+            "Set kernel.kptr_restrict=0 (sysctl)")
+
     # The kit runs in a jail built from user namespaces.
     unshare = run(["unshare", "-U", "true"]) if shutil.which("unshare") else None
     if unshare is not None:
