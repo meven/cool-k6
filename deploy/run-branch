@@ -59,24 +59,9 @@ fi
 set -a; . /etc/cool-perf.env; set +a
 : "${COOLWSD_DIR:?not set in /etc/cool-perf.env}"
 
-# The same lock as deploy/nightly, so a timer run cannot start in between.
-STATE=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
-exec 9>"$STATE/lock"
-if [ -n "$wait" ]; then
-    # deploy/nightly gives up on a held lock, so the timer skips its runs while this one
-    # waits and measures, and goes on once it has ended.
-    flock -n 9 || { echo "=== waiting for the run of the timer to end"; flock 9; }
-else
-    flock -n 9 || { echo "a nightly run is running; stop cool-perf.timer, wait, or give --wait" >&2; exit 1; }
-fi
-
-# The test bundles, rebuilt when the checkout moved, as deploy/nightly does.
-head=$(git rev-parse HEAD)
-if [ ! -f dist/.built-from ] || [ "$(cat dist/.built-from)" != "$head" ]; then
-    npm ci --no-audit --no-fund
-    npm run build
-    echo "$head" > dist/.built-from
-fi
+. deploy/common.sh
+take_lock "$wait"
+build_bundles
 
 build_args=(--no-save --ref "$ref")
 [ "${COOL_PERF_ENGINE:-1}" = 1 ] && build_args+=(--engine)
