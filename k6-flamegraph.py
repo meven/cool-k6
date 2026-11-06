@@ -528,9 +528,26 @@ def pick_perf_event(preferred: str, perf_freq: str, sudo_perf: list[str],
     return None
 
 
+class Phases:
+    """The wall time of each phase of a capture, printed as each one ends and kept for
+    metrics.json."""
+
+    def __init__(self) -> None:
+        self.mark = time.monotonic()
+        self.seconds: dict[str, float] = {}
+
+    def end(self, name: str) -> None:
+        now = time.monotonic()
+        took = now - self.mark
+        self.mark = now
+        self.seconds[name] = round(self.seconds.get(name, 0.0) + took, 1)
+        print(f"[phase] {name}: {took:.1f}s", flush=True)
+
+
 def main() -> int:
     args = parse_args()
     start_ts = time.monotonic()
+    phases = Phases()
 
     # Only the k6 runner is supported. Kept as a named constant so the
     # summary strings and the reachability guard read clearly, and so the
@@ -596,6 +613,7 @@ def main() -> int:
             "'perf record -e cycles -F99 -- sh -c \"timeout 1 yes >/dev/null\"' "
             "and perf_event_paranoid.")
     perf_event = chosen
+    phases.end("perf self-test")
 
     capture_cg: Path | None = None  # cgroup coolwsd runs in, in cgroup mode
 
@@ -936,6 +954,7 @@ def main() -> int:
                       "may not have opened", file=sys.stderr)
             return start, proc, pids
 
+        phases.end("coolwsd and WOPI host start")
         if cgroup_mode:
             # perf -G takes the path relative to the cgroup2 mount, and counts
             # the tasks of the named cgroup and of its descendants.
@@ -969,6 +988,7 @@ def main() -> int:
             perf_proc = start_perf(target)
             if perf_proc is None:
                 return 1
+        phases.end("perf start, k6 start until the kit appears")
 
         # Fail fast if the document never opened: no kit spawned and coolwsd is
         # no longer reachable means it died during startup or the first load
@@ -1034,6 +1054,7 @@ def main() -> int:
                           "with no coolwsd running so a controlled single kit is "
                           "launched.", file=sys.stderr)
         runner_proc = None
+        phases.end("test, until k6 exits")
         runner_elapsed = int(time.monotonic() - runner_start)
         print(f"{runner} elapsed: {runner_elapsed}s")
 
@@ -1048,6 +1069,7 @@ def main() -> int:
         for sp in perf_stat_procs:
             sigint_wait(sp, 15)
         perf_stat_procs = []
+        phases.end("perf writing the capture")
 
         # Validate the capture before rendering: an empty or header-only
         # perf.data renders to a useless flamegraph ("No stack counts found").
@@ -1092,6 +1114,7 @@ def main() -> int:
         render_flamegraph(stacks, out_dir / "flamegraph.svg")
         for p in (p1, p2):
             p.wait()
+        phases.end("perf script and drawing the flamegraph")
 
         # Post-render sanity check: how much of the capture actually resolved,
         # and to which process. A flamegraph dominated by [unknown] is the
@@ -1121,6 +1144,7 @@ def main() -> int:
                       file=sys.stderr)
         except Exception:
             pass
+        phases.end("perf report checks")
 
         total_elapsed = int(time.monotonic() - start_ts)
         print()
@@ -1147,6 +1171,7 @@ def main() -> int:
             "perf_event": perf_event,
             "runner_elapsed_s": runner_elapsed,
             "total_elapsed_s": total_elapsed,
+            "phases_s": phases.seconds,
             "flamegraph_samples": flamegraph_sample_count(out_dir),
             "workload": workload,
             "perf": perf_by_label,
@@ -1158,6 +1183,7 @@ def main() -> int:
         return runner_rc
     finally:
         cleanup()
+        phases.end("stopping coolwsd and the test")
 
 
 if __name__ == "__main__":
