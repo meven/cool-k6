@@ -1096,13 +1096,15 @@ function runBranch(r) {
     RUNS.filter((r) => r.branch === "main" && Date.parse(r.ts) >= t0).forEach((r) =>
       mark("main", Date.parse(r.ts), "done", `main ${shortLabel(r.commit || "?")}, ${day(r.ts)}`),
     );
-    if (state.main.running && state.main.since)
+    // the start of the running unit, or the last start of the timer on an older API
+    const mainSince = state.main.since || state.main.last;
+    if (state.main.running && mainSince)
       bar(
         "main",
-        Date.parse(state.main.since),
+        Date.parse(mainSince),
         now,
-        "running",
-        `main, running since ${day(state.main.since)}`,
+        state.main.waiting ? "queued" : "running",
+        `main, ${state.main.waiting ? "waiting for the lock" : "running"} since ${day(mainSince)}`,
       );
     if (state.main.next)
       for (let t = Date.parse(state.main.next); t <= t1; t += HOUR)
@@ -1122,6 +1124,14 @@ function runBranch(r) {
           "queued",
           `${label}: queued, ${j.not_before ? "from " + day(j.not_before) : "as soon as possible"}`,
         );
+      } else if (j.waiting) {
+        bar(
+          "queue",
+          Date.parse(j.started),
+          now,
+          "queued",
+          `${label}: waiting for the lock since ${day(j.started)}`,
+        );
       } else if (j.started && j.state !== "cancelled") {
         const end = j.ended ? Date.parse(j.ended) : now;
         bar(
@@ -1134,32 +1144,48 @@ function runBranch(r) {
       }
     });
     state.by_hand.forEach((u) => {
-      if (u.state === "running")
+      if (u.at) mark("by hand", Date.parse(u.at), "queued", `${u.unit}, starts ${day(u.at)}`);
+      else if (u.since)
         bar(
           "by hand",
           Date.parse(u.since),
           now,
-          "running",
-          `${u.unit}, running since ${day(u.since)}`,
+          u.state === "running" ? "running" : "queued",
+          `${u.unit}, ${u.state === "running" ? "running" : "waiting for the lock"} since ${day(u.since)}`,
         );
-      else mark("by hand", Date.parse(u.at), "queued", `${u.unit}, starts ${day(u.at)}`);
     });
     add(`<line x1="${x(now)}" x2="${x(now)}" y1="${top - 4}" y2="${H - 20}" class="now"/>`);
     tl.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="runs of the last and the next 12 hours">${parts.join("")}</svg>`;
   }
 
   function drawTable() {
+    const mainSince = state.main.since || state.main.last;
     const rows = state.jobs.slice().reverse();
-    const by = state.by_hand.map(
-      (u) =>
-        `<tr><td class="l">${u.state}</td><td class="l" colspan="4"><code>${esc(u.unit)}</code>` +
+    // A unit that waits for the lock of deploy/nightly is scheduled, not running.
+    const by = state.by_hand.map((u) => {
+      const running = u.state === "running";
+      const start = u.at
+        ? "at " + day(u.at)
+        : (running ? "since " : "waiting for the lock since ") + day(u.since);
+      return (
+        `<tr class="st-${running ? "running" : "queued"}"><td class="l">${running ? "running" : "scheduled"}</td>` +
+        `<td class="l" colspan="4"><code>${esc(u.unit)}</code>` +
         `<span class="ref">started by hand with systemd-run</span></td>` +
-        `<td class="l">${esc(day(u.state === "running" ? u.since : u.at))}</td><td></td></tr>`,
-    );
+        `<td class="l">${esc(start)}</td><td></td></tr>`
+      );
+    });
+    const mainRunning = state.main.running && !state.main.waiting;
+    const mainStart = state.main.running
+      ? mainSince
+        ? (state.main.waiting ? "waiting for the lock since " : "since ") + day(mainSince)
+        : "-"
+      : state.main.next
+        ? "next " + day(state.main.next)
+        : "-";
     const main =
-      `<tr><td class="l">${state.main.running ? "running" : "timer"}</td>` +
+      `<tr class="st-${mainRunning ? "running" : "queued"}"><td class="l">${mainRunning ? "running" : state.main.running ? "scheduled" : "timer"}</td>` +
       `<td class="l" colspan="4">main<span class="ref">every hour, when main has a new commit</span></td>` +
-      `<td class="l">${esc(state.main.running ? "since " + day(state.main.since) : state.main.next ? "next " + day(state.main.next) : "-")}</td><td></td></tr>`;
+      `<td class="l">${esc(mainStart)}</td><td></td></tr>`;
     tab.innerHTML =
       `<thead><tr><th class="l">state</th><th class="l">change</th><th class="l">patch set</th>` +
       `<th class="l">subject</th><th>runs</th><th class="l">start</th><th class="l"></th></tr></thead><tbody>` +
@@ -1167,8 +1193,9 @@ function runBranch(r) {
       by.join("") +
       rows
         .map((j) => {
-          const start =
-            j.state === "queued"
+          const start = j.waiting
+            ? "waiting for the lock since " + day(j.started)
+            : j.state === "queued"
               ? j.not_before
                 ? "from " + day(j.not_before)
                 : "as soon as possible"
@@ -1187,7 +1214,7 @@ function runBranch(r) {
               `<a href="#view=charts&branch=${encodeURIComponent(j.branch)}" data-reload>charts</a>`,
             );
           return (
-            `<tr class="st-${j.state}"><td class="l">${STATES[j.state] || esc(j.state)}${j.exit ? ` <span class="ref">exit ${esc(j.exit)}</span>` : ""}</td>` +
+            `<tr class="st-${j.waiting ? "queued" : j.state}"><td class="l">${j.waiting ? "scheduled" : STATES[j.state] || esc(j.state)}${j.exit ? ` <span class="ref">exit ${esc(j.exit)}</span>` : ""}</td>` +
             `<td class="l">${gerritLink(j.branch, String(j.change))}</td>` +
             `<td class="l">${gerritLink(String(j.patchset), j.change + "/" + j.patchset)}<span class="ref">${esc(j.revision.slice(0, 12))}</span></td>` +
             `<td class="l subj">${esc(j.subject)}<span class="ref">${esc(j.uploader)}</span></td>` +

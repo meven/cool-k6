@@ -125,6 +125,36 @@ def when(value: str | None) -> str | None:
     return runqueue.iso(datetime.fromtimestamp(int(value[1:]), timezone.utc))
 
 
+def started(unit: dict) -> str | None:
+    """When a unit started. A oneshot service stays activating while it runs and gets no
+    ActiveEnterTimestamp, so the time it left the inactive state is the start."""
+    return when(unit.get("ActiveEnterTimestamp")) or when(unit.get("InactiveExitTimestamp"))
+
+
+CGROUP = Path("/sys/fs/cgroup")
+
+
+def waits_for_lock(unit: dict) -> bool:
+    """Whether a unit that systemd shows as running waits for the lock of deploy/nightly, in the
+    flock of take_lock or of nightly, rather than measures. Its cgroup holds that flock process,
+    or a cgroup under it does with Delegate=yes."""
+    group = unit.get("ControlGroup")
+    if not group:
+        return False
+    for procs in (CGROUP / group.lstrip("/")).rglob("cgroup.procs"):
+        try:
+            pids = procs.read_text().split()
+        except OSError:
+            continue
+        for pid in pids:
+            try:
+                if Path(f"/proc/{pid}/comm").read_text().strip() == "flock":
+                    return True
+            except OSError:
+                pass
+    return False
+
+
 def units_by_hand() -> list[dict]:
     """The cool-perf units that someone started with systemd-run, running or waiting for their
     time, as the units of DEPLOY-VM.md are."""
@@ -137,14 +167,18 @@ def units_by_hand() -> list[dict]:
     names = [n for n in names if n not in OWN_UNITS]
     found = []
     for u in systemctl_show(names, ["Id", "ActiveState", "ActiveEnterTimestamp",
-                                    "NextElapseUSecRealtime", "Description"]):
+                                    "InactiveExitTimestamp", "NextElapseUSecRealtime",
+                                    "ControlGroup"]):
+        # scheduled: a timer of systemd-run that has not fired; waiting: started, but waiting
+        # for the lock
         if u.get("Id", "").endswith(".timer"):
             if when(u.get("NextElapseUSecRealtime")):
-                found.append({"unit": u["Id"], "state": "waiting",
+                found.append({"unit": u["Id"], "state": "scheduled",
                               "at": when(u.get("NextElapseUSecRealtime"))})
         elif u.get("ActiveState") in ("active", "activating"):
-            found.append({"unit": u["Id"], "state": "running",
-                          "since": when(u.get("ActiveEnterTimestamp"))})
+            found.append({"unit": u["Id"],
+                          "state": "waiting" if waits_for_lock(u) else "running",
+                          "since": started(u)})
     return found
 
 
@@ -152,17 +186,26 @@ def units_by_hand() -> list[dict]:
 def schedule():
     timer = (systemctl_show(["cool-perf.timer"], ["NextElapseUSecRealtime", "LastTriggerUSec"])
              or [{}])[0]
-    service = (systemctl_show(["cool-perf.service"], ["ActiveState", "ActiveEnterTimestamp"])
+    service = (systemctl_show(["cool-perf.service"], ["ActiveState", "ActiveEnterTimestamp",
+                                                      "InactiveExitTimestamp", "ControlGroup"])
                or [{}])[0]
-    queue = (systemctl_show(["cool-perf-queue.service"], ["ActiveState"]) or [{}])[0]
+    queue = (systemctl_show(["cool-perf-queue.service"], ["ActiveState", "ControlGroup"])
+             or [{}])[0]
+    running = service.get("ActiveState") in ("active", "activating")
+    jobs = runqueue.jobs()
+    # The runner runs one job at a time, so a flock in its cgroup is the one of that job.
+    if any(j["state"] == "running" for j in jobs) and waits_for_lock(queue):
+        for j in jobs:
+            if j["state"] == "running":
+                j["waiting"] = True
     return jsonify(
         now=runqueue.iso(runqueue.now()),
         main={"next": when(timer.get("NextElapseUSecRealtime")),
               "last": when(timer.get("LastTriggerUSec")),
-              "running": service.get("ActiveState") in ("active", "activating"),
-              "since": when(service.get("ActiveEnterTimestamp"))},
+              "running": running, "waiting": running and waits_for_lock(service),
+              "since": started(service)},
         runner=queue.get("ActiveState"),
-        jobs=runqueue.jobs(), by_hand=units_by_hand(),
+        jobs=jobs, by_hand=units_by_hand(),
         domains=runqueue.DOMAINS, max_runs=runqueue.MAX_RUNS)
 
 
