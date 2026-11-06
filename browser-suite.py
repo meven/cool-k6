@@ -658,9 +658,9 @@ def _capture_memory(mj: Path) -> dict | None:
     exist and only need reading. Doing it here rather than at capture time means
     runs recorded before this existed also show their memory.
 
-    The document figure is the kitbroker group, which is the process doing the
-    document work, and proportional set size is preferred over resident size
-    because several kits share the same mapped engine libraries. The total is the
+    The document figure is the private dirty memory of the kitbroker group, which is
+    the process doing the document work: the figure that the admin metrics give a plain
+    run. A capture from before that was sampled gives the proportional set size. The total is the
     largest sum over the sample times rather than a sum of the two peaks, which
     would count moments that never happened together."""
     try:
@@ -681,8 +681,10 @@ def _capture_memory(mj: Path) -> dict | None:
         entry = mem.get(label)
         return entry.get("samples", []) if isinstance(entry, dict) else []
 
-    doc_peak = peak_of("kit")
     kit = mem.get("kit") if isinstance(mem.get("kit"), dict) else {}
+    doc_peak = kit.get("peak_private_dirty_mb")
+    if doc_peak is None:
+        doc_peak = peak_of("kit")
     wsd = mem.get("coolwsd") if isinstance(mem.get("coolwsd"), dict) else {}
     master_peak = wsd.get("peak_rss_hwm_mb", wsd.get("peak_rss_mb"))
     totals = []

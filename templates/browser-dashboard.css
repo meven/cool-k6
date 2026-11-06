@@ -629,11 +629,6 @@ body.has-full::before {
   outline: 2px solid var(--ink);
   outline-offset: 1px;
 }
-/* a run captured under perf: ringed, since profiling inflates its own times */
-.dot.prof {
-  stroke: var(--ink);
-  stroke-width: 2;
-}
 .dot.busy {
   opacity: 0.4;
 }

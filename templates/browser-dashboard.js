@@ -326,11 +326,7 @@ function render(svg, runs, W = 520, H = 300) {
       const r = runs[p[0]];
       const busy = r.machine && r.machine.busy;
       const dot = el("circle", {
-        class:
-          "dot " +
-          cls.split(" ")[0] +
-          (r.profiled ? " prof" : "") +
-          (busy && !steady ? " busy" : ""),
+        class: "dot " + cls.split(" ")[0] + (busy && !steady ? " busy" : ""),
         cx: p[1],
         cy: p[2],
         r: 3.5,

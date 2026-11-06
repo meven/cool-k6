@@ -223,8 +223,8 @@ $css</style>
           so its times are not comparable. The run detail of each point gives the commits since the
           previous point, as a git log range and, for a GitHub source, a link that lists them. When
           a run was also captured under perf, its point shows the plain times and the run detail
-          lists the times under perf beside them. A ringed point is a capture with no plain run
-          beside it, so its times run high by nature and are not a regression. Each run's detail
+          lists the times under perf beside them. The times under perf are within the noise of a
+          plain run, so a run measured under perf alone stays on the same lines. Each run's detail
           embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_*
           document kit while the document is open, captured with its own single-kit COOL) and can
           put a second run beside it to compare two commits. A capture is only ever shown for the

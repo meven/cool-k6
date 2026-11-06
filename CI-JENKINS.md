@@ -510,8 +510,10 @@ independently. If you need history beyond the store window, copy or rsync
 
 * Each point is one run of one document at one user count. The x axis is run
   order, not commit order, so a re-measured old build lands on the right.
-* **Ringed** points were themselves captured under perf. Profiling inflates
-  their own times, so do not read them as a regression against unprofiled runs.
+* By default every point is measured under perf, which gives its times, memory,
+  instructions and flamegraph in one run. The times under perf are within the
+  noise of a run without perf. `COOL_PERF_SUITE=1` also runs each test without
+  perf, and its point then shows those times.
 * Clicking a point opens that run's detail, with its own flamegraph inline and a
   picker to put another run of the same document beside it.
 * The badge on each chart (`flame 2/2`, `no flame`) says how many of that

@@ -37,6 +37,8 @@ Configuration is all environment, so a Jenkins job needs no arguments:
     COOL_PERF_PROBE_INTERVAL seconds between two machine probes during a run (default 20)
     HOST_IP            IP the k6 container reaches the host on (default: auto)
     WOPI_PORT          port for the test WOPI host (default 3000)
+    COOL_PERF_SUITE    1 to also run each test without perf (default 0: the
+                       profiled captures give the times, memory and instructions)
     COOL_PERF_MIN_FREE_GB    a run does not start with less free space than this on a
                              filesystem that it writes to (default 5)
 
@@ -645,9 +647,12 @@ def main() -> int:
     d.set_defaults(func=cmd_doctor)
 
     r = sub.add_parser("run", help="doctor, run the suite, publish the results")
-    r.add_argument("--suite", action=argparse.BooleanOptionalAction, default=True,
-                   help="run the plain timing suite (needs a coolwsd, which this "
-                        "starts and stops itself)")
+    # The captures give the times as well, within the noise of a run without perf, so a
+    # plain pass would measure every test a second time.
+    r.add_argument("--suite", action=argparse.BooleanOptionalAction,
+                   default=env("COOL_PERF_SUITE", "0") == "1",
+                   help="also run each test without perf, on one shared coolwsd that this "
+                        "starts and stops itself (env COOL_PERF_SUITE=1)")
     r.add_argument("--flamegraphs", action=argparse.BooleanOptionalAction, default=True,
                    help=f"capture a flamegraph per document ({DOC_COUNT}) and user count")
     r.add_argument("--users", default=env("COOL_PERF_USERS", "1,3"),
