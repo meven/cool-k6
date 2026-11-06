@@ -1,93 +1,305 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Collabora Online browser-test dashboard</title>
-<style>
-$css</style></head><body>
-<div class="wrap">
-  <h1>Collabora Online browser tests</h1>
-  <div class="tabs" role="tablist" id="tabs" aria-label="views" hidden>
-    <button type="button" role="tab" id="tab-charts" aria-controls="view-charts" aria-selected="true">Charts</button>
-    <button type="button" role="tab" id="tab-compare" aria-controls="view-compare" aria-selected="false" tabindex="-1">Compare builds</button>
-    <button type="button" role="tab" id="tab-runs" aria-controls="view-runs" aria-selected="false" tabindex="-1">Runs</button>
-  </div>
-  <div id="view-charts" role="tabpanel" aria-labelledby="tab-charts">
-  <p class="sub">One chart per document and user pool, tracked across commits. The thick line is the instructions that the document kit executed, and the dashed grey line those of coolwsd. Left axis: load, feedback and edit times (ms), or the instructions (G) when the times are hidden. The buttons in the legend show or hide each group. Right axis: memory (MB), the document's own footprint, the browser heap, the page process, and the coolwsd process peak. Click a point for detail.</p>
-  <div class="legend">
-    <span class="views" role="group" aria-label="lines shown on the charts">show <button class="vt" type="button" data-v="instr" aria-pressed="true">instructions</button><button class="vt" type="button" data-v="times" aria-pressed="true">times</button><button class="vt" type="button" data-v="mem" aria-pressed="true">memory</button></span>
-    <span class="branches" id="branches" hidden><span class="sep"></span><label>branch <select id="brsel"></select></label></span>
-    <span class="sep"></span>
-    <span class="key" data-g="instr"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink)" stroke-width="3"/></svg> instructions, document kit (G)</span>
-    <span class="key" data-g="instr"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink-soft)" stroke-width="2.5" stroke-dasharray="6 3"/></svg> instructions, coolwsd (G)</span>
-    <span class="sep"></span>
-    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s0)" stroke-width="2.5"/></svg> frame ready</span>
-    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s4)" stroke-width="2.5"/></svg> first content</span>
-    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s5)" stroke-width="2.5"/></svg> js ready</span>
-    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s1)" stroke-width="2.5"/></svg> page load</span>
-    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s2)" stroke-width="2.5"/></svg> edit</span>
-    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s6)" stroke-width="2.5"/></svg> image displayed</span>
-    <span class="key" data-g="times"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--s7)" stroke-width="2.5"/></svg> slide duplicated</span>
-    <span class="sep"></span>
-    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--mem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> COOL doc memory (MB, right)</span>
-    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--bmem)" stroke-width="2.5" stroke-dasharray="5 4"/></svg> browser heap (MB, right)</span>
-    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--tmem)" stroke-width="2.5" stroke-dasharray="8 3"/></svg> page process, resident (MB, own scale at the far right)</span>
-    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--wmem)" stroke-width="2.5" stroke-dasharray="2 3"/></svg> coolwsd peak (MB, right)</span>
-    <span class="key" data-g="mem"><svg class="lswatch" viewBox="0 0 22 8"><rect x="0" y="1" width="5" height="6" fill="var(--st-lib)"/><rect x="5.5" y="1" width="5" height="6" fill="var(--st-other)"/><rect x="11" y="1" width="5" height="6" fill="var(--st-inh)"/><rect x="16.5" y="1" width="5" height="6" fill="var(--st-own)"/></svg> kit memory stacked: libraries, other files, inherited, own (MB, right)</span>
-  </div>
-  <div id="charts"></div>
-  <footer>Each point is one run (one COOL commit) of the document named under the chart title, which is the file that test opens through the WOPI host. Times are ms averaged over the run (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint on a plain run, or the document kit's proportional set size sampled from /proc when the point comes from a flamegraph capture, which runs its own COOL, and browser heap is the page's JS heap. The page process is the resident size of the Chromium renderer that runs the page, sampled from /proc during the test: on top of the JS heap it holds the DOM, the decoded images and the canvas pixels of the tiles. The coolwsd peak is the largest resident size of
-coolwsd and its forkit together during the test, sampled from /proc. The forkit holds the
-preloaded engine, most of the figure. Runs from before that sampling show the resident
-high-water mark (VmHWM) of the capture's own coolwsd instead. The stacked bar beside each point breaks the document kit's resident memory into
-    the engine libraries it maps, other mapped files, what the fork handed it (mostly the
-    dictionaries the parent preloaded), and what the document itself wrote. Only the last layer is
-    the document's own cost; the first three are shared with every other document on the machine,
-    which is why the resident total is several times what one more document actually adds.
-    The instruction lines have a scale of their own, which the left axis shows when the times
-    are hidden. They count only the window perf was attached for, which opens after the server
-    is up, so they describe the test and not a whole process life. A busy machine slows the
-    times but does not change the instruction counts, so a busy run stays on the instruction
-    lines. A rising line across commits is a regression. A faded point was measured on a busy machine: a fixed probe ran slower than usual during the run, or the hypervisor took CPU time from the VM, so its times are not comparable. The run detail of each point gives the commits since the previous point, as a git log range and, for a GitHub source, a link that lists them. When a run was also captured under perf, its point shows the plain times and the run detail lists the times under perf beside them. A ringed point is a capture with no plain run beside it, so its times run high by nature and are not a regression. Each run's detail embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_* document kit while the document is open, captured with its own single-kit COOL) and can put a second run beside it to compare two commits. A capture is only ever shown for the run it was taken in, and the badge on each chart says how many of that document's runs were profiled.</footer>
-  </div>
-  <div id="view-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
-  <section class="cmp" id="cmp" aria-labelledby="cmph">
-    <h2 id="cmph">Compare two builds</h2>
-    <div class="cmp-pick">
-      <div class="side"><b>A</b><select id="cmpa" aria-label="A, first measured commit"></select>
-        <label>through <select id="cmpa2"></select></label></div>
-      <div class="side"><b>B</b><select id="cmpb" aria-label="B, first measured commit"></select>
-        <label>through <select id="cmpb2"></select></label></div>
-      <label class="all"><input type="checkbox" id="cmpall"> show unchanged</label>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Collabora Online browser-test dashboard</title>
+    <!-- prettier-ignore -->
+    <style>
+$css</style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Collabora Online browser tests</h1>
+      <div class="tabs" role="tablist" id="tabs" aria-label="views" hidden>
+        <button
+          type="button"
+          role="tab"
+          id="tab-charts"
+          aria-controls="view-charts"
+          aria-selected="true"
+        >
+          Charts
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-compare"
+          aria-controls="view-compare"
+          aria-selected="false"
+          tabindex="-1"
+        >
+          Compare builds
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-runs"
+          aria-controls="view-runs"
+          aria-selected="false"
+          tabindex="-1"
+        >
+          Runs
+        </button>
+      </div>
+      <div id="view-charts" role="tabpanel" aria-labelledby="tab-charts">
+        <p class="sub">
+          One chart per document and user pool, tracked across commits. The thick line is the
+          instructions that the document kit executed, and the dashed grey line those of coolwsd.
+          Left axis: load, feedback and edit times (ms), or the instructions (G) when the times are
+          hidden. The buttons in the legend show or hide each group. Right axis: memory (MB), the
+          document's own footprint, the browser heap, the page process, and the coolwsd process
+          peak. Click a point for detail.
+        </p>
+        <div class="legend">
+          <span class="views" role="group" aria-label="lines shown on the charts"
+            >show
+            <button class="vt" type="button" data-v="instr" aria-pressed="true">instructions</button
+            ><button class="vt" type="button" data-v="times" aria-pressed="true">times</button
+            ><button class="vt" type="button" data-v="mem" aria-pressed="true">memory</button></span
+          >
+          <span class="branches" id="branches" hidden
+            ><span class="sep"></span
+            ><label
+              >branch
+              <select id="brsel"></select></label
+          ></span>
+          <span class="sep"></span>
+          <span class="key" data-g="instr"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink)" stroke-width="3" />
+            </svg>
+            instructions, document kit (G)</span
+          >
+          <span class="key" data-g="instr"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line
+                x1="0"
+                y1="4"
+                x2="22"
+                y2="4"
+                stroke="var(--ink-soft)"
+                stroke-width="2.5"
+                stroke-dasharray="6 3"
+              />
+            </svg>
+            instructions, coolwsd (G)</span
+          >
+          <span class="sep"></span>
+          <span class="key" data-g="times"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line x1="0" y1="4" x2="22" y2="4" stroke="var(--s0)" stroke-width="2.5" />
+            </svg>
+            frame ready</span
+          >
+          <span class="key" data-g="times"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line x1="0" y1="4" x2="22" y2="4" stroke="var(--s4)" stroke-width="2.5" />
+            </svg>
+            first content</span
+          >
+          <span class="key" data-g="times"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line x1="0" y1="4" x2="22" y2="4" stroke="var(--s5)" stroke-width="2.5" />
+            </svg>
+            js ready</span
+          >
+          <span class="key" data-g="times"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line x1="0" y1="4" x2="22" y2="4" stroke="var(--s1)" stroke-width="2.5" />
+            </svg>
+            page load</span
+          >
+          <span class="key" data-g="times"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line x1="0" y1="4" x2="22" y2="4" stroke="var(--s2)" stroke-width="2.5" />
+            </svg>
+            edit</span
+          >
+          <span class="key" data-g="times"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line x1="0" y1="4" x2="22" y2="4" stroke="var(--s6)" stroke-width="2.5" />
+            </svg>
+            image displayed</span
+          >
+          <span class="key" data-g="times"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line x1="0" y1="4" x2="22" y2="4" stroke="var(--s7)" stroke-width="2.5" />
+            </svg>
+            slide duplicated</span
+          >
+          <span class="sep"></span>
+          <span class="key" data-g="mem"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line
+                x1="0"
+                y1="4"
+                x2="22"
+                y2="4"
+                stroke="var(--mem)"
+                stroke-width="2.5"
+                stroke-dasharray="5 4"
+              />
+            </svg>
+            COOL doc memory (MB, right)</span
+          >
+          <span class="key" data-g="mem"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line
+                x1="0"
+                y1="4"
+                x2="22"
+                y2="4"
+                stroke="var(--bmem)"
+                stroke-width="2.5"
+                stroke-dasharray="5 4"
+              />
+            </svg>
+            browser heap (MB, right)</span
+          >
+          <span class="key" data-g="mem"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line
+                x1="0"
+                y1="4"
+                x2="22"
+                y2="4"
+                stroke="var(--tmem)"
+                stroke-width="2.5"
+                stroke-dasharray="8 3"
+              />
+            </svg>
+            page process, resident (MB, own scale at the far right)</span
+          >
+          <span class="key" data-g="mem"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <line
+                x1="0"
+                y1="4"
+                x2="22"
+                y2="4"
+                stroke="var(--wmem)"
+                stroke-width="2.5"
+                stroke-dasharray="2 3"
+              />
+            </svg>
+            coolwsd peak (MB, right)</span
+          >
+          <span class="key" data-g="mem"
+            ><svg class="lswatch" viewBox="0 0 22 8">
+              <rect x="0" y="1" width="5" height="6" fill="var(--st-lib)" />
+              <rect x="5.5" y="1" width="5" height="6" fill="var(--st-other)" />
+              <rect x="11" y="1" width="5" height="6" fill="var(--st-inh)" />
+              <rect x="16.5" y="1" width="5" height="6" fill="var(--st-own)" />
+            </svg>
+            kit memory stacked: libraries, other files, inherited, own (MB, right)</span
+          >
+        </div>
+        <div id="charts"></div>
+        <footer>
+          Each point is one run (one COOL commit) of the document named under the chart title, which
+          is the file that test opens through the WOPI host. Times are ms averaged over the run
+          (left axis). Memory (right axis, dashed) is the peak during the run: COOL document memory
+          is the document's own footprint: the kit's Private_Dirty from COOL's getMetrics endpoint
+          on a plain run, or the document kit's proportional set size sampled from /proc when the
+          point comes from a flamegraph capture, which runs its own COOL, and browser heap is the
+          page's JS heap. The page process is the resident size of the Chromium renderer that runs
+          the page, sampled from /proc during the test: on top of the JS heap it holds the DOM, the
+          decoded images and the canvas pixels of the tiles. The coolwsd peak is the largest
+          resident size of coolwsd and its forkit together during the test, sampled from /proc. The
+          forkit holds the preloaded engine, most of the figure. Runs from before that sampling show
+          the resident high-water mark (VmHWM) of the capture's own coolwsd instead. The stacked bar
+          behind each point breaks the document kit's resident memory into the engine libraries it
+          maps, other mapped files, what the fork handed it (mostly the dictionaries the parent
+          preloaded), and what the document itself wrote. Only the last layer is the document's own
+          cost; the first three are shared with every other document on the machine, which is why
+          the resident total is several times what one more document actually adds. The instruction
+          lines have a scale of their own, which the left axis shows when the times are hidden. They
+          count only the window perf was attached for, which opens after the server is up, so they
+          describe the test and not a whole process life. A busy machine slows the times but does
+          not change the instruction counts, so a busy run stays on the instruction lines. A rising
+          line across commits is a regression. A faded point was measured on a busy machine: a fixed
+          probe ran slower than usual during the run, or the hypervisor took CPU time from the VM,
+          so its times are not comparable. The run detail of each point gives the commits since the
+          previous point, as a git log range and, for a GitHub source, a link that lists them. When
+          a run was also captured under perf, its point shows the plain times and the run detail
+          lists the times under perf beside them. A ringed point is a capture with no plain run
+          beside it, so its times run high by nature and are not a regression. Each run's detail
+          embeds that run's own <b>document flamegraph</b> (k6-flamegraph profiling the kitbroker_*
+          document kit while the document is open, captured with its own single-kit COOL) and can
+          put a second run beside it to compare two commits. A capture is only ever shown for the
+          run it was taken in, and the badge on each chart says how many of that document's runs
+          were profiled.
+        </footer>
+      </div>
+      <div id="view-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
+        <section class="cmp" id="cmp" aria-labelledby="cmph">
+          <h2 id="cmph">Compare two builds</h2>
+          <div class="cmp-pick">
+            <div class="side">
+              <b>A</b
+              ><select id="cmpa" aria-label="A, first measured commit"></select>
+              <label
+                >through
+                <select id="cmpa2"></select
+              ></label>
+            </div>
+            <div class="side">
+              <b>B</b
+              ><select id="cmpb" aria-label="B, first measured commit"></select>
+              <label
+                >through
+                <select id="cmpb2"></select
+              ></label>
+            </div>
+            <label class="all"><input type="checkbox" id="cmpall" /> show unchanged</label>
+          </div>
+          <p class="cmp-note" id="cmpnote"></p>
+          <div class="cmp-scroll"><table id="cmptab"></table></div>
+        </section>
+      </div>
+      <div id="view-runs" role="tabpanel" aria-labelledby="tab-runs" hidden>
+        <section class="cmp runs" aria-labelledby="runsh">
+          <h2 id="runsh">Runs</h2>
+          <p class="cmp-note">
+            Every run on the charts, newest first, with the time it started, in the time zone of
+            this browser. The commits are those the run measured for the first time: since the
+            previous run of its branch, or since its base on main for a change. The data link opens
+            the run's folder, with its logs, metrics and flamegraphs. A deleted run leaves the store
+            and the charts.
+          </p>
+          <div class="runs-bar">
+            <button type="button" id="rundel" disabled>Delete selected runs</button>
+            <span id="runmsg" role="status"></span>
+          </div>
+          <div class="cmp-scroll"><table id="runtab"></table></div>
+        </section>
+      </div>
     </div>
-    <p class="cmp-note" id="cmpnote"></p>
-    <div class="cmp-scroll"><table id="cmptab"></table></div>
-  </section>
-  </div>
-  <div id="view-runs" role="tabpanel" aria-labelledby="tab-runs" hidden>
-  <section class="cmp runs" aria-labelledby="runsh">
-    <h2 id="runsh">Runs</h2>
-    <p class="cmp-note">Every run on the charts, newest first, with the time it started, in the time zone of this browser.
-      The commits are those the run measured for the first time: since the previous run of
-      its branch, or since its base on main for a change. The data link opens the run's
-      folder, with its logs, metrics and flamegraphs. A deleted run leaves the store and the
-      charts.</p>
-    <div class="runs-bar"><button type="button" id="rundel" disabled>Delete selected runs</button>
-      <span id="runmsg" role="status"></span></div>
-    <div class="cmp-scroll"><table id="runtab"></table></div>
-  </section>
-  </div>
-</div>
-<div id="tip" role="tooltip" hidden></div>
-<div class="modal" id="modal" hidden><div class="modal-card" id="mcard" role="dialog" aria-modal="true">
-  <div class="modal-head"><strong id="mt">Run</strong><div class="mnav">
-    <button id="mprev" type="button" title="Previous run (Left arrow)">&larr; Previous</button>
-    <span class="pos" id="mpos"></span>
-    <button id="mnext" type="button" title="Next run (Right arrow)">Next &rarr;</button>
-    <button id="mc" type="button">Close</button></div></div>
-  <div class="meta" id="mmeta"></div><div id="mb"></div><div id="mfg"></div>
-</div></div>
-<script>
+    <div id="tip" role="tooltip" hidden></div>
+    <div class="modal" id="modal" hidden>
+      <div class="modal-card" id="mcard" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <strong id="mt">Run</strong>
+          <div class="mnav">
+            <button id="mprev" type="button" title="Previous run (Left arrow)">
+              &larr; Previous
+            </button>
+            <span class="pos" id="mpos"></span>
+            <button id="mnext" type="button" title="Next run (Right arrow)">Next &rarr;</button>
+            <button id="mc" type="button">Close</button>
+          </div>
+        </div>
+        <div class="meta" id="mmeta"></div>
+        <div id="mb"></div>
+        <div id="mfg"></div>
+      </div>
+    </div>
+    <!-- prettier-ignore -->
+    <script>
 const DATA = $data;
 const COMPARE = $compare;
 const RESULTS = $results;
-$js</script></body></html>
+$js</script>
+  </body>
+</html>
