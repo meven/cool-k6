@@ -1056,22 +1056,30 @@ function runBranch(r) {
 
   // One lane per kind of run, on a 24-hour axis centred on now.
   function drawTimeline() {
-    const W = Math.max(tl.clientWidth, 300),
-      lanes = ["main", "queue", "by hand"],
-      LH = 30,
-      top = 8,
-      left = 70,
-      H = top + lanes.length * LH + 24;
     const now = Date.parse(state.now),
       t0 = now - 12 * HOUR,
       t1 = now + 12 * HOUR;
+    // main and the queue, then a lane for each unit started by hand and each other branch with
+    // a run in the window. A unit shares the lane of the branch that it is named after, as
+    // cool-perf-gerrit-18257.service measures the branch gerrit-18257.
+    const unitLane = (u) => u.unit.replace(/^cool-perf-/, "").replace(/\.(service|timer)$/, "");
+    const branchRuns = RUNS.filter((r) => r.branch !== "main" && Date.parse(r.ts) >= t0);
+    const lanes = ["main", "queue"];
+    [...state.by_hand.map(unitLane), ...branchRuns.map((r) => r.branch)].forEach((l) => {
+      if (!lanes.includes(l)) lanes.push(l);
+    });
+    const W = Math.max(tl.clientWidth, 300),
+      LH = 30,
+      top = 8,
+      left = 110,
+      H = top + lanes.length * LH + 24;
     const x = (t) => left + ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * (W - left - 8);
     const y = (lane) => top + lanes.indexOf(lane) * LH + LH / 2;
     const parts = [];
     const add = (s) => parts.push(s);
     lanes.forEach((l) => {
       add(
-        `<text x="0" y="${y(l) + 4}" class="lane">${l}</text>` +
+        `<text x="0" y="${y(l) + 4}" class="lane">${esc(l.length > 16 ? l.slice(0, 14) + "..." : l)}</text>` +
           `<line x1="${left}" x2="${W - 8}" y1="${y(l)}" y2="${y(l)}" class="track"/>`,
       );
     });
@@ -1144,16 +1152,25 @@ function runBranch(r) {
       }
     });
     state.by_hand.forEach((u) => {
-      if (u.at) mark("by hand", Date.parse(u.at), "queued", `${u.unit}, starts ${day(u.at)}`);
+      if (u.at) mark(unitLane(u), Date.parse(u.at), "queued", `${u.unit}, starts ${day(u.at)}`);
       else if (u.since)
         bar(
-          "by hand",
+          unitLane(u),
           Date.parse(u.since),
           now,
           u.state === "running" ? "running" : "queued",
           `${u.unit}, ${u.state === "running" ? "running" : "waiting for the lock"} since ${day(u.since)}`,
         );
     });
+    // after the bars, so that a running unit does not hide the runs it already published
+    branchRuns.forEach((r) =>
+      mark(
+        r.branch,
+        Date.parse(r.ts),
+        "done",
+        `${r.branch} ${shortLabel(r.commit || "?")}, ${day(r.ts)}`,
+      ),
+    );
     add(`<line x1="${x(now)}" x2="${x(now)}" y1="${top - 4}" y2="${H - 20}" class="now"/>`);
     tl.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="runs of the last and the next 12 hours">${parts.join("")}</svg>`;
   }
