@@ -155,7 +155,30 @@ def waits_for_lock(unit: dict) -> bool:
     return False
 
 
-def units_by_hand() -> list[dict]:
+def lock_holder() -> tuple[str, str] | None:
+    """(cgroup, ISO time) of the script that holds the lock of deploy/nightly or held it last,
+    from the lock-holder file that take_lock writes, while that script still runs."""
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+    try:
+        pid, at = (state / "cool-perf" / "lock-holder").read_text().split()
+        # cgroup v2: one line, 0::<path>
+        group = Path(f"/proc/{pid}/cgroup").read_text().strip().split("::", 1)[1]
+        return group, runqueue.iso(datetime.fromtimestamp(int(at), timezone.utc))
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def measuring_since(unit: dict, holder: tuple[str, str] | None) -> str | None:
+    """When a unit that does not wait for the lock took it: the time of lock-holder, when the
+    script that wrote it runs in the cgroup of the unit."""
+    group = unit.get("ControlGroup")
+    if not holder or not group:
+        return None
+    held_by, at = holder
+    return at if held_by == group or held_by.startswith(group + "/") else None
+
+
+def units_by_hand(holder: tuple[str, str] | None = None) -> list[dict]:
     """The cool-perf units that someone started with systemd-run, running or waiting for their
     time, as the units of DEPLOY-VM.md are."""
     try:
@@ -176,9 +199,11 @@ def units_by_hand() -> list[dict]:
                 found.append({"unit": u["Id"], "state": "scheduled",
                               "at": when(u.get("NextElapseUSecRealtime"))})
         elif u.get("ActiveState") in ("active", "activating"):
+            waiting = waits_for_lock(u)
             found.append({"unit": u["Id"],
-                          "state": "waiting" if waits_for_lock(u) else "running",
-                          "since": started(u)})
+                          "state": "waiting" if waiting else "running",
+                          "since": started(u),
+                          "measuring_since": None if waiting else measuring_since(u, holder)})
     return found
 
 
@@ -192,20 +217,28 @@ def schedule():
     queue = (systemctl_show(["cool-perf-queue.service"], ["ActiveState", "ControlGroup"])
              or [{}])[0]
     running = service.get("ActiveState") in ("active", "activating")
+    main_waiting = running and waits_for_lock(service)
+    holder = lock_holder()
     jobs = runqueue.jobs()
-    # The runner runs one job at a time, so a flock in its cgroup is the one of that job.
-    if any(j["state"] == "running" for j in jobs) and waits_for_lock(queue):
-        for j in jobs:
-            if j["state"] == "running":
+    # The runner runs one job at a time, so a flock in its cgroup is the one of that job, and the
+    # lock that its cgroup holds is the one of that job too.
+    queue_waiting = waits_for_lock(queue)
+    for j in jobs:
+        if j["state"] == "running":
+            if queue_waiting:
                 j["waiting"] = True
+            else:
+                j["measuring_since"] = measuring_since(queue, holder)
     return jsonify(
         now=runqueue.iso(runqueue.now()),
         main={"next": when(timer.get("NextElapseUSecRealtime")),
               "last": when(timer.get("LastTriggerUSec")),
-              "running": running, "waiting": running and waits_for_lock(service),
-              "since": started(service)},
+              "running": running, "waiting": main_waiting,
+              "since": started(service),
+              "measuring_since": (measuring_since(service, holder)
+                                  if running and not main_waiting else None)},
         runner=queue.get("ActiveState"),
-        jobs=jobs, by_hand=units_by_hand(),
+        jobs=jobs, by_hand=units_by_hand(holder),
         domains=runqueue.DOMAINS, max_runs=runqueue.MAX_RUNS)
 
 

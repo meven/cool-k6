@@ -1100,20 +1100,43 @@ function runBranch(r) {
       add(
         `<path d="M${x(t)} ${y(lane) - 7}l7 7l-7 7l-7 -7z" class="${cls}" data-tip="${esc(tip)}" tabindex="0"/>`,
       );
+    // A running unit that waited for the lock: the wait, then the measuring from the time it took
+    // the lock. An API without that time gives one bar from the start of the unit.
+    const span = (lane, since, measuring, end, label) => {
+      if (measuring && Date.parse(measuring) > Date.parse(since)) {
+        bar(
+          lane,
+          Date.parse(since),
+          Date.parse(measuring),
+          "queued",
+          `${label}: waited for the lock from ${day(since)}`,
+        );
+        bar(
+          lane,
+          Date.parse(measuring),
+          end,
+          "running",
+          `${label}: measuring since ${day(measuring)}`,
+        );
+      } else bar(lane, Date.parse(since), end, "running", `${label}: running since ${day(since)}`);
+    };
     // main: the published runs, then the timer's next starts, each a run only if main moved
     RUNS.filter((r) => r.branch === "main" && Date.parse(r.ts) >= t0).forEach((r) =>
       mark("main", Date.parse(r.ts), "done", `main ${shortLabel(r.commit || "?")}, ${day(r.ts)}`),
     );
     // the start of the running unit, or the last start of the timer on an older API
     const mainSince = state.main.since || state.main.last;
-    if (state.main.running && mainSince)
-      bar(
-        "main",
-        Date.parse(mainSince),
-        now,
-        state.main.waiting ? "queued" : "running",
-        `main, ${state.main.waiting ? "waiting for the lock" : "running"} since ${day(mainSince)}`,
-      );
+    if (state.main.running && mainSince) {
+      if (state.main.waiting)
+        bar(
+          "main",
+          Date.parse(mainSince),
+          now,
+          "queued",
+          `main, waiting for the lock since ${day(mainSince)}`,
+        );
+      else span("main", mainSince, state.main.measuring_since, now, "main");
+    }
     if (state.main.next)
       for (let t = Date.parse(state.main.next); t <= t1; t += HOUR)
         mark(
@@ -1140,6 +1163,8 @@ function runBranch(r) {
           "queued",
           `${label}: waiting for the lock since ${day(j.started)}`,
         );
+      } else if (j.state === "running" && j.started) {
+        span("queue", j.started, j.measuring_since, now, label);
       } else if (j.started && j.state !== "cancelled") {
         const end = j.ended ? Date.parse(j.ended) : now;
         bar(
@@ -1153,13 +1178,15 @@ function runBranch(r) {
     });
     state.by_hand.forEach((u) => {
       if (u.at) mark(unitLane(u), Date.parse(u.at), "queued", `${u.unit}, starts ${day(u.at)}`);
+      else if (u.since && u.state === "running")
+        span(unitLane(u), u.since, u.measuring_since, now, u.unit);
       else if (u.since)
         bar(
           unitLane(u),
           Date.parse(u.since),
           now,
-          u.state === "running" ? "running" : "queued",
-          `${u.unit}, ${u.state === "running" ? "running" : "waiting for the lock"} since ${day(u.since)}`,
+          "queued",
+          `${u.unit}, waiting for the lock since ${day(u.since)}`,
         );
     });
     // after the bars, so that a running unit does not hide the runs it already published
@@ -1183,7 +1210,9 @@ function runBranch(r) {
       const running = u.state === "running";
       const start = u.at
         ? "at " + day(u.at)
-        : (running ? "since " : "waiting for the lock since ") + day(u.since);
+        : running
+          ? "since " + day(u.measuring_since || u.since)
+          : "waiting for the lock since " + day(u.since);
       return (
         `<tr class="st-${running ? "running" : "queued"}"><td class="l">${running ? "running" : "scheduled"}</td>` +
         `<td class="l" colspan="4"><code>${esc(u.unit)}</code>` +
@@ -1194,7 +1223,9 @@ function runBranch(r) {
     const mainRunning = state.main.running && !state.main.waiting;
     const mainStart = state.main.running
       ? mainSince
-        ? (state.main.waiting ? "waiting for the lock since " : "since ") + day(mainSince)
+        ? state.main.waiting
+          ? "waiting for the lock since " + day(mainSince)
+          : "since " + day(state.main.measuring_since || mainSince)
         : "-"
       : state.main.next
         ? "next " + day(state.main.next)

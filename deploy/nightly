@@ -26,8 +26,8 @@ if [ ! -f "$STATE/bootstrapped" ]; then
 fi
 # A branch or capacity run holds the lock for an hour or more, so the run of the timer waits for
 # it to end rather than give up. systemd starts no second run while this one waits.
-exec 9>"$STATE/lock"
-flock -n 9 || { echo "=== waiting for the run that holds the lock to end"; flock 9; }
+. deploy/common.sh
+take_lock 1
 
 if [ "${COOL_PERF_SELF_UPDATE:-0}" = 1 ]; then
     step "updating perf-dashboard"
