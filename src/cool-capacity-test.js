@@ -356,7 +356,9 @@ export function handleSummary(data) {
         const errors = metric('session_errors', users);
         return {
             users,
-            reached: Boolean(edit || load || errors),
+            // The thresholds declare every plateau's metrics, so a metric exists without samples.
+            reached: (edit?.values.count ?? 0) > 0 || (load?.values.count ?? 0) > 0
+                || (errors?.values.passes ?? 0) + (errors?.values.fails ?? 0) > 0,
             editP95: edit?.values['p(95)'],
             edits: edit?.values.count ?? 0,
             loadP95: load?.values['p(95)'],
