@@ -391,11 +391,13 @@ if [ -n "$BROWSER_PID" ]; then
 fi
 
 if [ -z "${NO_PERF:-}" ] && [ -s "$OUT_DIR/perf.data" ]; then
-    echo "rendering flamegraph.svg ..."
-    "${PERF_CMD[@]}" --buildid-dir "$BUILDID_DIR" script --no-inline -i "$OUT_DIR/perf.data" \
-        2>/dev/null | stackcollapse-perf.pl \
-        | sed -E 's/^kitbgsv[^;]+/kitbgsv/; s/^kitbroker_[^;]+/kitbroker/' \
-        | flamegraph.pl --title "COOL capacity run $(basename "$OUT_DIR")" > "$OUT_DIR/flamegraph.svg"
+    # Drawn as the suite draws its captures: the stacks of coolwsd and forkit under one frame
+    # and those of the kits under another.
+    python3 -c 'import json, sys; print(json.dumps({"perf_cmd": sys.argv[2:], "wsd_pids": sys.argv[1].split(",")}))' \
+        "$COOLWSD_PID,$FORKIT_PID" "${PERF_CMD[@]}" --buildid-dir "$BUILDID_DIR" \
+        > "$OUT_DIR/render-job.json"
+    python3 "$ROOT/k6-flamegraph.py" --render-only --out-dir "$OUT_DIR" \
+        || echo "the flamegraph could not be drawn" >&2
     [ -z "${PRUNE_PERF_DATA:-}" ] || rm_perf_files "$OUT_DIR/perf.data" "$OUT_DIR/perf.data.old"
 fi
 rm_perf_files "$BUILDID_DIR"

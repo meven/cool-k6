@@ -108,9 +108,10 @@ KIT_ROOT = "[kit]"
 def process_stack(frames: list[str], wsd: bool) -> str:
     """A collapsed stack, thread first, under the frame of its process side, with every
     frame tagged when it is coolwsd or forkit."""
-    # a background save thread is named after its document
-    if frames[0].startswith("kitbgsv"):
-        frames = ["kitbgsv", *frames[1:]]
+    # a background save thread is named after its document, and a kit and a spare kit are
+    # numbered like the document thread of coolwsd, so that the threads of a capacity run
+    # with many documents merge
+    frames = [re.sub(r"^(kitbgsv|kitbroker|kit_spare|docbroker).*", r"\1", frames[0]), *frames[1:]]
     if wsd:
         return ";".join(f + WSD_TAG for f in [WSD_ROOT, *frames])
     return ";".join([KIT_ROOT, *frames])
