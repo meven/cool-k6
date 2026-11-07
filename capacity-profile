@@ -16,16 +16,18 @@
 #   PERF           - perf command, e.g. "sudo perf" (default perf)
 #   PERF_FREQ      - sampling frequency in Hz      (default 49)
 #   PERF_CALLGRAPH - perf --call-graph value       (default dwarf,16384)
-#   MEM_FLOOR_MB   - stop the run when MemAvailable drops under this (default 3072, 0 to disable)
+#   MEM_FLOOR_MB   - stop the run when MemAvailable drops under this (default 1024, 0 to disable)
 #   BROWSER_AT     - seconds into the run the browser user starts (default: start of the last hold)
 #   TYPE_REPEATS   - sentences the browser user types (default 10)
 #   EXECUTABLE     - browser for Puppeteer      (default: chromium or google-chrome on PATH)
 #   NO_PERF=1, NO_BROWSER=1 - skip either profile
 #   PRUNE_PERF_DATA=1 - delete perf.data once flamegraph.svg is drawn
-#   SERVER_CPUS    - cores coolwsd, forkit and the kits may run on, e.g. 0-3 (default: all)
-#   SERVER_MEMORY  - memory they may use together, e.g. 8G, with no swap  (default: no limit)
-#                    Both need a cgroup v2 that this script may write, as under systemd-run with
-#                    Delegate=yes. k6, perf, the samplers and the browser user stay outside.
+#   SERVER_CPUS    - cores coolwsd, forkit and the kits run on              (default 0-3)
+#   SERVER_MEMORY  - memory they may use together, with no swap            (default 8G)
+#                    A capacity is a number of users on a server of a known size, so both are
+#                    required. They need a cgroup v2 that this script may write, as under
+#                    systemd-run with Delegate=yes. k6, perf, the samplers and the browser user
+#                    run on the other cores, so the server has its cores to itself.
 #   METRICS_INTERVAL - seconds between two samples of coolwsd's /cool/getMetrics (default 10)
 #   METRICS_AUTH   - admin console user:password for /cool/getMetrics (default admin:admin)
 #
@@ -51,7 +53,9 @@ WOPI_HOST=${WOPI_HOST:-https://localhost:3000/}
 read -r -a PERF_CMD <<< "${PERF:-perf}"
 PERF_FREQ=${PERF_FREQ:-49}
 PERF_CALLGRAPH=${PERF_CALLGRAPH:-dwarf,16384}
-MEM_FLOOR_MB=${MEM_FLOOR_MB:-3072}
+MEM_FLOOR_MB=${MEM_FLOOR_MB:-1024}
+SERVER_CPUS=${SERVER_CPUS:-0-3}
+SERVER_MEMORY=${SERVER_MEMORY:-8G}
 TYPE_REPEATS=${TYPE_REPEATS:-10}
 EXECUTABLE=${EXECUTABLE:-$(command -v chromium || command -v google-chrome || true)}
 TEST=$ROOT/dist/cool-capacity-test.js
@@ -103,28 +107,41 @@ if [ ! -s "$TLS_DIR/wopi-cert.pem" ] || [ ! -s "$TLS_DIR/ca-cert.pem" ]; then
 fi
 
 STARTED_PIDS=()
-# The cgroup that coolwsd, forkit and the kits run in when SERVER_CPUS or SERVER_MEMORY is set.
-SERVER_CG=
-if [ -n "${SERVER_CPUS:-}${SERVER_MEMORY:-}" ]; then
-    own=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)
-    [ -w "$own/cgroup.subtree_control" ] \
-        || die "SERVER_CPUS and SERVER_MEMORY need a delegated cgroup v2, run under systemd-run" \
-               "with -p Delegate=yes"
-    # cgroup v2 enables a controller for the children of a cgroup only when that cgroup holds no
-    # process itself, so the processes of this run move to a runner child first.
-    mkdir -p "$own/runner"
-    for pid in $(cat "$own/cgroup.procs"); do echo "$pid" > "$own/runner/cgroup.procs" 2>/dev/null || true; done
-    echo "+cpuset +memory" > "$own/cgroup.subtree_control" \
-        || die "cannot enable the cpuset and memory controllers in $own"
-    SERVER_CG=$own/server
-    mkdir -p "$SERVER_CG"
-    [ -z "${SERVER_CPUS:-}" ] || echo "$SERVER_CPUS" > "$SERVER_CG/cpuset.cpus"
-    if [ -n "${SERVER_MEMORY:-}" ]; then
-        echo "$SERVER_MEMORY" > "$SERVER_CG/memory.max"
-        echo 0 > "$SERVER_CG/memory.swap.max"
-    fi
-    echo "server cgroup $SERVER_CG: cores ${SERVER_CPUS:-all}, memory ${SERVER_MEMORY:-unlimited}"
-fi
+# coolwsd, forkit and the kits run in the server cgroup, on SERVER_CPUS and in SERVER_MEMORY.
+# Everything else of the run stays in the runner cgroup, on the other cores.
+own=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)
+[ -w "$own/cgroup.subtree_control" ] \
+    || die "the server limits need a delegated cgroup v2, run under systemd-run with -p Delegate=yes"
+# cgroup v2 enables a controller for the children of a cgroup only when that cgroup holds no
+# process itself, so the processes of this run move to a runner child first.
+mkdir -p "$own/runner"
+for pid in $(cat "$own/cgroup.procs"); do echo "$pid" > "$own/runner/cgroup.procs" 2>/dev/null || true; done
+echo "+cpuset +memory" > "$own/cgroup.subtree_control" \
+    || die "cannot enable the cpuset and memory controllers in $own"
+CLIENT_CPUS=$(python3 - "$(cat "$own/cpuset.cpus.effective")" "$SERVER_CPUS" <<'EOF'
+import sys
+def cpus(s):
+    out = set()
+    for part in filter(None, s.split(",")):
+        a, _, b = part.partition("-")
+        out.update(range(int(a), int(b or a) + 1))
+    return out
+print(",".join(map(str, sorted(cpus(sys.argv[1]) - cpus(sys.argv[2])))))
+EOF
+) || die "SERVER_CPUS=$SERVER_CPUS is not a list of cores"
+[ -n "$CLIENT_CPUS" ] || die "no core is left for k6 and the browser user outside SERVER_CPUS=$SERVER_CPUS"
+echo "$CLIENT_CPUS" > "$own/runner/cpuset.cpus" || die "cannot pin the runner to cores $CLIENT_CPUS"
+SERVER_CG=$own/server
+mkdir -p "$SERVER_CG"
+echo "$SERVER_CPUS" > "$SERVER_CG/cpuset.cpus" || die "cannot give the server cores $SERVER_CPUS"
+echo "$SERVER_MEMORY" > "$SERVER_CG/memory.max" || die "cannot limit the server to $SERVER_MEMORY"
+echo 0 > "$SERVER_CG/memory.swap.max"
+echo "server cgroup $SERVER_CG: cores $SERVER_CPUS, memory $SERVER_MEMORY; k6 and the browser on cores $CLIENT_CPUS"
+# The limits, so that a run in progress shows them; stop_started adds what the server used.
+{ echo "cpuset.cpus: $(cat "$SERVER_CG/cpuset.cpus")"
+  echo "memory.max: $(cat "$SERVER_CG/memory.max")"; } > "$OUT_DIR/server-cgroup.txt"
+# Passed to k6, which writes them into capacity.json beside the capacity.
+export CAP_SERVER_CPUS=$SERVER_CPUS CAP_SERVER_MEMORY=$SERVER_MEMORY
 
 stop_started() {
     local pid i
@@ -146,7 +163,7 @@ stop_started() {
 }
 trap stop_started EXIT
 
-if [ -n "$SERVER_CG" ] && cool_up; then
+if cool_up; then
     die "a coolwsd already answers at $WOPI_URL, outside the limits of SERVER_CPUS and SERVER_MEMORY"
 fi
 if ! cool_up; then
@@ -162,7 +179,7 @@ if ! cool_up; then
     cool_cmd+=" --o:storage.ssl.ca_file_path=$TLS_DIR/ca-cert.pem"
     echo "starting coolwsd: $cool_cmd"
     # shellcheck disable=SC2086 # the command line is split into its words on purpose
-    (if [ -n "$SERVER_CG" ]; then echo "$BASHPID" > "$SERVER_CG/cgroup.procs"; fi
+    (echo "$BASHPID" > "$SERVER_CG/cgroup.procs"
      cd "$COOLWSD_DIR" && exec setsid $cool_cmd) > "$OUT_DIR/coolwsd.log" 2>&1 < /dev/null &
     STARTED_PIDS+=($!)
     wait_up cool_up 90 || die "coolwsd did not come up, see $OUT_DIR/coolwsd.log"
@@ -205,7 +222,7 @@ else
     # forward CAP_*, so the container is started here.
     CAP_ENV=()
     for v in $(compgen -e | grep '^CAP_' || true); do CAP_ENV+=(-e "$v"); done
-    K6=(docker run --network host --rm -i -v "$ROOT:/app:Z" -v "$OUT_DIR:/out:Z" -w /out
+    K6=(docker run --network host --rm -i --cpuset-cpus "$CLIENT_CPUS" -v "$ROOT:/app:Z" -v "$OUT_DIR:/out:Z" -w /out
         -e WOPI_URL="$WOPI_URL" -e WOPI_HOST="$WOPI_HOST" "${CAP_ENV[@]}"
         grafana/k6:1.7.1 run --no-color /app/dist/cool-capacity-test.js)
 fi

@@ -482,8 +482,10 @@ still shows its log.
 
 coolwsd, forkit and the kits run in a cgroup of their own, limited to cores 0
 to 3 and 8 GB of memory with no swap, the size of a small server.
-`SERVER_CPUS` and `SERVER_MEMORY` change the limits, and an empty value removes
-one. k6, perf and the browser user run outside it.
+`SERVER_CPUS` and `SERVER_MEMORY` change the limits, which a run always has: a
+capacity is a number of users on a server of a known size. k6, perf, the
+samplers and the browser user run on the other cores, so the server has its
+cores to itself.
 `server-cgroup.txt` in the results gives the peak memory of the server and how
 often the kernel killed a process in it for lack of memory. perf counts the
 instructions, cycles and CPU time of the whole server every 5 seconds into

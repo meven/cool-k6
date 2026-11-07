@@ -69,6 +69,8 @@ const TYPE_STEP_MS = num('CAP_TYPE_STEP_MS', 150);
 const EDIT_P95_MS = num('CAP_EDIT_P95_MS', 300);
 const LOAD_P95_MS = num('CAP_LOAD_P95_MS', 10000);
 const MAX_ERRORS = num('CAP_MAX_ERRORS', 0.01);
+// The cores and memory of the server, which capacity-profile sets, for the summary.
+const SERVER = { cpus: __ENV['CAP_SERVER_CPUS'] || null, memory: __ENV['CAP_SERVER_MEMORY'] || null };
 
 // The server answers a load with status: well within limit_load_secs, 100 s by default.
 const LOAD_TIMEOUT_MS = 100000;
@@ -387,12 +389,13 @@ export function handleSummary(data) {
         lines.push(`${String(r.users).padStart(5)}  ${ms(r.editP95).padStart(8)} ${String(r.edits).padStart(9)}`
             + `  ${ms(r.loadP95).padStart(8)} ${String(r.loads).padStart(9)}  ${errors.padStart(15)}  ${result}`);
     }
-    lines.push('', `capacity: ${capacity} users (targets: edit p95 < ${EDIT_P95_MS} ms, `
+    const on = SERVER.cpus ? ` on cores ${SERVER.cpus} and ${SERVER.memory}` : ' on a server of unknown size';
+    lines.push('', `capacity: ${capacity} users${on} (targets: edit p95 < ${EDIT_P95_MS} ms, `
         + `load p95 < ${LOAD_P95_MS} ms, failed sessions < ${100 * MAX_ERRORS}%, `
         + `${USERS_PER_DOC} user(s) per document)`, '');
 
     return {
         stdout: textSummary(data, { indent: ' ', enableColors: true }) + lines.join('\n'),
-        'capacity.json': JSON.stringify({ capacity, usersPerDocument: USERS_PER_DOC, plateaus: rows }, null, 2),
+        'capacity.json': JSON.stringify({ capacity, server: SERVER, usersPerDocument: USERS_PER_DOC, plateaus: rows }, null, 2),
     };
 }
