@@ -44,5 +44,9 @@ echo "=== capacity run of $commit into $out"
 # A coolwsd left by an earlier run would answer instead of the one that capacity-profile starts.
 pkill -u "$(id -u)" -x coolwsd || true
 export SERVER_CPUS=${SERVER_CPUS-0-3} SERVER_MEMORY=${SERVER_MEMORY-8G}
+# A WOPI host of its own, on a free port: one already on 3000 presents a certificate that
+# coolwsd does not trust, and every session is refused.
+wopi_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1])')
+export WOPI_HOST=https://localhost:$wopi_port/
 OUT_DIR=$out PRUNE_PERF_DATA=1 ./capacity-profile
 echo "the capacity run of $commit is in $out, listed under /capacity/ on the dashboard host"

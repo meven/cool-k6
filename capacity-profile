@@ -184,8 +184,8 @@ fi
 wopi_hostport=$(sed -E 's#^[a-z]+://([^/]+).*#\1#' <<< "$WOPI_HOST")
 openssl s_client -connect "$wopi_hostport" -servername localhost -CAfile "$TLS_DIR/ca-cert.pem" \
     -verify_return_error < /dev/null > /dev/null 2>&1 \
-    || echo "warning: the WOPI host at $WOPI_HOST does not present a certificate from" \
-            "$TLS_DIR/ca-cert.pem, coolwsd will refuse it" >&2
+    || die "the WOPI host at $WOPI_HOST does not present a certificate from" \
+           "$TLS_DIR/ca-cert.pem, so coolwsd would refuse every session"
 
 if [ -z "${NO_PERF:-}" ]; then
     command -v stackcollapse-perf.pl >/dev/null && command -v flamegraph.pl >/dev/null \
