@@ -11,6 +11,7 @@
 #
 # coolwsd, forkit and the kits run on 4 cores and in 8 GB of memory, the size of a small server:
 # SERVER_CPUS (default 0-3) and SERVER_MEMORY (default 8G), each empty for no limit.
+# With a memory limit, the run stops when the host has less than 1 GB available (MEM_FLOOR_MB).
 #
 # It holds the lock of deploy/nightly for the whole run, so no timer run starts on the same ports,
 # and it stops when cool-ci doctor fails, for example on a nearly full disk.
@@ -44,6 +45,9 @@ echo "=== capacity run of $commit into $out"
 # A coolwsd left by an earlier run would answer instead of the one that capacity-profile starts.
 pkill -u "$(id -u)" -x coolwsd || true
 export SERVER_CPUS=${SERVER_CPUS-0-3} SERVER_MEMORY=${SERVER_MEMORY-8G}
+# The server cgroup keeps coolwsd and the kits inside SERVER_MEMORY, so the host floor of
+# capacity-profile only has to keep room for k6 and the browser user.
+[ -z "$SERVER_MEMORY" ] || export MEM_FLOOR_MB=${MEM_FLOOR_MB-1024}
 # A WOPI host of its own, on a free port: one already on 3000 presents a certificate that
 # coolwsd does not trust, and every session is refused.
 wopi_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1])')
