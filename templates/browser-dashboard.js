@@ -1419,7 +1419,7 @@ function runBranch(r) {
             `<td><code>${esc(r.commit)}</code></td>` +
             `<td>${!r.done ? "running" : !r.capacity ? "none" : r.capacity + (top ? "+" : "") + " users"}</td>` +
             `<td>${esc(stages || "-")}</td>` +
-            `<td>${n ? n + " cores" : "no limit"}, ${r.memory_max_mb ? gb(r.memory_max_mb) : "no limit"}</td>` +
+            `<td>${n ? n + " cores" : "unknown"}, ${r.memory_max_mb ? gb(r.memory_max_mb) : "unknown"}</td>` +
             `<td>${gb(r.memory_peak_mb)}</td>` +
             `<td>${r.oom_kills == null ? "-" : r.oom_kills}</td>` +
             `<td><a href="capacity/${esc(r.run)}/">data</a>` +
@@ -1472,8 +1472,9 @@ function runBranch(r) {
     document.getElementById("capdh").textContent = `Run of ${when(r.ts)}, commit ${r.commit}`;
     const n = cores(r.cpus);
     document.getElementById("capdnote").textContent =
-      `The server ran on ${n ? n + " cores" : "every core"} and in ` +
-      `${r.memory_max_mb ? gb(r.memory_max_mb) : "all the memory"}, and ` +
+      (n && r.memory_max_mb
+        ? `The server ran on ${n} cores and in ${gb(r.memory_max_mb)}, and `
+        : "The run did not record the cores and memory of the server, and ") +
       `${r.users_per_document || 1} user(s) shared each document. The shaded bands are the ` +
       "stages, where the users hold steady and the figures in the table are measured; " +
       "between them the users ramp up.";
