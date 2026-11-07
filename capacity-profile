@@ -228,12 +228,12 @@ else
 fi
 
 # The start of the last hold, from the same defaults as the test.
-if [ -z "${BROWSER_AT:-}" ]; then
-    plateaus=$(tr ',' '\n' <<< "${CAP_VUS:-10,20,40,80,120,160}" | grep -c .)
-    ramp=$(seconds "${CAP_RAMP:-1m}")
-    hold=$(seconds "${CAP_HOLD:-3m}")
-    BROWSER_AT=$(( plateaus * ramp + (plateaus - 1) * hold ))
-fi
+plateaus=$(tr ',' '\n' <<< "${CAP_VUS:-10,20,40,80,120,160}" | grep -c .)
+ramp=$(seconds "${CAP_RAMP:-1m}")
+hold=$(seconds "${CAP_HOLD:-3m}")
+BROWSER_AT=${BROWSER_AT:-$(( plateaus * ramp + (plateaus - 1) * hold ))}
+# The stages, the 30 s ramp down and the 30 s graceful stop of the test, and 2 minutes more.
+K6_DEADLINE=$(( plateaus * (ramp + hold) + 60 + 120 ))
 
 # perf copies every binary it samples into a build-id cache, ~/.debug by default, which nothing
 # empties: about 1.2 GB of engine library per build. The run keeps its own, deleted at the end.
@@ -370,6 +370,13 @@ k6_status=0
 ( cd "$OUT_DIR" && exec env WOPI_URL="$WOPI_URL" WOPI_HOST="$WOPI_HOST" "${K6[@]}" ) \
     > >(tee "$OUT_DIR/k6.log") 2>&1 &
 K6_PID=$!
+# k6 does not interrupt a user that waits on a socket the server keeps open, so a run where the
+# server stopped answering would never end. Past the deadline k6 is stopped, and still writes
+# its summary.
+( sleep "$K6_DEADLINE"
+  echo "capacity-profile: k6 still runs ${K6_DEADLINE}s after its start, stopping it" >&2
+  kill -TERM "$K6_PID" 2>/dev/null || true ) &
+K6_WATCHDOG_PID=$!
 if [ "$MEM_FLOOR_MB" -gt 0 ]; then
     mem_watch "$K6_PID" &
     MEM_WATCH_PID=$!
@@ -380,6 +387,7 @@ python3 "$ROOT/timeline-sampler.py" "$OUT_DIR" &
 TIMELINE_PID=$!
 wait "$K6_PID" || k6_status=$?
 K6_PID=
+kill "$K6_WATCHDOG_PID" 2>/dev/null || true
 [ -z "$MEM_WATCH_PID" ] || kill "$MEM_WATCH_PID" 2>/dev/null || true
 kill "$METRICS_PID" 2>/dev/null || true
 METRICS_PID=

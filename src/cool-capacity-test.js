@@ -305,10 +305,11 @@ export default async function () {
             }, EDIT_TIMEOUT_MS);
         }
 
+        // From the start of the session, so that a socket that never opens fails too.
+        later(() => { if (!s.loaded) fail(); }, LOAD_TIMEOUT_MS);
         client = new CoolClientWs(wopiClient, wopiSrc, () => {
             s.openedAt = Date.now();
             client.openDocument(wopiSrc);
-            later(() => { if (!s.loaded) fail(); }, LOAD_TIMEOUT_MS);
         });
 
         // Text frames are protocol messages, binary frames are tiles.
