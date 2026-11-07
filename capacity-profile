@@ -212,7 +212,7 @@ fi
 
 # The start of the last hold, from the same defaults as the test.
 if [ -z "${BROWSER_AT:-}" ]; then
-    plateaus=$(tr ',' '\n' <<< "${CAP_VUS:-10,20,40,80}" | grep -c .)
+    plateaus=$(tr ',' '\n' <<< "${CAP_VUS:-10,20,40,80,120,160}" | grep -c .)
     ramp=$(seconds "${CAP_RAMP:-1m}")
     hold=$(seconds "${CAP_HOLD:-3m}")
     BROWSER_AT=$(( plateaus * ramp + (plateaus - 1) * hold ))

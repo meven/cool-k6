@@ -32,7 +32,7 @@
  * them, and num_prespawn_children in coolwsd.xml decides how many kits wait ready.
  *
  * Env:
- *   CAP_VUS           - comma-separated user plateaus                (default "10,20,40,80")
+ *   CAP_VUS           - comma-separated user plateaus                (default "10,20,40,80,120,160")
  *   CAP_RAMP          - time to climb to each plateau                (default "1m")
  *   CAP_HOLD          - time held at each plateau                    (default "3m")
  *   CAP_SESSION       - seconds a user keeps the document open       (default 300)
@@ -56,7 +56,7 @@ import { wopiHost, wopiUrl } from './config.js';
 
 const num = (name, fallback) => Number(__ENV[name] ?? fallback);
 
-const PLATEAUS = (__ENV['CAP_VUS'] || '10,20,40,80')
+const PLATEAUS = (__ENV['CAP_VUS'] || '10,20,40,80,120,160')
     .split(',').map((s) => Number(s.trim())).filter((n) => n > 0);
 const RAMP = __ENV['CAP_RAMP'] || '1m';
 const HOLD = __ENV['CAP_HOLD'] || '3m';
