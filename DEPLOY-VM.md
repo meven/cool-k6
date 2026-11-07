@@ -463,7 +463,9 @@ minutes. It records a flamegraph of coolwsd and every kit, the timeline of
 memory and CPU, and the edit latency of each user, and one real browser user
 joins at the last step. It holds the lock of the timer and stops when `cool-ci doctor` fails, and
 its results go to `/var/lib/cool-perf/capacity/<time>-<commit>/`, which the
-dashboard host lists under `/capacity/`. Schedule it like a branch run:
+dashboard host lists under `/capacity/`, and the Capacity tab of the dashboard
+shows each run: its stages, and the users, edit latency, CPU and memory over
+time. Schedule it like a branch run:
 
 ```
 sudo systemd-run --unit=cool-perf-capacity \

@@ -961,3 +961,70 @@ footer {
   border-top: 1px solid var(--hair);
   padding-top: 14px;
 }
+
+/* the Capacity tab: four charts on one time axis */
+#tip.multi {
+  white-space: pre;
+}
+.cap-charts {
+  margin-top: 12px;
+}
+.cap-chart {
+  display: block;
+  max-width: 100%;
+}
+.cap-chart .band {
+  fill: var(--grid);
+  opacity: 0.6;
+}
+.cap-chart .band-l,
+.cap-chart .ax,
+.cap-chart .leg {
+  fill: var(--ink-soft);
+  font-size: 11px;
+}
+.cap-chart .band-l,
+.cap-chart .ax.mid {
+  text-anchor: middle;
+}
+.cap-chart .ax {
+  text-anchor: end;
+}
+.cap-chart .ttl {
+  fill: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+.cap-chart .grid {
+  stroke: var(--grid);
+  stroke-width: 1;
+}
+.cap-chart .limit {
+  stroke: var(--ink-faint);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+.cap-chart .cl {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.cap-chart .cl.s0 {
+  stroke: var(--s0);
+}
+.cap-chart .cl.s1 {
+  stroke: var(--s1);
+}
+.cap-chart .cross {
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+}
+button.linkish {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}

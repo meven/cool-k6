@@ -516,7 +516,7 @@ syncViews();
 // The address holds the branch of the charts and the two sides of the comparison.
 // The history of the runs was a Runs tab of its own, so an old #view=runs opens the schedule.
 let VIEW = ((v) =>
-  v === "runs" ? "schedule" : ["compare", "schedule"].includes(v) ? v : "charts")(
+  v === "runs" ? "schedule" : ["compare", "schedule", "capacity"].includes(v) ? v : "charts")(
   new URLSearchParams(location.hash.slice(1)).get("view"),
 );
 function writeHash() {
@@ -1370,6 +1370,302 @@ function runBranch(r) {
   });
   // The tabs showed the view of the address before this listened.
   if (VIEW === "schedule") document.dispatchEvent(new CustomEvent("viewshown", { detail: VIEW }));
+})();
+
+// ---- the capacity runs, read from the API when the tab is shown ----------------------
+(function () {
+  const tab = document.getElementById("captab"),
+    msg = document.getElementById("capmsg"),
+    det = document.getElementById("capdet"),
+    charts = document.getElementById("capcharts");
+  let list = null,
+    run = null,
+    shown = null;
+  const cores = (cpus) =>
+    (cpus || "")
+      .split(",")
+      .filter(Boolean)
+      .reduce((n, part) => {
+        const [a, b] = part.split("-").map(Number);
+        return n + (b === undefined ? 1 : b - a + 1);
+      }, 0) || null;
+  const when = day;
+  const gb = (mb) => (mb == null ? "-" : (mb / 1024).toFixed(1) + " GB");
+  const result = (p) =>
+    !p.reached ? "not reached" : !p.measured ? "not measured" : p.ok ? "passed" : "FAILED";
+
+  function drawList() {
+    if (!list.length) {
+      tab.innerHTML = "";
+      msg.textContent = "No capacity run yet.";
+      return;
+    }
+    msg.textContent = "";
+    tab.innerHTML =
+      "<thead><tr><th>started</th><th>commit</th><th>capacity</th><th>stages</th>" +
+      "<th>limits</th><th>peak memory</th><th>OOM kills</th><th></th></tr></thead><tbody>" +
+      list
+        .map((r) => {
+          const n = cores(r.cpus);
+          const stages = r.plateaus
+            .filter((p) => p.reached)
+            .map((p) => `${p.users} ${p.ok && p.measured ? "ok" : "no"}`)
+            .join(", ");
+          const top = r.plateaus.length && r.plateaus.every((p) => p.ok && p.measured);
+          return (
+            `<tr${r.run === run ? ' class="sel"' : ""}>` +
+            `<td><button type="button" class="linkish" data-run="${esc(r.run)}">` +
+            `${esc(when(r.ts))}</button></td>` +
+            `<td><code>${esc(r.commit)}</code></td>` +
+            `<td>${!r.done ? "running" : !r.capacity ? "none" : r.capacity + (top ? "+" : "") + " users"}</td>` +
+            `<td>${esc(stages || "-")}</td>` +
+            `<td>${n ? n + " cores" : "no limit"}, ${r.memory_max_mb ? gb(r.memory_max_mb) : "no limit"}</td>` +
+            `<td>${gb(r.memory_peak_mb)}</td>` +
+            `<td>${r.oom_kills == null ? "-" : r.oom_kills}</td>` +
+            `<td><a href="capacity/${esc(r.run)}/">data</a>` +
+            (r.flamegraph ? ` <a href="capacity/${esc(r.run)}/flamegraph.svg">flamegraph</a>` : "") +
+            "</td></tr>"
+          );
+        })
+        .join("") +
+      "</tbody>";
+  }
+  tab.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-run]");
+    if (b) pick(b.dataset.run);
+  });
+
+  async function load() {
+    try {
+      const res = await fetch("api/capacity", { cache: "no-store" });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      list = (await res.json()).runs;
+    } catch (err) {
+      msg.textContent = "The capacity runs could not be read: " + err.message;
+      return;
+    }
+    if (!run || !list.some((r) => r.run === run)) {
+      const first = list.find((r) => r.done && r.plateaus.some((p) => p.measured)) || list[0];
+      run = first ? first.run : null;
+    }
+    drawList();
+    if (run) pick(run);
+  }
+
+  async function pick(id) {
+    run = id;
+    drawList();
+    try {
+      const res = await fetch(`api/capacity/${encodeURIComponent(id)}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      shown = await res.json();
+    } catch (err) {
+      msg.textContent = "The run could not be read: " + err.message;
+      return;
+    }
+    drawDetail();
+  }
+
+  function drawDetail() {
+    const r = shown;
+    det.hidden = false;
+    document.getElementById("capdh").textContent = `Run of ${when(r.ts)}, commit ${r.commit}`;
+    const n = cores(r.cpus);
+    document.getElementById("capdnote").textContent =
+      `The server ran on ${n ? n + " cores" : "every core"} and in ` +
+      `${r.memory_max_mb ? gb(r.memory_max_mb) : "all the memory"}, and ` +
+      `${r.users_per_document || 1} user(s) shared each document. The shaded bands are the ` +
+      "stages, where the users hold steady and the figures in the table are measured; " +
+      "between them the users ramp up.";
+    document.getElementById("capstages").innerHTML =
+      "<thead><tr><th>users</th><th>edit p95</th><th>edits</th><th>load p95</th>" +
+      "<th>loads</th><th>failed sessions</th><th>result</th></tr></thead><tbody>" +
+      r.plateaus
+        .map(
+          (p) =>
+            `<tr><td>${p.users}</td>` +
+            `<td>${p.reached ? Math.round(p.edit_p95) + " ms" : "-"}</td><td>${p.edits ?? "-"}</td>` +
+            `<td>${p.reached ? Math.round(p.load_p95) + " ms" : "-"}</td><td>${p.loads ?? "-"}</td>` +
+            `<td>${p.reached && p.error_rate != null ? (100 * p.error_rate).toFixed(1) + "%" : "-"}</td>` +
+            `<td>${result(p)}</td></tr>`,
+        )
+        .join("") +
+      "</tbody>";
+    drawCharts();
+  }
+
+  // Four charts on one time axis, each with its own unit, rather than two units on one chart.
+  function drawCharts() {
+    const r = shown;
+    const end = Math.max(
+      1,
+      ...[r.users, r.edits, r.cpu, r.memory].map((s) => (s.length ? s[s.length - 1][0] : 0)),
+    );
+    const n = cores(r.cpus);
+    const specs = [
+      {
+        title: "users",
+        unit: "",
+        series: [{ name: "users", cls: "s0", rows: r.users.map((x) => [x[0], x[1]]) }],
+      },
+      {
+        title: "edit latency, keystroke to answer, ms",
+        unit: " ms",
+        series: [
+          { name: "p95", cls: "s0", rows: r.edits.map((x) => [x[0], x[2]]) },
+          { name: "median", cls: "s1", rows: r.edits.map((x) => [x[0], x[1]]) },
+        ],
+      },
+      {
+        title: "CPU, cores",
+        unit: "",
+        digits: 2,
+        limit: n,
+        limitLabel: n ? `limit ${n} cores` : "",
+        series: [
+          { name: "server", cls: "s0", rows: r.cpu.map((x) => [x[0], x[1]]) },
+          { name: "k6, browser and WOPI host", cls: "s1", rows: r.cpu.map((x) => [x[0], x[2]]) },
+        ],
+      },
+      {
+        title: "server memory as coolwsd reports it, GB",
+        unit: " GB",
+        digits: 2,
+        limit: r.memory_max_mb && r.memory_max_mb / 1024,
+        limitLabel: r.memory_max_mb ? `limit ${gb(r.memory_max_mb)}` : "",
+        series: [
+          {
+            name: "coolwsd, forkit and kits",
+            cls: "s0",
+            rows: r.memory.map((x) => [x[0], (x[1] + x[2] + x[3]) / 1024]),
+          },
+          { name: "kits", cls: "s1", rows: r.memory.map((x) => [x[0], x[3] / 1024]) },
+        ],
+        extra: (t) => {
+          const m = nearest(r.memory, t);
+          return m ? `, ${m[4]} kits` : "";
+        },
+      },
+    ];
+    charts.innerHTML = "";
+    const w = Math.max(320, charts.clientWidth || 800);
+    const svgs = specs.map((sp, i) => chart(sp, w, end, r.plateaus, i === 0, i === specs.length - 1));
+    svgs.forEach((s) => charts.appendChild(s));
+    // one crosshair over every chart, at the same time
+    const move = (e) => {
+      const svg = e.currentTarget;
+      const b = svg.getBoundingClientRect();
+      const t = ((e.clientX - b.left - PAD.l) / (w - PAD.l - PAD.r)) * end;
+      if (t < 0 || t > end) return leave();
+      const lines = [`${(t / 60).toFixed(1)} min`];
+      svgs.forEach((s, i) => {
+        const x = PAD.l + (t / end) * (w - PAD.l - PAD.r);
+        const cross = s.querySelector(".cross");
+        cross.setAttribute("x1", x);
+        cross.setAttribute("x2", x);
+        cross.style.display = "";
+        const sp = specs[i];
+        const vals = sp.series
+          .map((se) => {
+            const v = nearest(se.rows, t);
+            const name = sp.series.length > 1 ? se.name + " " : "";
+            return v ? `${name}${v[1].toFixed(sp.digits || 0)}${sp.unit}` : null;
+          })
+          .filter(Boolean);
+        if (vals.length) lines.push(`${sp.title}: ${vals.join(", ")}${sp.extra ? sp.extra(t) : ""}`);
+      });
+      tip.textContent = lines.join("\n");
+      tip.classList.add("multi");
+      tip.hidden = false;
+      placeTip(e);
+    };
+    const leave = () => {
+      tip.hidden = true;
+      tip.classList.remove("multi");
+      svgs.forEach((s) => (s.querySelector(".cross").style.display = "none"));
+    };
+    svgs.forEach((s) => {
+      s.addEventListener("mousemove", move);
+      s.addEventListener("mouseleave", leave);
+    });
+  }
+
+  const PAD = { l: 56, r: 16, t: 26, b: 8 };
+  const nearest = (rows, t) => {
+    let best = null;
+    for (const x of rows) if (!best || Math.abs(x[0] - t) < Math.abs(best[0] - t)) best = x;
+    return best && Math.abs(best[0] - t) <= 15 ? best : null;
+  };
+  const niceMax = (v) => {
+    if (!(v > 0)) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    return [1, 2, 2.5, 5, 10].map((m) => m * p).find((m) => m >= v);
+  };
+
+  function chart(sp, w, end, plateaus, first, last) {
+    const h = 150 + (last ? 22 : 0),
+      ph = 150 - PAD.t - PAD.b;
+    const top = niceMax(
+      Math.max(sp.limit || 0, ...sp.series.flatMap((s) => s.rows.map((x) => x[1]))) * 1.05,
+    );
+    const X = (t) => PAD.l + (t / end) * (w - PAD.l - PAD.r);
+    const Y = (v) => PAD.t + ph - (v / top) * ph;
+    const svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    svg.setAttribute("width", w);
+    svg.setAttribute("height", h);
+    svg.setAttribute("class", "cap-chart");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", sp.title + " over the run");
+    let g = "";
+    // the stages, where the users hold steady
+    plateaus.forEach((p) => {
+      if (p.start >= end) return;
+      g += `<rect class="band" x="${X(p.start)}" y="${PAD.t}" width="${X(Math.min(p.end, end)) - X(p.start)}" height="${ph}"/>`;
+      if (first)
+        g += `<text class="band-l" x="${(X(p.start) + X(Math.min(p.end, end))) / 2}" y="${PAD.t - 6}">${p.users} users</text>`;
+    });
+    [0, 0.5, 1].forEach((f) => {
+      const v = top * f;
+      g += `<line class="grid" x1="${PAD.l}" x2="${w - PAD.r}" y1="${Y(v)}" y2="${Y(v)}"/>`;
+      g += `<text class="ax" x="${PAD.l - 6}" y="${Y(v) + 4}">${+v.toFixed(2)}</text>`;
+    });
+    if (last)
+      for (let m = 0; m * 60 <= end; m += end > 1200 ? 5 : 2)
+        g += `<text class="ax mid" x="${X(m * 60)}" y="${h - 6}">${m} min</text>`;
+    if (sp.limit) {
+      g += `<line class="limit" x1="${PAD.l}" x2="${w - PAD.r}" y1="${Y(sp.limit)}" y2="${Y(sp.limit)}"/>`;
+      g += `<text class="ax lim" x="${w - PAD.r}" y="${Y(sp.limit) - 4}">${esc(sp.limitLabel)}</text>`;
+    }
+    sp.series.forEach((se) => {
+      if (!se.rows.length) return;
+      g += `<path class="cl ${se.cls}" d="${se.rows.map((x, i) => (i ? "L" : "M") + X(x[0]).toFixed(1) + " " + Y(x[1]).toFixed(1)).join("")}"/>`;
+    });
+    // the title, and a legend when there are two series
+    g += `<text class="ttl" x="${PAD.l}" y="12">${esc(sp.title)}</text>`;
+    if (sp.series.length > 1) {
+      let lx = w - PAD.r;
+      [...sp.series].reverse().forEach((se) => {
+        const tw = se.name.length * 6.2;
+        lx -= tw;
+        g += `<text class="leg" x="${lx}" y="12">${esc(se.name)}</text>`;
+        lx -= 16;
+        g += `<line class="cl ${se.cls}" x1="${lx}" x2="${lx + 12}" y1="8" y2="8"/>`;
+        lx -= 14;
+      });
+    }
+    g += `<line class="cross" x1="0" x2="0" y1="${PAD.t}" y2="${PAD.t + ph}" style="display:none"/>`;
+    svg.innerHTML = g;
+    return svg;
+  }
+
+  document.addEventListener("viewshown", (e) => {
+    if (e.detail === "capacity") load();
+  });
+  window.addEventListener("resize", () => {
+    if (shown && VIEW === "capacity") drawCharts();
+  });
+  if (VIEW === "capacity") document.dispatchEvent(new CustomEvent("viewshown", { detail: VIEW }));
 })();
 
 const modal = document.getElementById("modal"),

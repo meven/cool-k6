@@ -350,12 +350,15 @@ export function handleSummary(data) {
     const passed = (m) => !m || !m.thresholds || Object.values(m.thresholds).every((t) => t.ok);
     const ms = (v) => (v === undefined ? '-' : `${Math.round(v)} ms`);
 
-    const rows = HOLDS.map(({ users }) => {
+    const rows = HOLDS.map(({ users, start, end }) => {
         const edit = metric('edit_latency', users);
         const load = metric('doc_load_time', users);
         const errors = metric('session_errors', users);
         return {
             users,
+            // the hold, in seconds from the start of the test
+            start,
+            end,
             // The thresholds declare every plateau's metrics, so a metric exists without samples.
             reached: (edit?.values.count ?? 0) > 0 || (load?.values.count ?? 0) > 0
                 || (errors?.values.passes ?? 0) + (errors?.values.fails ?? 0) > 0,

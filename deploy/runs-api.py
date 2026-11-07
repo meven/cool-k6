@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The service behind the Runs and Schedule tabs of the dashboard: it deletes runs from the
+"""The service behind the Schedule and Capacity tabs of the dashboard: it deletes runs from the
 store, and queues runs of Gerrit changes for deploy/run-queue.
 
 nginx passes /api/ to it (deploy/nginx/cool-perf.conf), and cool-perf-api.service
@@ -16,6 +16,8 @@ request, and nothing is deleted.
     POST /api/schedule                  {"change": "18591/3", "runs": 3, "at": null or ISO time}
     POST /api/schedule/<job>/cancel     a queued job
     GET  /api/schedule/<job>/log        the end of the log of a job
+    GET  /api/capacity                  a summary of each capacity run
+    GET  /api/capacity/<run>            the time series of one capacity run
 
 deploy/runqueue.py checks a change before it is queued.
 """
@@ -32,6 +34,7 @@ from urllib.parse import urlsplit
 from flask import Flask, Response, jsonify, request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import capacity  # noqa: E402
 import runqueue  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
@@ -205,6 +208,17 @@ def units_by_hand(holder: tuple[str, str] | None = None) -> list[dict]:
                           "since": started(u),
                           "measuring_since": None if waiting else measuring_since(u, holder)})
     return found
+
+
+@app.get("/api/capacity")
+def capacity_runs():
+    return jsonify(runs=capacity.runs(STORE))
+
+
+@app.get("/api/capacity/<run>")
+def capacity_run(run):
+    d = capacity.detail(STORE, run)
+    return jsonify(d) if d else fail(404, f"no capacity run {run}")
 
 
 @app.get("/api/schedule")
