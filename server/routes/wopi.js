@@ -7,6 +7,12 @@ export default router;
 
 import files from './files.json' with { type: 'json' };
 
+// The capacity test opens a copy of a document for each group of users as "<id>~<group>",
+// because COOL keys a document on the path of its WOPISrc. Every copy serves the file of <id>.
+function fileFor(fileId) {
+    return files[fileId] ?? files[fileId.split('~')[0]];
+}
+
 /* *
  *  wopi CheckFileInfo endpoint
  *
@@ -18,7 +24,7 @@ import files from './files.json' with { type: 'json' };
  */
 router.get('/files/:fileId', async (req, res) => {
     console.log('file id: ' + req.params.fileId);
-    let fileEntry = files[req.params.fileId];
+    let fileEntry = fileFor(req.params.fileId);
     if (typeof fileEntry == "undefined") {
         res.sendStatus(404);
         return;
@@ -61,7 +67,7 @@ router.get('/files/:fileId', async (req, res) => {
  *  https://HOSTNAME/wopi/files/<document_id>/contents
  */
 router.get('/files/:fileId/contents', async (req, res) => {
-    let fileEntry = files[req.params.fileId];
+    let fileEntry = fileFor(req.params.fileId);
     if (typeof fileEntry == "undefined") {
         res.sendStatus(404);
         return;
@@ -90,7 +96,7 @@ router.get('/files/:fileId/contents', async (req, res) => {
  *  https://HOSTNAME/wopi/files/<document_id>/contents
  */
 router.post('/files/:fileId/contents', (req, res) => {
-    let fileEntry = files[req.params.fileId];
+    let fileEntry = fileFor(req.params.fileId);
     if (typeof fileEntry == "undefined") {
         res.sendStatus(404);
         return;

@@ -15,6 +15,14 @@ router.get('/', (req, res) => {
     res.render('index');
 });
 
+// The capacity test numbers its users in the order they first ask, and gives each run of
+// <size> users one group, which opens its own copy of the document.
+let capacityUsers = 0;
+router.get('/capacity/group', (req, res) => {
+    const size = Math.max(1, parseInt(req.query.size, 10) || 1);
+    res.json({ group: Math.floor(capacityUsers++ / size) });
+});
+
 router.get('/static/:fileName', async (req, res) => {
     // serve static files.
     let fileName = req.params.fileName;
