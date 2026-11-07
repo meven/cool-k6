@@ -33,7 +33,13 @@ fi
 # WOPI host run on the host (localhost:9980 / :3000), and with the default
 # bridge network the container's 127.0.0.1 is itself, giving "connection
 # refused". Override with COOL_K6_DOCKER_NETWORK if you need a different setup.
-docker run --network "${COOL_K6_DOCKER_NETWORK:-host}" \
+# COOL_K6_CIDFILE: a file for the id of the container, whose cgroup k6-flamegraph.py counts
+cidfile=
+if [ -n "$COOL_K6_CIDFILE" ]; then
+    cidfile="--cidfile $COOL_K6_CIDFILE"
+fi
+
+docker run --network "${COOL_K6_DOCKER_NETWORK:-host}" $cidfile \
        -v $PWD:/app:Z \
        -w /app --rm -i \
        -e WOPI_URL=$WOPI_URL \

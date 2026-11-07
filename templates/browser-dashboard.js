@@ -650,6 +650,14 @@ const CMP_METRICS = [
     th: 0.01,
     abs: 5e7,
   },
+  // Chromium and the k6 process that drives it, in the k6 container
+  {
+    name: "instructions, browser",
+    get: (r) => insOf(r, "browser"),
+    fmt: (v) => (v / 1e9).toFixed(2) + " G",
+    th: 0.01,
+    abs: 5e7,
+  },
   ...MS.map((s) => ({
     name: NAMES[s.m] || s.m,
     get: (r) => {
@@ -1563,6 +1571,9 @@ function openDetail(runs, i) {
       (ins.master != null ? `coolwsd ${(ins.master / 1e9).toFixed(1)}` : "") +
       (ins.kit != null
         ? `${ins.master != null ? ", " : ""}document kit ${(ins.kit / 1e9).toFixed(1)}`
+        : "") +
+      (ins.browser != null
+        ? `${ins.master != null || ins.kit != null ? ", " : ""}browser ${(ins.browser / 1e9).toFixed(1)}`
         : "") +
       "</td></tr>";
   }

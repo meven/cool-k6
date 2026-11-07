@@ -633,8 +633,9 @@ def _capture_instructions(mj: Path) -> dict | None:
     """Instructions the two Collabora Online processes executed during the
     capture, from the capture's own harness summary, or None without one.
 
-    Two figures: the master, which serves the client, and the document kit,
-    which does the document work. They cover the window perf was attached for,
+    Three figures: the master, which serves the client, the document kit,
+    which does the document work, and the browser, the k6 container that runs
+    Chromium. They cover the window perf was attached for,
     which opens once the server is already up, so they are a picture of the
     test itself and not of a whole process life."""
     try:
@@ -645,7 +646,7 @@ def _capture_instructions(mj: Path) -> dict | None:
     if not isinstance(perf, dict):
         return None
     out = {}
-    for key, field in (("coolwsd", "master"), ("kit", "kit")):
+    for key, field in (("coolwsd", "master"), ("kit", "kit"), ("browser", "browser")):
         entry = perf.get(key)
         if isinstance(entry, dict) and entry.get("instructions"):
             out[field] = entry["instructions"]

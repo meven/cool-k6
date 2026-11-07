@@ -644,7 +644,8 @@ def collect_perf(out_dir: Path) -> dict:
     groups are disjoint pid sets, so a straight sum is correct)."""
     totals = {"instructions": 0.0, "cycles": 0.0, "task-clock": 0.0}
     perf_by_label: dict[str, dict] = {}
-    for label in ("coolwsd", "kit"):
+    # browser is the k6 container, left out of the total, which is the server side
+    for label in ("coolwsd", "kit", "browser"):
         st = parse_perf_stat(out_dir / f"perf-stat-{label}.csv")
         if not st:
             continue
@@ -652,7 +653,7 @@ def collect_perf(out_dir: Path) -> dict:
         cyc = st.get("cycles")
         tcl = st.get("task-clock")
         for k in totals:
-            if st.get(k) is not None:
+            if label != "browser" and st.get(k) is not None:
                 totals[k] += st[k]
         entry: dict = {}
         if ins is not None:
@@ -665,7 +666,7 @@ def collect_perf(out_dir: Path) -> dict:
             # task-clock is reported in milliseconds
             entry["cpu_time_s"] = round(tcl / 1000, 3)
         perf_by_label[label] = entry
-    if perf_by_label:
+    if set(perf_by_label) - {"browser"}:
         ti, tc, tt = totals["instructions"], totals["cycles"], totals["task-clock"]
         perf_by_label["total"] = {
             "instructions": int(ti),
@@ -677,7 +678,7 @@ def collect_perf(out_dir: Path) -> dict:
 
 
 def print_perf(perf_by_label: dict) -> None:
-    for label in ("coolwsd", "kit", "total"):
+    for label in ("coolwsd", "kit", "total", "browser"):
         entry = perf_by_label.get(label)
         if not entry:
             continue

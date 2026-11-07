@@ -902,6 +902,8 @@ def main() -> int:
         # perf.data, so that the two go together.
         perf_cmd = [*sudo_perf, "perf", "--buildid-dir", str(out_dir / BUILDID_DIR)]
 
+        k6_cidfile = out_dir / "k6.cid"
+
         def build_runner():
             # k6 runs inside docker; translate localhost -> HOST_IP so the
             # container reaches host coolwsd.
@@ -910,6 +912,12 @@ def main() -> int:
             print(f"starting k6 test: {test_script} (WOPI_URL={url}) ...")
             env = {**os.environ, "WOPI_URL": url, "WOPI_HOST": f"{wopi_base}/",
                    "NODE_TLS_REJECT_UNAUTHORIZED": "0"}
+            # k6-wrap writes the id of the k6 container there, which names its cgroup
+            try:
+                k6_cidfile.unlink()
+            except FileNotFoundError:
+                pass
+            env["COOL_K6_CIDFILE"] = str(k6_cidfile.resolve())
             cmd = ["./k6-run", test_script]
             blog = (out_dir / "browser.log").open("w")
             return subprocess.Popen(cmd, cwd=str(SCRIPT_DIR), env=env,
@@ -1027,9 +1035,29 @@ def main() -> int:
             theirs = descendant_pids(others)
             return [p for p in pids if p not in theirs]
 
+        def start_browser_stat(runner: subprocess.Popen):
+            """Count the k6 container: Chromium, and k6 itself, which only drives it. The
+            container is up a moment before k6 has compiled the test and launched
+            Chromium, so the count starts before the browser does any work."""
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and runner.poll() is None:
+                cid = (k6_cidfile.read_text().strip()
+                       if k6_cidfile.exists() else "")
+                for cg in ((CGROUP_ROOT / "system.slice" / f"docker-{cid}.scope",
+                            CGROUP_ROOT / "docker" / cid) if cid else ()):
+                    if cg.is_dir():
+                        return start_perf_stat_group(
+                            "browser", cgroup=cg.relative_to(CGROUP_ROOT).as_posix())
+                time.sleep(0.02)
+            print("warning: no cgroup of the k6 container found, so no browser "
+                  "instructions", file=sys.stderr)
+            return None
+
         def launch_and_wait_for_kit() -> tuple[float, subprocess.Popen, list[str]]:
             start = time.monotonic()
             proc = build_runner()
+            if (p := start_browser_stat(proc)) is not None:
+                perf_stat_procs.append(p)
             print("waiting for the document kit (kitbroker_*) to spawn ...")
             pids: list[str] = []
             for i in range(30):
@@ -1107,7 +1135,7 @@ def main() -> int:
         # document kit, written to perf-stat-coolwsd.csv / perf-stat-kit.csv.
         # Whatever the kit ran before this point is not counted.
         if not cgroup_mode:
-            perf_stat_procs = start_perf_stat_groups()
+            perf_stat_procs += start_perf_stat_groups()
 
         print(f"waiting for {runner} to finish ...")
         # In pid mode perf only follows the kit(s) that existed at attach time.
