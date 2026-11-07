@@ -1478,12 +1478,12 @@ function runBranch(r) {
       "stages, where the users hold steady and the figures in the table are measured; " +
       "between them the users ramp up.";
     document.getElementById("capstages").innerHTML =
-      "<thead><tr><th>users</th><th>edit p95</th><th>edits</th><th>load p95</th>" +
+      "<thead><tr><th>users</th><th>open documents</th><th>edit p95</th><th>edits</th><th>load p95</th>" +
       "<th>loads</th><th>failed sessions</th><th>result</th></tr></thead><tbody>" +
       r.plateaus
         .map(
           (p) =>
-            `<tr><td>${p.users}</td>` +
+            `<tr><td>${p.users}</td><td>${p.documents ?? "-"}</td>` +
             `<td>${p.reached ? Math.round(p.edit_p95) + " ms" : "-"}</td><td>${p.edits ?? "-"}</td>` +
             `<td>${p.reached ? Math.round(p.load_p95) + " ms" : "-"}</td><td>${p.loads ?? "-"}</td>` +
             `<td>${p.reached && p.error_rate != null ? (100 * p.error_rate).toFixed(1) + "%" : "-"}</td>` +
@@ -1504,9 +1504,16 @@ function runBranch(r) {
     const n = cores(r.cpus);
     const specs = [
       {
-        title: "users",
+        title: "users and open documents",
         unit: "",
-        series: [{ name: "users", cls: "s0", rows: r.users.map((x) => [x[0], x[1]]) }],
+        series: [
+          { name: "users", cls: "s0", rows: r.users.map((x) => [x[0], x[1]]) },
+          {
+            name: "open documents",
+            cls: "s1",
+            rows: r.memory.filter((x) => x.length > 5).map((x) => [x[0], x[5]]),
+          },
+        ],
       },
       {
         title: "edit latency, keystroke to answer, ms",
@@ -1603,13 +1610,15 @@ function runBranch(r) {
   };
 
   function chart(sp, w, end, plateaus, first, last) {
-    const h = 150 + (last ? 22 : 0),
+    // the first chart names the stages under its title and legend
+    const pt = PAD.t + (first ? 14 : 0);
+    const h = 150 + (first ? 14 : 0) + (last ? 22 : 0),
       ph = 150 - PAD.t - PAD.b;
     const top = niceMax(
       Math.max(sp.limit || 0, ...sp.series.flatMap((s) => s.rows.map((x) => x[1]))) * 1.05,
     );
     const X = (t) => PAD.l + (t / end) * (w - PAD.l - PAD.r);
-    const Y = (v) => PAD.t + ph - (v / top) * ph;
+    const Y = (v) => pt + ph - (v / top) * ph;
     const svg = document.createElementNS(SVGNS, "svg");
     svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svg.setAttribute("width", w);
@@ -1621,9 +1630,9 @@ function runBranch(r) {
     // the stages, where the users hold steady
     plateaus.forEach((p) => {
       if (p.start >= end) return;
-      g += `<rect class="band" x="${X(p.start)}" y="${PAD.t}" width="${X(Math.min(p.end, end)) - X(p.start)}" height="${ph}"/>`;
+      g += `<rect class="band" x="${X(p.start)}" y="${pt}" width="${X(Math.min(p.end, end)) - X(p.start)}" height="${ph}"/>`;
       if (first)
-        g += `<text class="band-l" x="${(X(p.start) + X(Math.min(p.end, end))) / 2}" y="${PAD.t - 6}">${p.users} users</text>`;
+        g += `<text class="band-l" x="${(X(p.start) + X(Math.min(p.end, end))) / 2}" y="${pt - 6}">${p.users} users</text>`;
     });
     [0, 0.5, 1].forEach((f) => {
       const v = top * f;
@@ -1654,7 +1663,7 @@ function runBranch(r) {
         lx -= 14;
       });
     }
-    g += `<line class="cross" x1="0" x2="0" y1="${PAD.t}" y2="${PAD.t + ph}" style="display:none"/>`;
+    g += `<line class="cross" x1="0" x2="0" y1="${pt}" y2="${pt + ph}" style="display:none"/>`;
     svg.innerHTML = g;
     return svg;
   }

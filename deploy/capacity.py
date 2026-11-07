@@ -62,6 +62,10 @@ def detail(store: Path, run: str) -> dict | None:
     t0 = _first_t_ms(d / "timeline.csv")
     out = summary(d, m)
     out.update(users=users(d), edits=edits(d, t0), cpu=cpu(d, t0), memory=memory(d))
+    # the documents open during each stage, at most
+    for p in out["plateaus"]:
+        held = [m[5] for m in out["memory"] if p["start"] <= m[0] < p["end"]]
+        p["documents"] = max(held) if held else None
     return out
 
 
@@ -152,14 +156,16 @@ def cpu(d: Path, t0: int | None) -> list[list]:
 
 
 def memory(d: Path) -> list[list]:
-    """[t, coolwsd MB, forkit MB, kits MB, kits] from server-memory.csv, as coolwsd reports
-    them; a row where coolwsd did not answer is left out."""
+    """[t, coolwsd MB, forkit MB, kits MB, kits, documents] from server-memory.csv, as
+    coolwsd reports them: the kits include the spare one, and the documents are the kits
+    with a document open. A row where coolwsd did not answer is left out."""
     out = []
     with _open(d / "server-memory.csv") as f:
         for r in csv.DictReader(f) if f else ():
             try:
                 out.append([int(r["elapsed_s"]), int(r["coolwsd_mb"]), int(r["forkit_mb"]),
-                            int(r["kits_mb"]), int(r["kit_count"])])
+                            int(r["kits_mb"]), int(r["kit_count"]),
+                            int(r["kit_assigned"])])
             except (KeyError, ValueError):
                 continue
     return out
