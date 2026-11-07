@@ -468,12 +468,17 @@ shows each run: its stages, and the users, edit latency, CPU and memory over
 time. Schedule it like a branch run:
 
 ```
-sudo systemd-run --unit=cool-perf-capacity \
+sudo systemd-run --unit=cool-perf-capacity --collect \
   -p User=collabora -p Group=collabora -p EnvironmentFile=/etc/cool-perf.env \
   -p WorkingDirectory=/home/collabora/perf-dashboard \
   -p TimeoutStartSec=12h -p KillMode=control-group -p Delegate=yes \
   /home/collabora/perf-dashboard/deploy/run-capacity --wait
 ```
+
+A run that finds the limit exits with an error, because a step missed its
+targets or the host ran short of memory. `--collect` removes the unit anyway,
+so the next run can use the same name, and `journalctl -u cool-perf-capacity`
+still shows its log.
 
 coolwsd, forkit and the kits run in a cgroup of their own, limited to cores 0
 to 3 and 8 GB of memory with no swap, the size of a small server.
