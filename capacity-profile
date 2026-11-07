@@ -275,7 +275,7 @@ stop_perf() {
     if [ "${PERF_CMD[0]}" = sudo ]; then stat_signal=(sudo "${stat_signal[@]}"); fi
     "${stat_signal[@]}" "$PERF_STAT_PATTERN" 2>/dev/null || true
     [ -n "$PERF_PID" ] || return 0
-    local pattern="perf record .* -o $OUT_DIR/" signal=(pkill -TERM -f) i
+    local pattern="perf .*record .* -o $OUT_DIR/perf.data" signal=(pkill -TERM -f) i
     if [ "${PERF_CMD[0]}" = sudo ]; then signal=(sudo "${signal[@]}"); fi
     "${signal[@]}" "$pattern" || true
     # dwarf captures take a while to flush.
