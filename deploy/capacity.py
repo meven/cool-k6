@@ -22,6 +22,10 @@ STEP = 10
 RAMP_S, HOLD_S = 60, 180
 
 
+# A run without capacity.json whose files have not changed for this long was stopped.
+STALE_S = 600
+
+
 def runs(store: Path) -> list[dict]:
     """A summary of every capacity run, newest first."""
     root = store / "capacity"
@@ -29,19 +33,27 @@ def runs(store: Path) -> list[dict]:
     for d in sorted(root.iterdir(), reverse=True) if root.is_dir() else ():
         m = RUN.fullmatch(d.name)
         if m and d.is_dir():
-            out.append(summary(d, m))
+            out.append(summary(d, m, newest=not out))
     return out
 
 
-def summary(d: Path, m: re.Match) -> dict:
+def summary(d: Path, m: re.Match, newest: bool = True) -> dict:
     cap = _json(d / "capacity.json")
     cg = cgroup(d)
+    # Only the newest run can still be running, and only while it writes its files.
+    if cap is not None:
+        state = "done"
+    elif newest and time.time() - _last_write(d) < STALE_S:
+        state = "running"
+    else:
+        state = "stopped"
     return {
         "run": d.name,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.strptime(m.group(1), "%Y%m%dT%H%M%SZ")),
         "commit": m.group(2),
         # a run without capacity.json is still running, or k6 did not finish
         "done": cap is not None,
+        "state": state,
         "capacity": cap.get("capacity") if cap else None,
         "users_per_document": cap.get("usersPerDocument") if cap else None,
         "plateaus": plateaus(cap),
@@ -223,3 +235,14 @@ class _open:
     def __exit__(self, *a):
         if self.f:
             self.f.close()
+
+
+def _last_write(d: Path) -> float:
+    """The time of the latest change to a file of the run."""
+    times = [d.stat().st_mtime]
+    for f in d.iterdir():
+        try:
+            times.append(f.stat().st_mtime)
+        except OSError:
+            pass
+    return max(times)

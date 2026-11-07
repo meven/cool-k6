@@ -1417,7 +1417,7 @@ function runBranch(r) {
             `<td><button type="button" class="linkish" data-run="${esc(r.run)}">` +
             `${esc(when(r.ts))}</button></td>` +
             `<td><code>${esc(r.commit)}</code></td>` +
-            `<td>${!r.done ? "running" : !r.capacity ? "none" : r.capacity + (top ? "+" : "") + " users"}</td>` +
+            `<td>${!r.done ? (r.state === "stopped" ? "stopped" : "running") : !r.capacity ? "none" : r.capacity + (top ? "+" : "") + " users"}</td>` +
             `<td>${esc(stages || "-")}</td>` +
             `<td>${n ? n + " cores" : "unknown"}, ${r.memory_max_mb ? gb(r.memory_max_mb) : "unknown"}</td>` +
             `<td>${gb(r.memory_peak_mb)}</td>` +
