@@ -404,7 +404,9 @@ export default async function () {
                 docLoadTime.add(Date.now() - s.openedAt, plateauTag());
                 client.send(`clientzoom tilepixelwidth=${TILE_PX} tilepixelheight=${TILE_PX} `
                     + `tiletwipwidth=${TILE_TWIPS} tiletwipheight=${TILE_TWIPS}`);
-                s.kind = /\btype=(\w+)/.exec(e.data)?.[1] ?? 'text';
+                // The status is JSON, with "type" as in the older "type=" form of the message.
+                const type = /"type"\s*:\s*"(\w+)"|\btype=(\w+)/.exec(e.data);
+                s.kind = type?.[1] ?? type?.[2] ?? 'text';
                 sendVisibleArea();
                 placeCursor();
                 requestVisibleTiles();
