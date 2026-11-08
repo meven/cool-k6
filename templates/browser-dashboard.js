@@ -1375,6 +1375,7 @@ function runBranch(r) {
 // ---- the capacity runs, read from the API when the tab is shown ----------------------
 (function () {
   const tab = document.getElementById("captab"),
+    scenSel = document.getElementById("capscen"),
     msg = document.getElementById("capmsg"),
     det = document.getElementById("capdet"),
     charts = document.getElementById("capcharts");
@@ -1394,7 +1395,47 @@ function runBranch(r) {
   // A run without a scenario opened copies of one file, blank.odt unless CAP_FILE_ID was set.
   const scenario = (r) =>
     r.scenario ||
-    (!r.done ? "-" : r.users_per_document > 1 ? `blank.odt, ${r.users_per_document} users each` : "blank.odt");
+    (r.users_per_document > 1 ? `blank.odt, ${r.users_per_document} users each` : "blank.odt");
+  // The scenarios of cool-capacity-test.js, in words.
+  const pairs = "half of the users editing a document two by two, the others one each";
+  const SCENARIOS = {
+    writer: "the 5 MB Writer documents, odt and docx in turn, one user each",
+    calc: "the 5 MB Calc documents, ods and xlsx in turn, one user each",
+    impress: "the 5 MB Impress documents, odp and pptx in turn, one user each",
+    "writer-pairs": `the 5 MB Writer documents, odt and docx, with ${pairs}`,
+    "calc-pairs": `the 5 MB Calc documents, ods and xlsx, with ${pairs}`,
+    "impress-pairs": `the 5 MB Impress documents, odp and pptx, with ${pairs}`,
+    mixed:
+      "in every 10 documents, one each of odt, docx, ods, xlsx, odp and pptx with one user, " +
+      "then 4 more with two users each",
+  };
+  const describe = (r) =>
+    r.scenario
+      ? SCENARIOS[r.scenario] || `the documents of the ${r.scenario} scenario`
+      : r.users_per_document > 1
+        ? `copies of blank.odt, ${r.users_per_document} users on each`
+        : "copies of blank.odt, one user each";
+  let filter = "";
+  // Only the scenarios that have a run are offered, each with its number of runs.
+  function drawFilter() {
+    const counts = new Map();
+    for (const r of list) counts.set(scenario(r), (counts.get(scenario(r)) || 0) + 1);
+    if (filter && !counts.has(filter)) filter = "";
+    scenSel.innerHTML =
+      `<option value="">all scenarios (${list.length})</option>` +
+      [...counts]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([s, n]) => `<option value="${esc(s)}">${esc(s)} (${n})</option>`)
+        .join("");
+    scenSel.value = filter;
+  }
+  scenSel.addEventListener("change", () => {
+    filter = scenSel.value;
+    // The run shown below the list is one of the scenario picked.
+    const first = list.find((r) => !filter || scenario(r) === filter);
+    if (first && filter && scenario(list.find((r) => r.run === run) || {}) !== filter) pick(first.run);
+    else drawList();
+  });
   const result = (p) =>
     !p.reached ? "not reached" : !p.measured ? "not measured" : p.ok ? "passed" : "FAILED";
 
@@ -1405,10 +1446,11 @@ function runBranch(r) {
       return;
     }
     msg.textContent = "";
+    const shownRuns = list.filter((r) => !filter || scenario(r) === filter);
     tab.innerHTML =
-      "<thead><tr><th>started</th><th>commit</th><th>scenario</th><th>capacity</th><th>stages</th>" +
+      "<thead><tr><th>started</th><th>commit</th><th class='txt'>scenario</th><th>capacity</th><th>stages</th>" +
       "<th>limits</th><th>peak memory</th><th>OOM kills</th><th></th></tr></thead><tbody>" +
-      list
+      shownRuns
         .map((r) => {
           const n = cores(r.cpus);
           const stages = r.plateaus
@@ -1421,7 +1463,7 @@ function runBranch(r) {
             `<td><button type="button" class="linkish" data-run="${esc(r.run)}">` +
             `${esc(when(r.ts))}</button></td>` +
             `<td><code>${esc(r.commit)}</code></td>` +
-            `<td>${esc(scenario(r))}</td>` +
+            `<td class="txt" title="${esc(describe(r))}">${esc(scenario(r))}</td>` +
             `<td>${!r.done ? (r.state === "stopped" ? "stopped" : "running") : !r.capacity ? "none" : r.capacity + (top ? "+" : "") + " users"}</td>` +
             `<td>${esc(stages || "-")}</td>` +
             `<td>${n ? n + " cores" : "unknown"}, ${r.memory_max_mb ? gb(r.memory_max_mb) : "unknown"}</td>` +
@@ -1453,6 +1495,7 @@ function runBranch(r) {
       const first = list.find((r) => r.done && r.plateaus.some((p) => p.measured)) || list[0];
       run = first ? first.run : null;
     }
+    drawFilter();
     drawList();
     if (run) pick(run);
   }
@@ -1474,15 +1517,14 @@ function runBranch(r) {
   function drawDetail() {
     const r = shown;
     det.hidden = false;
-    document.getElementById("capdh").textContent = `Run of ${when(r.ts)}, commit ${r.commit}`;
+    document.getElementById("capdh").textContent =
+      `${scenario(r)}: run of ${when(r.ts)}, commit ${r.commit}`;
     const n = cores(r.cpus);
     document.getElementById("capdnote").textContent =
       (n && r.memory_max_mb
         ? `The server ran on ${n} cores and in ${gb(r.memory_max_mb)}, and `
         : "The run did not record the cores and memory of the server, and ") +
-      (r.scenario
-        ? `the users worked on the documents of the ${r.scenario} scenario. `
-        : `${r.users_per_document || 1} user(s) shared each document. `) +
+      `the users worked on ${describe(r)}. ` +
       "The shaded bands are the " +
       "stages, where the users hold steady and the figures in the table are measured; " +
       "between them the users ramp up.";

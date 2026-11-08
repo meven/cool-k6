@@ -51,6 +51,8 @@ status=0
 for scenario in "${scenarios[@]}"; do
     out=$store/capacity/$(date -u +%Y%m%dT%H%M%SZ)-$commit
     mkdir -p "$out"
+    # The dashboard names the scenario of a run before capacity.json exists.
+    [ -z "$scenario" ] || echo "$scenario" > "$out/scenario"
     echo "=== capacity run of $commit${scenario:+, scenario $scenario}, into $out"
 
     # A coolwsd left by an earlier run would answer instead of the one that capacity-profile

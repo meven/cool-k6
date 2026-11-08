@@ -326,11 +326,17 @@ $css</style>
           <h2 id="caph">Capacity</h2>
           <p class="cmp-note">
             The capacity runs of the VM, newest first, which deploy/run-capacity starts. Users join
-            in a staircase, each typing in a document of their own, and coolwsd, forkit and the
+            in a staircase and type in the documents of the run's scenario, and coolwsd, forkit and the
             kits run on a limited number of cores and memory. A stage passes when the 95th
             percentile of the edits and of the loads stays under its target, and under 1% of the
             sessions fail. The capacity is the largest stage that passed, up to the first that did
             not, so a run where every stage passed only gives a lower bound.
+          </p>
+          <p class="cmp-note">
+            <label
+              >scenario
+              <select id="capscen"></select>
+            </label>
           </p>
           <div class="cmp-scroll"><table id="captab"></table></div>
           <p class="cmp-note" id="capmsg" role="status"></p>

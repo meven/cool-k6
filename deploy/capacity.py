@@ -56,8 +56,9 @@ def summary(d: Path, m: re.Match, newest: bool = True) -> dict:
         "state": state,
         "capacity": cap.get("capacity") if cap else None,
         "users_per_document": cap.get("usersPerDocument") if cap else None,
-        # the name of the documents and their sharing, from CAP_SCENARIO, None for one document
-        "scenario": cap.get("scenario") if cap else None,
+        # the CAP_SCENARIO of the run, which deploy/run-capacity also writes when the run starts,
+        # or None for copies of one document
+        "scenario": (cap or {}).get("scenario") or _text(d / "scenario"),
         "plateaus": plateaus(cap),
         "cpus": cg.get("cpus"),
         "memory_max_mb": cg.get("memory_max_mb"),
@@ -203,6 +204,13 @@ def _json(p: Path):
     try:
         return json.loads(p.read_text())
     except (OSError, ValueError):
+        return None
+
+
+def _text(p: Path) -> str | None:
+    try:
+        return p.read_text().strip() or None
+    except OSError:
         return None
 
 

@@ -838,6 +838,12 @@ td:first-child {
   text-align: left;
   font-family: system-ui, sans-serif;
 }
+/* a cell of words rather than of figures */
+th.txt,
+td.txt {
+  text-align: left;
+  font-family: system-ui, sans-serif;
+}
 tr.prof td {
   color: var(--ink-soft);
 }
