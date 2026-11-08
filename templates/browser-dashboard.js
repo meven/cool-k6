@@ -1391,6 +1391,10 @@ function runBranch(r) {
       }, 0) || null;
   const when = day;
   const gb = (mb) => (mb == null ? "-" : (mb / 1024).toFixed(1) + " GB");
+  // A run without a scenario opened copies of one file, blank.odt unless CAP_FILE_ID was set.
+  const scenario = (r) =>
+    r.scenario ||
+    (!r.done ? "-" : r.users_per_document > 1 ? `blank.odt, ${r.users_per_document} users each` : "blank.odt");
   const result = (p) =>
     !p.reached ? "not reached" : !p.measured ? "not measured" : p.ok ? "passed" : "FAILED";
 
@@ -1402,7 +1406,7 @@ function runBranch(r) {
     }
     msg.textContent = "";
     tab.innerHTML =
-      "<thead><tr><th>started</th><th>commit</th><th>capacity</th><th>stages</th>" +
+      "<thead><tr><th>started</th><th>commit</th><th>scenario</th><th>capacity</th><th>stages</th>" +
       "<th>limits</th><th>peak memory</th><th>OOM kills</th><th></th></tr></thead><tbody>" +
       list
         .map((r) => {
@@ -1417,6 +1421,7 @@ function runBranch(r) {
             `<td><button type="button" class="linkish" data-run="${esc(r.run)}">` +
             `${esc(when(r.ts))}</button></td>` +
             `<td><code>${esc(r.commit)}</code></td>` +
+            `<td>${esc(scenario(r))}</td>` +
             `<td>${!r.done ? (r.state === "stopped" ? "stopped" : "running") : !r.capacity ? "none" : r.capacity + (top ? "+" : "") + " users"}</td>` +
             `<td>${esc(stages || "-")}</td>` +
             `<td>${n ? n + " cores" : "unknown"}, ${r.memory_max_mb ? gb(r.memory_max_mb) : "unknown"}</td>` +
@@ -1475,7 +1480,10 @@ function runBranch(r) {
       (n && r.memory_max_mb
         ? `The server ran on ${n} cores and in ${gb(r.memory_max_mb)}, and `
         : "The run did not record the cores and memory of the server, and ") +
-      `${r.users_per_document || 1} user(s) shared each document. The shaded bands are the ` +
+      (r.scenario
+        ? `the users worked on the documents of the ${r.scenario} scenario. `
+        : `${r.users_per_document || 1} user(s) shared each document. `) +
+      "The shaded bands are the " +
       "stages, where the users hold steady and the figures in the table are measured; " +
       "between them the users ramp up.";
     document.getElementById("capstages").innerHTML =

@@ -475,6 +475,18 @@ sudo systemd-run --unit=cool-perf-capacity --collect \
   /home/collabora/perf-dashboard/deploy/run-capacity --wait
 ```
 
+Scenario names after `--wait` run the test once for each, one after the
+other, and `all` runs every one, about four hours:
+
+- `writer`, `calc`, `impress`: the 5 MB ODF and OOXML documents of one
+  application, one user each.
+- `writer-pairs`, `calc-pairs`, `impress-pairs`: the same documents, with half
+  of the users editing a document two by two.
+- `mixed`: in every 10 documents, one each of odt, docx, ods, xlsx, odp and
+  pptx with one user, then 4 more with two users each.
+
+The Capacity tab names the scenario of each run.
+
 A run that finds the limit exits with an error, because a step missed its
 targets or the host ran short of memory. `--collect` removes the unit anyway,
 so the next run can use the same name, and `journalctl -u cool-perf-capacity`

@@ -6,6 +6,8 @@
 #
 #   deploy/run-capacity                   the default staircase: 10, 20, 40, 80, 120, then 160 users
 #   deploy/run-capacity --wait            queue behind a run of the timer
+#   deploy/run-capacity writer calc       one run for each CAP_SCENARIO named, one after the other
+#   deploy/run-capacity all               every scenario of cool-capacity-test.js
 #   CAP_VUS=10,20 deploy/run-capacity     any CAP_* variable of cool-capacity-test.js, and
 #                                         NO_BROWSER=1 or NO_PERF=1 of capacity-profile
 #
@@ -19,13 +21,21 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
+SCENARIOS="writer calc impress writer-pairs calc-pairs impress-pairs mixed"
 wait=
-case ${1:-} in
-    --wait) wait=1 ;;
-    "") ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
-esac
+scenarios=()
+for arg; do
+    case $arg in
+        --wait) wait=1 ;;
+        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        all) read -ra scenarios <<< "$SCENARIOS" ;;
+        -*) echo "unknown argument: $arg" >&2; exit 2 ;;
+        *) [[ " $SCENARIOS " == *" $arg "* ]] || { echo "unknown scenario: $arg" >&2; exit 2; }
+           scenarios+=("$arg") ;;
+    esac
+done
+# No scenario name runs the test once, with CAP_SCENARIO from the environment if set.
+[ ${#scenarios[@]} -gt 0 ] || scenarios=("${CAP_SCENARIO:-}")
 
 set -a; . /etc/cool-perf.env; set +a
 : "${COOLWSD_DIR:?not set in /etc/cool-perf.env}"
@@ -37,15 +47,22 @@ build_bundles
 
 store=${COOL_PERF_STORE:-/var/lib/cool-perf}
 commit=$(git -C "$COOLWSD_DIR" rev-parse --short=12 HEAD)
-out=$store/capacity/$(date -u +%Y%m%dT%H%M%SZ)-$commit
-mkdir -p "$out"
-echo "=== capacity run of $commit into $out"
+status=0
+for scenario in "${scenarios[@]}"; do
+    out=$store/capacity/$(date -u +%Y%m%dT%H%M%SZ)-$commit
+    mkdir -p "$out"
+    echo "=== capacity run of $commit${scenario:+, scenario $scenario}, into $out"
 
-# A coolwsd left by an earlier run would answer instead of the one that capacity-profile starts.
-pkill -u "$(id -u)" -x coolwsd || true
-# A WOPI host of its own, on a free port: one already on 3000 presents a certificate that
-# coolwsd does not trust, and every session is refused.
-wopi_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1])')
-export WOPI_HOST=https://localhost:$wopi_port/
-OUT_DIR=$out PRUNE_PERF_DATA=1 ./capacity-profile
-echo "the capacity run of $commit is in $out, listed under /capacity/ on the dashboard host"
+    # A coolwsd left by an earlier run would answer instead of the one that capacity-profile
+    # starts.
+    pkill -u "$(id -u)" -x coolwsd || true
+    # A WOPI host of its own, on a free port: one already on 3000 presents a certificate that
+    # coolwsd does not trust, and every session is refused. Its own WOPI host also numbers the
+    # users of each run from 0.
+    wopi_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1])')
+    # A failed run, such as one stopped on low memory, does not stop the next scenarios.
+    WOPI_HOST=https://localhost:$wopi_port/ CAP_SCENARIO=$scenario OUT_DIR=$out \
+        PRUNE_PERF_DATA=1 ./capacity-profile || status=$?
+    echo "the capacity run of $commit is in $out, listed under /capacity/ on the dashboard host"
+done
+exit "$status"

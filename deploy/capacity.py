@@ -56,6 +56,8 @@ def summary(d: Path, m: re.Match, newest: bool = True) -> dict:
         "state": state,
         "capacity": cap.get("capacity") if cap else None,
         "users_per_document": cap.get("usersPerDocument") if cap else None,
+        # the name of the documents and their sharing, from CAP_SCENARIO, None for one document
+        "scenario": cap.get("scenario") if cap else None,
         "plateaus": plateaus(cap),
         "cpus": cg.get("cpus"),
         "memory_max_mb": cg.get("memory_max_mb"),

@@ -26,6 +26,19 @@
  * Users each open a document of their own by default. CAP_USERS_PER_DOC=5 puts users in groups of five
  * which edit one document together.
  *
+ * CAP_SCENARIO picks the documents and how users share them instead, from SCENARIOS below:
+ *
+ *   writer, calc, impress   the 5 MB ODF and OOXML documents of one application, one user each,
+ *                           ODF and OOXML in turn
+ *   writer-pairs, ...       the same documents, with half of the users editing a document two by two
+ *   mixed                   in every 10 documents, one each of odt, docx, ods, xlsx, odp and pptx
+ *                           with one user, then 4 more with two users each
+ *
+ * The user types where the application takes text: at the end of a Writer document, in the empty
+ * cell below the last one of a Calc sheet (each word goes in a cell of its own, committed with
+ * Enter), and in the text of the first object of an Impress slide. Two users of one document type
+ * in different cells or objects.
+ *
  * Run k6 on another machine than the server, or the load generator takes the CPU it is measuring.
  * Check the server's own limits before reading a result as capacity: MAX_CONNECTIONS and
  * MAX_DOCUMENTS from configure (--with-max-connections, --with-max-documents) refuse sessions above
@@ -38,6 +51,9 @@
  *   CAP_SESSION       - seconds a user keeps the document open       (default 300)
  *   CAP_USERS_PER_DOC - users editing the same document              (default 1)
  *   CAP_FILE_ID       - WOPI file id to open                         (default 11, blank.odt)
+ *   CAP_SCENARIO      - a name from SCENARIOS, which replaces CAP_FILE_ID and CAP_USERS_PER_DOC
+ *   CAP_DOCS          - the documents of a scenario of your own, as "<file id>:<users>,..."; the
+ *                       list repeats for as many users as there are
  *   CAP_THINK_MIN_MS, CAP_THINK_MAX_MS - pause between two words      (default 2000, 8000)
  *   CAP_TYPE_STEP_MS  - pause between two characters of a word       (default 150)
  *   CAP_EDIT_P95_MS   - edit latency target, 95th percentile         (default 300)
@@ -63,6 +79,38 @@ const HOLD = __ENV['CAP_HOLD'] || '3m';
 const SESSION_MS = num('CAP_SESSION', 300) * 1000;
 const USERS_PER_DOC = Math.max(1, num('CAP_USERS_PER_DOC', 1));
 const FILE_ID = __ENV['CAP_FILE_ID'] || 11;  // documents/blank.odt
+
+// The WOPI file ids of server/routes/files.json, by format: the 5 MB documents of gen-docs.py.
+const ODT = 12, DOCX = 19, ODS = 14, XLSX = 20, ODP = 16, PPTX = 21;
+// One user on each document of the first list, and half of the users two by two in the second.
+const alone = (a, b) => [[a, 1], [b, 1]];
+const pairs = (a, b) => [[a, 1], [b, 1], [a, 2], [a, 1], [b, 1], [b, 2]];
+// Six documents with one user, then four with two. The four shared ones change format over three
+// rounds, so that every format is shared twice in 30 documents.
+const mixed = [[ODT, DOCX, ODS, XLSX], [ODP, PPTX, ODT, DOCX], [ODS, XLSX, ODP, PPTX]].flatMap(
+    (shared) => [ODT, DOCX, ODS, XLSX, ODP, PPTX].map((id) => [id, 1])
+        .concat(shared.map((id) => [id, 2])));
+
+// Each scenario is a list of [file id, users of that document], which repeats for every user.
+const SCENARIOS = {
+    'writer': alone(ODT, DOCX),
+    'calc': alone(ODS, XLSX),
+    'impress': alone(ODP, PPTX),
+    'writer-pairs': pairs(ODT, DOCX),
+    'calc-pairs': pairs(ODS, XLSX),
+    'impress-pairs': pairs(ODP, PPTX),
+    'mixed': mixed,
+};
+const SCENARIO = __ENV['CAP_SCENARIO'] || (__ENV['CAP_DOCS'] ? 'custom' : null);
+if (SCENARIO && SCENARIO !== 'custom' && !SCENARIOS[SCENARIO]) {
+    throw new Error(`CAP_SCENARIO=${SCENARIO} is not one of ${Object.keys(SCENARIOS).join(', ')}`);
+}
+const DOCS = SCENARIO === 'custom'
+    ? __ENV['CAP_DOCS'].split(',').map((s) => s.split(':').map((v) => v.trim()))
+        .map(([id, users]) => [id, Math.max(1, Number(users) || 1)])
+    : SCENARIOS[SCENARIO] ?? [[FILE_ID, USERS_PER_DOC]];
+// The users of one round of DOCS, each as [index of its document in DOCS, seat in that document].
+const SEATS = DOCS.flatMap(([, users], doc) => Array.from({ length: users }, (_, seat) => [doc, seat]));
 const THINK_MIN_MS = num('CAP_THINK_MIN_MS', 2000);
 const THINK_MAX_MS = num('CAP_THINK_MAX_MS', 8000);
 const TYPE_STEP_MS = num('CAP_TYPE_STEP_MS', 150);
@@ -82,6 +130,9 @@ const TILE_PX = 256;
 const TILE_TWIPS = 3840;
 const COLS = 5;
 const ROWS = 4;
+
+// The key codes of the browser client, from vcl's KEY_ constants.
+const KEY_DOWN = 1024, KEY_RIGHT = 1027, KEY_HOME = 1028, KEY_RETURN = 1280, KEY_TAB = 1282;
 
 const WORDS = ['capacity', 'document', 'paragraph', 'online', 'server', 'measure', 'latency',
     'office', 'review', 'editing', 'meeting', 'report', 'budget', 'planning', 'draft'];
@@ -157,20 +208,25 @@ function randomBetween(low, high) {
     return low + Math.random() * (high - low);
 }
 
-// Users of one group get the same WOPISrc. COOL keys the document on the WOPISrc path and ignores
-// its query, so the group goes in the path: the WOPI host serves FILE_ID for "<FILE_ID>~<group>".
-// ramping-vus does not start its VUs in the order of their ids, so the WOPI host numbers the users
-// in the order they first ask, and each group fills up before the next one opens. A VU keeps its
-// group when it opens the document again.
+// Users of one document get the same WOPISrc. COOL keys the document on the WOPISrc path and
+// ignores its query, so the document number goes in the path: the WOPI host serves the file of
+// <id> for "<id>~<group>". ramping-vus does not start its VUs in the order of their ids, so the
+// WOPI host numbers the users in the order they first ask, and the users of one document arrive
+// one after the other. A VU keeps its document when it opens it again.
 let group = null;
+let seat = 0;
+let fileId = null;
 function groupWopiSrc() {
     if (group === null) {
         const base = String(wopiHost).replace(/\/?$/, '/');
-        const res = http.get(`${base}capacity/group?size=${USERS_PER_DOC}`);
-        group = res.status === 200 ? res.json('group')
-            : Math.floor((exec.vu.idInTest - 1) / USERS_PER_DOC);
+        const res = http.get(`${base}capacity/group?size=1`);
+        const user = res.status === 200 ? res.json('group') : exec.vu.idInTest - 1;
+        const [doc, s] = SEATS[user % SEATS.length];
+        group = Math.floor(user / SEATS.length) * DOCS.length + doc;
+        seat = s;
+        fileId = DOCS[doc][0];
     }
-    return getWopiSrc(wopiHost, `${FILE_ID}~${group}`).toString();
+    return getWopiSrc(wopiHost, `${fileId}~${group}`).toString();
 }
 
 export function setup() {
@@ -185,7 +241,9 @@ export default async function () {
         const s = {
             openedAt: 0, loaded: false, failed: false, closing: false, done: false,
             editSentAt: 0, word: '', charIndex: 0,
-            lastTileRequest: 0, viewTop: 0, processedWids: [], timers: new Set(),
+            lastTileRequest: 0, viewLeft: 0, viewTop: 0, processedWids: [], timers: new Set(),
+            // the document type of the status: message: text, spreadsheet or presentation
+            kind: 'text',
         };
         let client;
 
@@ -223,7 +281,7 @@ export default async function () {
             const ys = [];
             for (let c = 0; c < COLS; c++) {
                 for (let r = 0; r < ROWS; r++) {
-                    xs.push(c * TILE_TWIPS);
+                    xs.push(s.viewLeft + c * TILE_TWIPS);
                     ys.push(s.viewTop + r * TILE_TWIPS);
                 }
             }
@@ -254,20 +312,20 @@ export default async function () {
         }
 
         function sendVisibleArea() {
-            client.send(`clientvisiblearea x=0 y=${s.viewTop} width=${COLS * TILE_TWIPS} `
+            client.send(`clientvisiblearea x=${s.viewLeft} y=${s.viewTop} width=${COLS * TILE_TWIPS} `
                 + `height=${ROWS * TILE_TWIPS}`);
         }
 
         // Moves the visible area to a cursor outside it: one tile row of the area stays above the
-        // cursor row, as after the browser client scrolls to the cursor.
-        function followCursor(payload) {
-            let rect;
-            try { rect = JSON.parse(payload).rectangle; } catch (e) { return; }
-            if (typeof rect !== 'string') return;
-            const y = Number(rect.split(',')[1]);
-            if (!Number.isFinite(y)) return;
-            if (y >= s.viewTop && y < s.viewTop + ROWS * TILE_TWIPS) return;
+        // cursor row, and one tile column left of it, as after the browser client scrolls to the
+        // cursor. The rectangle is "x, y, width, height" in twips.
+        function followCursor(rect) {
+            const [x, y] = rect.split(',').map(Number);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+            if (y >= s.viewTop && y < s.viewTop + ROWS * TILE_TWIPS
+                && x >= s.viewLeft && x < s.viewLeft + COLS * TILE_TWIPS) return;
             s.viewTop = Math.max(0, Math.floor(y / TILE_TWIPS) - 1) * TILE_TWIPS;
+            s.viewLeft = x < COLS * TILE_TWIPS ? 0 : (Math.floor(x / TILE_TWIPS) - 1) * TILE_TWIPS;
             sendVisibleArea();
             s.lastTileRequest = 0;
             requestVisibleTiles();
@@ -283,6 +341,27 @@ export default async function () {
             }, randomBetween(THINK_MIN_MS, THINK_MAX_MS));
         }
 
+        function pressKey(char, key) {
+            client.send(`key type=input char=${char} key=${key}`);
+            client.send(`key type=up char=0 key=${key}`);
+        }
+
+        // Puts the cursor where the user types: the end of a text document, the empty cell below
+        // the used area of a sheet, or the text of an object of the first slide. The second user of
+        // a document takes the next cell or the next object.
+        function placeCursor() {
+            client.send('uno .uno:GoToEndOfDoc');
+            if (s.kind === 'spreadsheet') {
+                pressKey(0, KEY_DOWN);
+                pressKey(0, KEY_HOME);
+                for (let i = 0; i < seat; i++) pressKey(0, KEY_RIGHT);
+            } else if (s.kind === 'presentation') {
+                // Tab selects the next object of the slide, and Enter starts editing its text.
+                for (let i = 0; i <= seat; i++) pressKey(9, KEY_TAB);
+                pressKey(13, KEY_RETURN);
+            }
+        }
+
         // One character at a time, the next only once the server answered the last one, so a slow
         // server shows as a longer edit_latency rather than as a queue of unanswered keystrokes.
         function typeChar() {
@@ -290,9 +369,10 @@ export default async function () {
             if (s.charIndex >= s.word.length) { nextWord(); return; }
             const ch = s.word[s.charIndex++];
             s.editSentAt = Date.now();
-            if (ch === ' ') {
-                client.send('key type=input char=32 key=0');
-                client.send('key type=up char=0 key=0');
+            if (ch === ' ' && s.kind === 'spreadsheet') {
+                pressKey(13, KEY_RETURN);
+            } else if (ch === ' ') {
+                pressKey(32, 0);
             } else {
                 client.send(`textinput id=0 text=${ch}`);
             }
@@ -324,17 +404,24 @@ export default async function () {
                 docLoadTime.add(Date.now() - s.openedAt, plateauTag());
                 client.send(`clientzoom tilepixelwidth=${TILE_PX} tilepixelheight=${TILE_PX} `
                     + `tiletwipwidth=${TILE_TWIPS} tiletwipheight=${TILE_TWIPS}`);
+                s.kind = /\btype=(\w+)/.exec(e.data)?.[1] ?? 'text';
                 sendVisibleArea();
-                client.send('uno .uno:GoToEndOfDoc');
+                placeCursor();
                 requestVisibleTiles();
                 nextWord();
-            } else if (e.data.startsWith('invalidatecursor:')) {
-                followCursor(e.data.substring('invalidatecursor:'.length));
+            } else if (e.data.startsWith('invalidatecursor:')
+                       || (s.kind === 'spreadsheet' && e.data.startsWith('cellcursor:'))) {
+                // A sheet answers Enter by moving the cell cursor rather than the text cursor.
+                const payload = e.data.substring(e.data.indexOf(':') + 1).trim();
+                let rect = payload;
+                try { rect = JSON.parse(payload).rectangle ?? ''; } catch (err) { /* plain rectangle */ }
+                followCursor(String(rect));
                 if (!s.editSentAt) return;
                 const now = Date.now();
                 editLatency.add(now - s.editSentAt, plateauTag());
                 // One line per edit, for lining slow edits up with what the server did then.
-                console.log(`EDIT t_ms=${now} ms=${now - s.editSentAt} doc=${group} vu=${exec.vu.idInTest}`);
+                console.log(`EDIT t_ms=${now} ms=${now - s.editSentAt} doc=${fileId}~${group} `
+                    + `vu=${exec.vu.idInTest}`);
                 s.editSentAt = 0;
                 later(typeChar, TYPE_STEP_MS);
             } else if (e.data.startsWith('invalidatetiles:')) {
@@ -393,10 +480,14 @@ export function handleSummary(data) {
     const on = SERVER.cpus ? ` on cores ${SERVER.cpus} and ${SERVER.memory}` : ' on a server of unknown size';
     lines.push('', `capacity: ${capacity} users${on} (targets: edit p95 < ${EDIT_P95_MS} ms, `
         + `load p95 < ${LOAD_P95_MS} ms, failed sessions < ${100 * MAX_ERRORS}%, `
-        + `${USERS_PER_DOC} user(s) per document)`, '');
+        + `${SCENARIO ? `scenario ${SCENARIO}` : `${USERS_PER_DOC} user(s) per document`})`, '');
 
     return {
         stdout: textSummary(data, { indent: ' ', enableColors: true }) + lines.join('\n'),
-        'capacity.json': JSON.stringify({ capacity, server: SERVER, usersPerDocument: USERS_PER_DOC, plateaus: rows }, null, 2),
+        'capacity.json': JSON.stringify({
+            capacity, server: SERVER, usersPerDocument: SCENARIO ? null : USERS_PER_DOC,
+            scenario: SCENARIO, documents: DOCS.map(([id, users]) => ({ fileId: id, users })),
+            plateaus: rows,
+        }, null, 2),
     };
 }
