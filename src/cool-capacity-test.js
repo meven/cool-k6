@@ -37,7 +37,8 @@
  * The user types where the application takes text: at the end of a Writer document, in the empty
  * cell below the last one of a Calc sheet (each word goes in a cell of its own, committed with
  * Enter), and in the text of the first object of an Impress slide. Two users of one document type
- * in different cells or objects.
+ * in different cells or objects. In a slide the user waits until no other view locks the object,
+ * since a view closed a moment ago still locks the object it edited.
  *
  * Run k6 on another machine than the server, or the load generator takes the CPU it is measuring.
  * Check the server's own limits before reading a result as capacity: MAX_CONNECTIONS and
@@ -123,6 +124,8 @@ const SERVER = { cpus: __ENV['CAP_SERVER_CPUS'] || null, memory: __ENV['CAP_SERV
 // The server answers a load with status: well within limit_load_secs, 100 s by default.
 const LOAD_TIMEOUT_MS = 100000;
 const EDIT_TIMEOUT_MS = 10000;
+// How long a user of a presentation waits for another view to release the object it selected.
+const LOCK_WAIT_MS = 30000;
 const TILE_REQUEST_GAP_MS = 200;
 
 // The visible area of a desktop browser window at 100% zoom.
@@ -244,6 +247,9 @@ export default async function () {
             lastTileRequest: 0, viewLeft: 0, viewTop: 0, processedWids: [], timers: new Set(),
             // the document type of the status: message: text, spreadsheet or presentation
             kind: 'text',
+            // this view, the objects that other views lock, the object selected to type in, and
+            // whether the user types yet
+            viewId: null, locks: new Map(), object: null, editing: true,
         };
         let client;
 
@@ -356,10 +362,26 @@ export default async function () {
                 pressKey(0, KEY_HOME);
                 for (let i = 0; i < seat; i++) pressKey(0, KEY_RIGHT);
             } else if (s.kind === 'presentation') {
-                // Tab selects the next object of the slide, and Enter starts editing its text.
+                // Tab selects the next object of the slide, and Enter starts editing its text once
+                // no other view locks the object. A view closed a moment ago keeps its lock until
+                // the kit destroys it, a few seconds later, and Enter on a locked object does not
+                // edit it.
                 for (let i = 0; i <= seat; i++) pressKey(9, KEY_TAB);
-                pressKey(13, KEY_RETURN);
+                s.editing = false;
+                later(startEditing, LOCK_WAIT_MS);
             }
+        }
+
+        function startEditing() {
+            if (s.editing || s.closing) return;
+            s.editing = true;
+            pressKey(13, KEY_RETURN);
+            nextWord();
+        }
+
+        function lockedByOther(object) {
+            for (const [view, locked] of s.locks) if (view !== s.viewId && locked === object) return true;
+            return false;
         }
 
         // One character at a time, the next only once the server answered the last one, so a slow
@@ -407,10 +429,21 @@ export default async function () {
                 // The status is JSON, with "type" as in the older "type=" form of the message.
                 const type = /"type"\s*:\s*"(\w+)"|\btype=(\w+)/.exec(e.data);
                 s.kind = type?.[1] ?? type?.[2] ?? 'text';
+                s.viewId = /"viewid"\s*:\s*(\d+)/.exec(e.data)?.[1] ?? null;
                 sendVisibleArea();
                 placeCursor();
                 requestVisibleTiles();
-                nextWord();
+                if (s.editing) nextWord();
+            } else if (e.data.startsWith('viewlock:')) {
+                try {
+                    const lock = JSON.parse(e.data.substring(e.data.indexOf(':') + 1));
+                    if (lock.rectangle === 'EMPTY') s.locks.delete(String(lock.viewId));
+                    else s.locks.set(String(lock.viewId), String(lock.objectId));
+                } catch (err) { /* not JSON */ }
+                if (s.object && !lockedByOther(s.object)) startEditing();
+            } else if (e.data.startsWith('graphicselection:') && !s.editing) {
+                s.object = /"id"\s*:\s*"(\w+)"/.exec(e.data)?.[1] ?? null;
+                if (s.object && !lockedByOther(s.object)) startEditing();
             } else if (e.data.startsWith('invalidatecursor:')
                        || (s.kind === 'spreadsheet' && e.data.startsWith('cellcursor:'))) {
                 // A sheet answers Enter by moving the cell cursor rather than the text cursor.
