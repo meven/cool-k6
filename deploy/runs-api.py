@@ -183,8 +183,63 @@ def measuring_since(unit: dict, holder: tuple[str, str] | None) -> str | None:
 
 def command_of(unit: dict) -> list[str]:
     """The command line of a service, from the argv[] of its ExecStart."""
-    m = re.search(r"argv\[\]=(.*?) ;", unit.get("ExecStart", ""))
-    return m.group(1).split() if m else []
+    m = re.search(r"argv\[\]=(.*?) ;", unit.get("ExecStart", ""), re.S)
+    if not m:
+        return []
+    # A script given to sh -c can continue a line with a backslash, which systemctl prints as it
+    # is or escaped.
+    return re.sub(r"\\(\n|n(?=\S))", " ", m.group(1)).split()
+
+
+def commands_of(unit: dict) -> list[list[str]]:
+    """The commands that a service runs: its ExecStart, or the commands of the script that it
+    gives to sh -c, split at && and ;."""
+    argv = [a.strip("'\"") for a in command_of(unit)]
+    if len(argv) > 2 and Path(argv[0]).name in ("sh", "bash") and argv[1] == "-c":
+        argv = argv[2:]
+    out, cur = [], []
+    for a in argv:
+        if a in ("&&", "||", ";"):
+            out.append(cur)
+            cur = []
+        elif a and a != "\\":
+            cur.append(a.rstrip(";"))
+            if a.endswith(";"):
+                out.append(cur)
+                cur = []
+    out.append(cur)
+    return [c for c in out if c]
+
+
+def command_named(commands: list[list[str]], name: str) -> list[str]:
+    """The first of @p commands whose program is @p name, or an empty list."""
+    return next((c for c in commands if Path(c[0]).name == name), [])
+
+
+# The patch sets that units name, by the text of their --gerrit. A failed lookup is not kept, so
+# the next poll of the tab asks Gerrit again.
+patchsets: dict[str, dict] = {}
+
+
+def branch_change(argv: list[str]) -> dict | None:
+    """The Gerrit patch set that a command of deploy/run-branch measures, with its subject and
+    uploader as the queue shows them, and the number of runs. Only the change and the patch set
+    that the command gives when Gerrit cannot be read. None for another command."""
+    if not argv or Path(argv[0]).name != "run-branch" or "--gerrit" not in argv[:-1]:
+        return None
+    text = argv[argv.index("--gerrit") + 1]
+    runs = argv[argv.index("--runs") + 1] if "--runs" in argv[:-1] else "1"
+    if text not in patchsets:
+        try:
+            patchsets[text] = runqueue.resolve(text)
+        except runqueue.Refused:
+            m = runqueue.CHANGE.fullmatch(text)
+            if not m:
+                return None
+            return {"change": int(m.group(1)),
+                    "patchset": int(m.group(2)) if m.group(2) else None,
+                    "runs": int(runs) if runs.isdigit() else 1}
+    return {**patchsets[text], "runs": int(runs) if runs.isdigit() else 1}
 
 
 def capacity_scenarios(argv: list[str], environment: str) -> list[str] | None:
@@ -240,14 +295,18 @@ def units_by_hand(holder: tuple[str, str] | None = None) -> list[dict]:
                                     "InactiveExitTimestamp", "NextElapseUSecRealtime",
                                     "ControlGroup"]):
         service = services.get(u.get("Id", "").rsplit(".", 1)[0] + ".service", {})
-        scenarios = capacity_scenarios(command_of(service), service.get("Environment", ""))
+        commands = commands_of(service)
+        scenarios = capacity_scenarios(command_named(commands, "run-capacity"),
+                                       service.get("Environment", ""))
+        # the change that a unit of deploy/run-branch measures, as a job of the queue shows it
+        gerrit = branch_change(command_named(commands, "run-branch"))
         # scheduled: a timer of systemd-run that has not fired; waiting: started, but waiting
         # for the lock
         if u.get("Id", "").endswith(".timer"):
             if when(u.get("NextElapseUSecRealtime")):
                 found.append({"unit": u["Id"], "state": "scheduled",
                               "at": when(u.get("NextElapseUSecRealtime")),
-                              "scenarios": scenarios})
+                              "scenarios": scenarios, "gerrit": gerrit})
         elif u.get("ActiveState") in ("active", "activating"):
             waiting = waits_for_lock(u)
             measuring = None if waiting else measuring_since(u, holder)
@@ -257,7 +316,8 @@ def units_by_hand(holder: tuple[str, str] | None = None) -> list[dict]:
                           "measuring_since": measuring,
                           # the capacity scenarios it runs, and the one it measures now
                           "scenarios": scenarios,
-                          "scenario": capacity_running() if scenarios and measuring else None})
+                          "scenario": capacity_running() if scenarios and measuring else None,
+                          "gerrit": gerrit})
     return found
 
 

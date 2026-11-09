@@ -1078,7 +1078,13 @@ function runBranch(r) {
     // a run in the window. A unit shares the lane of the branch that it is named after, as
     // cool-perf-gerrit-18257.service measures the branch gerrit-18257.
     const unitLane = (u) => u.unit.replace(/^cool-perf-/, "").replace(/\.(service|timer)$/, "");
-    const unitTip = (u, text) => text + (u.scenarios ? ", " + scenariosText(u) : "");
+    const unitTip = (u, text) =>
+      text +
+      (u.gerrit
+        ? `, change ${u.gerrit.change}${u.gerrit.patchset ? "/" + u.gerrit.patchset : ""}` +
+          (u.gerrit.subject ? ` "${u.gerrit.subject}"` : "")
+        : "") +
+      (u.scenarios ? ", " + scenariosText(u) : "");
     const branchRuns = RUNS.filter((r) => r.branch !== "main" && Date.parse(r.ts) >= t0);
     const lanes = ["main", "queue"];
     [...state.by_hand.map(unitLane), ...branchRuns.map((r) => r.branch)].forEach((l) => {
@@ -1237,13 +1243,27 @@ function runBranch(r) {
         : running
           ? "since " + day(u.measuring_since || u.since)
           : "waiting for the lock since " + day(u.since);
-      return (
-        `<tr class="st-${running ? "running" : "queued"}"><td class="l">${running ? "running" : "scheduled"}</td>` +
-        `<td class="l" colspan="4"><code>${esc(u.unit)}</code>` +
+      const unit =
+        `<code>${esc(u.unit)}</code>` +
         `<span class="ref">started by hand with systemd-run</span>` +
-        (u.scenarios ? `<div class="ref">${esc(scenariosText(u))}</div>` : "") +
+        (u.scenarios ? `<div class="ref">${esc(scenariosText(u))}</div>` : "");
+      const head = `<tr class="st-${running ? "running" : "queued"}"><td class="l">${running ? "running" : "scheduled"}</td>`;
+      const end = `<td class="l">${esc(start)}</td><td></td></tr>`;
+      // A unit of deploy/run-branch reads like a job of the queue, with the unit below its subject.
+      const g = u.gerrit;
+      if (!g) return head + `<td class="l" colspan="4">${unit}</td>` + end;
+      const ps = g.patchset ? String(g.patchset) : "current";
+      return (
+        head +
+        `<td class="l">${gerritLink("gerrit-" + g.change, String(g.change))}</td>` +
+        `<td class="l">${g.patchset ? gerritLink(ps, g.change + "/" + g.patchset) : ps}` +
+        (g.revision ? `<span class="ref">${esc(g.revision.slice(0, 12))}</span>` : "") +
         `</td>` +
-        `<td class="l">${esc(start)}</td><td></td></tr>`
+        `<td class="l subj">${esc(g.subject || "")}` +
+        (g.uploader ? `<span class="ref">${esc(g.uploader)}</span>` : "") +
+        `<div>${unit}</div></td>` +
+        `<td>${g.runs}</td>` +
+        end
       );
     });
     const mainRunning = state.main.running && !state.main.waiting;
