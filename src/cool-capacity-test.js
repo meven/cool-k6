@@ -356,7 +356,8 @@ export default async function () {
         // the used area of a sheet, or the text of an object of the first slide. The second user of
         // a document takes the next cell or the next object.
         function placeCursor() {
-            client.send('uno .uno:GoToEndOfDoc');
+            // Ctrl+End: in a sheet .uno:GoToEndOfDoc does not move, and the end is the last used cell.
+            client.send(s.kind === 'spreadsheet' ? 'uno .uno:GoToEndOfData' : 'uno .uno:GoToEndOfDoc');
             if (s.kind === 'spreadsheet') {
                 pressKey(0, KEY_DOWN);
                 pressKey(0, KEY_HOME);
