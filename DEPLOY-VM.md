@@ -484,6 +484,12 @@ other, and `all` runs every one, about four hours:
   of the users editing a document two by two.
 - `mixed`: in every 10 documents, one each of odt, docx, ods, xlsx, odp and
   pptx with one user, then 4 more with two users each.
+- `writer-shared`, `calc-shared`, `impress-shared`: every user on one 5 MB
+  document. One user in 10 edits, each in a paragraph, a column or a slide of
+  its own, and the 9 users after it view the part where it types.
+  `impress-shared` opens `documents/impress-slides-5mb.odp`, 40 slides, which
+  `python3 documents/gen-docs.py --slide-deck-only` writes on a VM set up
+  before it.
 
 The Capacity tab names the scenario of each run.
 

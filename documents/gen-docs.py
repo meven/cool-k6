@@ -12,7 +12,9 @@ For each Collabora Online application it writes two files under documents/:
       Draw     pages of drawn shapes (rectangles, ellipses, lines) and images
   - for Impress also impress-duplicate.odp, the deck the slide-duplication
     requirement is measured on: every slide carries formatted text, a
-    photograph and five drawing objects (arrows, a circle, rectangles).
+    photograph and five drawing objects (arrows, a circle, rectangles), and
+    impress-slides-5mb.odp, 40 slides of the same size in all, one for each
+    editor of the shared-document capacity scenario.
 
 Size is driven by embedded raster images (ODF compresses text and cells well,
 so images are what make a file big), padded until the embedded-image bytes
@@ -319,6 +321,41 @@ def build_impress(target: int, blank: bool, label: str) -> None:
     doc.save(str(OUT / f"impress-{label}.odp"))
 
 
+# The deck of the shared-document capacity scenario: one editor types on each slide, and Impress
+# locks a text to the view that edits it, so the deck needs a slide for each editor. 160 users
+# at one editor in 10 take 16 slides; 40 leave room.
+SHARED_SLIDES = 40
+
+
+def build_slide_deck(target: int, label: str) -> None:
+    """impress-slides-<label>.odp: SHARED_SLIDES slides of a title, a body text and an image,
+    the images sized so that the deck weighs about as much as impress-<label>.odp."""
+    doc = OpenDocumentPresentation()
+    _draw_master(doc)
+    # the size of the images, from what one trial image takes a pixel
+    per = target // SHARED_SLIDES
+    trial = len(photo_png(300, 214)) / (300 * 214)
+    w = int((per / trial * 1.4) ** 0.5)
+    h = int(w / 1.4)
+    for n in range(SHARED_SLIDES):
+        page = Page(masterpagename="Standard")
+        # the title comes first, so that Tab selects it
+        title = Frame(width="24cm", height="3cm", x="2cm", y="1cm")
+        tb = TextBox()
+        tb.addElement(P(text=f"Slide {n + 1}: {prose(4)}"))
+        title.addElement(tb)
+        page.addElement(title)
+        body = Frame(width="12cm", height="12cm", x="2cm", y="5cm")
+        btb = TextBox()
+        for _ in range(4):
+            btb.addElement(P(text=prose(12)))
+        body.addElement(btb)
+        page.addElement(body)
+        page.addElement(frame(doc, photo_png(w, h), 11, 8, x="15cm", y="6cm"))
+        doc.presentation.addElement(page)
+    doc.save(str(OUT / f"impress-slides-{label}.odp"))
+
+
 # The deck the slide-duplication requirement is measured on. It is not sized: what matters is
 # what one slide holds, which the requirement spells out as formatted text, a photo and five
 # drawing objects such as arrows, circles and rectangles. Every slide is built the same way,
@@ -533,9 +570,16 @@ def main() -> None:
     ap.add_argument("--ooxml", action=argparse.BooleanOptionalAction, default=True,
                     help="also write the big documents in the Microsoft formats, by "
                          "converting them with a desktop LibreOffice")
+    ap.add_argument("--slide-deck-only", action="store_true",
+                    help=f"write only the {SHARED_SLIDES}-slide deck of that size "
+                         "(impress-slides-5mb.odp), and leave the other documents as they are")
     args = ap.parse_args()
     target = int(args.mb * 1024 * 1024 * 0.96)  # rest is xml/zip overhead
     label = size_label(args.mb)
+    if args.slide_deck_only:
+        build_slide_deck(target, label)
+        print(f"impress: {SHARED_SLIDES}-slide impress-slides-{label}.odp written to {OUT}")
+        return
     builders = {"writer": build_writer, "calc": build_calc,
                 "impress": build_impress, "draw": build_draw}
     # Only Writer has a report shape, since only Writer has headings to index.
@@ -550,6 +594,8 @@ def main() -> None:
         if app == "impress":
             build_impress_duplicate()
             print(f"impress: {DUPLICATE_SLIDES}-slide impress-duplicate.odp written to {OUT}")
+            build_slide_deck(target, label)
+            print(f"impress: {SHARED_SLIDES}-slide impress-slides-{label}.odp written to {OUT}")
     if args.image:
         build_image(target, label)
 

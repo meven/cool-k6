@@ -1398,6 +1398,8 @@ function runBranch(r) {
     (r.users_per_document > 1 ? `blank.odt, ${r.users_per_document} users each` : "blank.odt");
   // The scenarios of cool-capacity-test.js, in words.
   const pairs = "half of the users editing a document two by two, the others one each";
+  const shared = (part) =>
+    `where one user in 10 edits, each in a ${part} of its own, and the others view where it types`;
   const SCENARIOS = {
     writer: "the 5 MB Writer documents, odt and docx in turn, one user each",
     calc: "the 5 MB Calc documents, ods and xlsx in turn, one user each",
@@ -1408,6 +1410,9 @@ function runBranch(r) {
     mixed:
       "in every 10 documents, one each of odt, docx, ods, xlsx, odp and pptx with one user, " +
       "then 4 more with two users each",
+    "writer-shared": `one 5 MB Writer document for every user, ${shared("paragraph")}`,
+    "calc-shared": `one 5 MB Calc document for every user, ${shared("column")}`,
+    "impress-shared": `one 5 MB Impress deck of 40 slides for every user, ${shared("slide")}`,
   };
   const describe = (r) =>
     r.scenario

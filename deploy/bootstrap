@@ -64,6 +64,9 @@ fi
 if [ ! -f documents/writer-10mb.odt ]; then
     python3 documents/gen-docs.py --apps writer --mb 10 --report --no-ooxml --no-image
 fi
+if [ ! -f documents/impress-slides-5mb.odp ]; then
+    python3 documents/gen-docs.py --slide-deck-only
+fi
 
 step "k6 image"
 docker pull grafana/k6:1.7.1-with-browser

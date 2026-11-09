@@ -35,6 +35,12 @@
  *   writer-pairs, ...       the same documents, with half of the users editing a document two by two
  *   mixed                   in every 10 documents, one each of odt, docx, ods, xlsx, odp and pptx
  *                           with one user, then 4 more with two users each
+ *   writer-shared, calc-shared, impress-shared
+ *                           every user on one 5 MB document of the application. One user in
+ *                           CAP_EDITOR_EVERY edits, each in a part of its own: a paragraph 8 after
+ *                           the one of the editor before, the next column of the empty row below the
+ *                           data, or the next slide of impress-slides-5mb.odp. The other users view
+ *                           the part of the editor before them, without typing.
  *
  * The user types where the application takes text: at the end of a Writer document, in the empty
  * cell below the last one of a Calc sheet (each word goes in a cell of its own, committed with
@@ -57,6 +63,7 @@
  *   CAP_SCENARIO      - a name from SCENARIOS, which replaces CAP_FILE_ID and CAP_USERS_PER_DOC
  *   CAP_DOCS          - the documents of a scenario of your own, as "<file id>:<users>,..."; the
  *                       list repeats for as many users as there are
+ *   CAP_EDITOR_EVERY  - in a shared scenario, one user in this many edits  (default 10)
  *   CAP_THINK_MIN_MS, CAP_THINK_MAX_MS - pause between two words      (default 2000, 8000)
  *   CAP_TYPE_STEP_MS  - pause between two characters of a word       (default 150)
  *   CAP_EDIT_P95_MS   - edit latency target, 95th percentile         (default 300)
@@ -86,6 +93,8 @@ const FILE_ID = __ENV['CAP_FILE_ID'] || 11;  // documents/blank.odt
 
 // The WOPI file ids of server/routes/files.json, by format: the 5 MB documents of gen-docs.py.
 const ODT = 12, DOCX = 19, ODS = 14, XLSX = 20, ODP = 16, PPTX = 21;
+// impress-slides-5mb.odp: 40 slides in about 5 MB, one for each editor of impress-shared
+const SLIDES = 24;
 // One user on each document of the first list, and half of the users two by two in the second.
 const alone = (a, b) => [[a, 1], [b, 1]];
 const pairs = (a, b) => [[a, 1], [b, 1], [a, 2], [a, 1], [b, 1], [b, 2]];
@@ -105,14 +114,23 @@ const SCENARIOS = {
     'impress-pairs': pairs(ODP, PPTX),
     'mixed': mixed,
 };
+// Every user on one document. One user in CAP_EDITOR_EVERY edits, each in a part of its own, and
+// the users after it, up to the next editor, view the part where it types.
+const SHARED = { 'writer-shared': ODT, 'calc-shared': ODS, 'impress-shared': SLIDES };
+const EDITOR_EVERY = Math.max(1, num('CAP_EDITOR_EVERY', 10));
+// The paragraphs between two editors of a shared Writer document: writer-5mb.odt has 136, and
+// 160 users have 16 editors.
+const PARAGRAPH_STEP = 8;
 const SCENARIO = __ENV['CAP_SCENARIO'] || (__ENV['CAP_DOCS'] ? 'custom' : null);
-if (SCENARIO && SCENARIO !== 'custom' && !SCENARIOS[SCENARIO]) {
-    throw new Error(`CAP_SCENARIO=${SCENARIO} is not one of ${Object.keys(SCENARIOS).join(', ')}`);
+const SHARED_FILE = SHARED[SCENARIO] ?? null;
+if (SCENARIO && SCENARIO !== 'custom' && !SCENARIOS[SCENARIO] && !SHARED_FILE) {
+    throw new Error(`CAP_SCENARIO=${SCENARIO} is not one of `
+        + `${[...Object.keys(SCENARIOS), ...Object.keys(SHARED)].join(', ')}`);
 }
 const DOCS = SCENARIO === 'custom'
     ? __ENV['CAP_DOCS'].split(',').map((s) => s.split(':').map((v) => v.trim()))
         .map(([id, users]) => [id, Math.max(1, Number(users) || 1)])
-    : SCENARIOS[SCENARIO] ?? [[FILE_ID, USERS_PER_DOC]];
+    : SHARED_FILE ? [[SHARED_FILE, 1]] : SCENARIOS[SCENARIO] ?? [[FILE_ID, USERS_PER_DOC]];
 // The users of one round of DOCS, each as [index of its document in DOCS, seat in that document].
 const SEATS = DOCS.flatMap(([, users], doc) => Array.from({ length: users }, (_, seat) => [doc, seat]));
 const THINK_MIN_MS = num('CAP_THINK_MIN_MS', 2000);
@@ -139,6 +157,8 @@ const ROWS = 4;
 
 // The key codes of the browser client, from vcl's KEY_ constants.
 const KEY_DOWN = 1024, KEY_RIGHT = 1027, KEY_HOME = 1028, KEY_RETURN = 1280, KEY_TAB = 1282;
+// Ctrl, added to a key code
+const KEY_MOD1 = 8192;
 
 const WORDS = ['capacity', 'document', 'paragraph', 'online', 'server', 'measure', 'latency',
     'office', 'review', 'editing', 'meeting', 'report', 'budget', 'planning', 'draft'];
@@ -230,15 +250,28 @@ function randomBetween(low, high) {
 let group = null;
 let seat = 0;
 let fileId = null;
+// whether the user types, and the part it works in: the cell, object, slide or paragraph of
+// its seat, or in a shared document the one of its editor
+let editor = true;
+let place = 0;
 function groupWopiSrc() {
     if (group === null) {
         const base = String(wopiHost).replace(/\/?$/, '/');
         const res = http.get(`${base}capacity/group?size=1`);
         const user = res.status === 200 ? res.json('group') : exec.vu.idInTest - 1;
-        const [doc, s] = SEATS[user % SEATS.length];
-        group = Math.floor(user / SEATS.length) * DOCS.length + doc;
-        seat = s;
-        fileId = DOCS[doc][0];
+        if (SHARED_FILE) {
+            group = 0;
+            seat = user;
+            fileId = SHARED_FILE;
+            editor = user % EDITOR_EVERY === 0;
+            place = Math.floor(user / EDITOR_EVERY);
+        } else {
+            const [doc, s] = SEATS[user % SEATS.length];
+            group = Math.floor(user / SEATS.length) * DOCS.length + doc;
+            seat = s;
+            place = s;
+            fileId = DOCS[doc][0];
+        }
     }
     return getWopiSrc(wopiHost, `${fileId}~${group}`).toString();
 }
@@ -261,6 +294,8 @@ export default async function () {
             // this view, the objects that other views lock, the object selected to type in, and
             // whether the user types yet
             viewId: null, locks: new Map(), object: null, editing: true,
+            // the parts of the document, which name a slide to show by its identifier
+            parts: [],
         };
         let client;
 
@@ -366,27 +401,45 @@ export default async function () {
 
         // Puts the cursor where the user types: the end of a text document, the empty cell below
         // the used area of a sheet, or the text of an object of the first slide. The second user of
-        // a document takes the next cell or the next object.
+        // a document takes the next cell or the next object. In a shared document each editor
+        // takes a paragraph, a column or a slide of its own, and its viewers go to the same place
+        // without typing, so that its edits change what they view.
         function placeCursor() {
-            // Ctrl+End: in a sheet .uno:GoToEndOfDoc does not move, and the end is the last used cell.
-            client.send(s.kind === 'spreadsheet' ? 'uno .uno:GoToEndOfData' : 'uno .uno:GoToEndOfDoc');
             if (s.kind === 'spreadsheet') {
+                // Ctrl+End: in a sheet .uno:GoToEndOfDoc does not move, and the end is the last
+                // used cell.
+                client.send('uno .uno:GoToEndOfData');
                 pressKey(0, KEY_DOWN);
                 pressKey(0, KEY_HOME);
-                for (let i = 0; i < seat; i++) pressKey(0, KEY_RIGHT);
+                for (let i = 0; i < place; i++) pressKey(0, KEY_RIGHT);
+            } else if (s.kind === 'presentation' && SHARED_FILE) {
+                // A slide is named by its identifier in the status, or by its index in an older
+                // coolwsd.
+                const slide = place % Math.max(1, s.parts.length);
+                client.send(`setclientpart part=${s.parts[slide]?.part ?? slide}`);
+                if (editor) pressKey(9, KEY_TAB);
             } else if (s.kind === 'presentation') {
-                // Tab selects the next object of the slide, and Enter starts editing its text once
-                // no other view locks the object. A view closed a moment ago keeps its lock until
-                // the kit destroys it, a few seconds later, and Enter on a locked object does not
-                // edit it.
-                for (let i = 0; i <= seat; i++) pressKey(9, KEY_TAB);
+                client.send('uno .uno:GoToEndOfDoc');
+                for (let i = 0; i <= place; i++) pressKey(9, KEY_TAB);
+            } else if (SHARED_FILE) {
+                client.send('uno .uno:GoToStartOfDoc');
+                // Ctrl+Down: the start of the next paragraph
+                for (let i = 0; i < place * PARAGRAPH_STEP; i++) pressKey(0, KEY_DOWN | KEY_MOD1);
+            } else {
+                client.send('uno .uno:GoToEndOfDoc');
+            }
+            if (s.kind === 'presentation' && editor) {
+                // Tab selected the next object of the slide, and Enter starts editing its text
+                // once no other view locks the object. A view closed a moment ago keeps its lock
+                // until the kit destroys it, a few seconds later, and Enter on a locked object
+                // does not edit it.
                 s.editing = false;
                 later(startEditing, LOCK_WAIT_MS);
             }
         }
 
         function startEditing() {
-            if (s.editing || s.closing) return;
+            if (s.editing || s.closing || !editor) return;
             s.editing = true;
             pressKey(13, KEY_RETURN);
             nextWord();
@@ -452,10 +505,15 @@ export default async function () {
                 const type = /"type"\s*:\s*"(\w+)"|\btype=(\w+)/.exec(e.data);
                 s.kind = type?.[1] ?? type?.[2] ?? 'text';
                 s.viewId = /"viewid"\s*:\s*(\d+)/.exec(e.data)?.[1] ?? null;
+                try {
+                    s.parts = JSON.parse(e.data.substring(e.data.indexOf('{'))).parts ?? [];
+                } catch (err) { /* the older status: of key=value pairs */ }
                 sendVisibleArea();
                 placeCursor();
                 requestVisibleTiles();
-                if (s.editing) nextWord();
+                // A viewer keeps the document open for the session, without typing.
+                if (!editor) later(close, SESSION_MS);
+                else if (s.editing) nextWord();
             } else if (e.data.startsWith('viewlock:')) {
                 try {
                     const lock = JSON.parse(e.data.substring(e.data.indexOf(':') + 1));
@@ -543,7 +601,9 @@ export function handleSummary(data) {
         stdout: textSummary(data, { indent: ' ', enableColors: true }) + lines.join('\n'),
         'capacity.json': JSON.stringify({
             capacity, server: SERVER, usersPerDocument: SCENARIO ? null : USERS_PER_DOC,
-            scenario: SCENARIO, documents: DOCS.map(([id, users]) => ({ fileId: id, users })),
+            scenario: SCENARIO,
+            documents: SHARED_FILE ? [{ fileId: SHARED_FILE, users: 'all', editorEvery: EDITOR_EVERY }]
+                : DOCS.map(([id, users]) => ({ fileId: id, users })),
             plateaus: rows,
         }, null, 2),
     };
