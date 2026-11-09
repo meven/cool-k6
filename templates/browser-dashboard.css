@@ -980,6 +980,16 @@ footer {
 .cap-charts {
   margin-top: 12px;
 }
+.cap-load {
+  margin-top: 16px;
+  border-top: 1px solid var(--hair);
+  padding-top: 8px;
+}
+.cap-load summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 0.9em;
+}
 .cap-chart {
   display: block;
   max-width: 100%;

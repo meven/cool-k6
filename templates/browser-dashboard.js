@@ -1397,7 +1397,9 @@ function runBranch(r) {
     charts = document.getElementById("capcharts");
   let list = null,
     run = CAPRUN,
-    shown = null;
+    shown = null,
+    // whether the load generator section is open, kept from one run to the next
+    loadOpen = false;
   const cores = (cpus) =>
     (cpus || "")
       .split(",")
@@ -1609,7 +1611,8 @@ function runBranch(r) {
     drawCharts();
   }
 
-  // Five charts on one time axis, each with its own unit, rather than two units on one chart.
+  // Charts on one time axis, each with its own unit, rather than two units on one chart. The
+  // server charts come first; the load generator has a closed section of its own below them.
   function drawCharts() {
     const r = shown;
     const end = Math.max(
@@ -1665,6 +1668,7 @@ function runBranch(r) {
         title: "load CPU, cores",
         unit: "",
         digits: 2,
+        load: true,
         // a run from before the split has the three together
         series: part(5, 7).length
           ? [
@@ -1703,10 +1707,26 @@ function runBranch(r) {
     charts.innerHTML = "";
     const w = Math.max(320, charts.clientWidth || 800);
     const oom = r.oom || [];
-    const svgs = specs.map((sp, i) =>
-      chart(sp, w, end, r.plateaus, oom, i === 0, i === specs.length - 1),
+    const server = specs.filter((sp) => !sp.load);
+    const load = specs.filter((sp) => sp.load);
+    const svgs = server.map((sp, i) =>
+      chart(sp, w, end, r.plateaus, oom, i === 0, i === server.length - 1),
     );
     svgs.forEach((s) => charts.appendChild(s));
+    const loadBox = document.createElement("details");
+    loadBox.className = "cap-load";
+    loadBox.open = loadOpen;
+    loadBox.innerHTML =
+      "<summary>Load generator: k6, the browser user and the WOPI host, " +
+      "on the cores outside the server limits</summary>";
+    loadBox.addEventListener("toggle", () => (loadOpen = loadBox.open));
+    load.forEach((sp) => {
+      const s = chart(sp, w, end, r.plateaus, oom, false, true);
+      loadBox.appendChild(s);
+      svgs.push(s);
+    });
+    if (load.length) charts.appendChild(loadBox);
+    const shownSpecs = [...server, ...load];
     // one crosshair over every chart, at the same time
     const move = (e) => {
       const svg = e.currentTarget;
@@ -1720,7 +1740,8 @@ function runBranch(r) {
         cross.setAttribute("x1", x);
         cross.setAttribute("x2", x);
         cross.style.display = "";
-        const sp = specs[i];
+        const sp = shownSpecs[i];
+        if (sp.load && !loadBox.open) return;
         const vals = sp.series
           .map((se) => {
             const v = nearest(se.rows, t);
