@@ -4,7 +4,7 @@
 #
 # Run as the service user, or schedule it with systemd-run as DEPLOY-VM.md shows:
 #
-#   deploy/run-capacity                   the default staircase: 10, 20, 40, 80, 120, then 160 users
+#   deploy/run-capacity                   the default staircase: 10, 20, 30 ... 160 users
 #   deploy/run-capacity --wait            queue behind a run of the timer
 #   deploy/run-capacity writer calc       one run for each CAP_SCENARIO named, one after the other
 #   deploy/run-capacity all               every scenario of cool-capacity-test.js

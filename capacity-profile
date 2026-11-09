@@ -229,9 +229,9 @@ else
 fi
 
 # The start of the last hold, from the same defaults as the test.
-plateaus=$(tr ',' '\n' <<< "${CAP_VUS:-10,20,40,80,120,160}" | grep -c .)
-ramp=$(seconds "${CAP_RAMP:-1m}")
-hold=$(seconds "${CAP_HOLD:-3m}")
+plateaus=$(tr ',' '\n' <<< "${CAP_VUS:-$(seq -s, 10 10 160)}" | grep -c .)
+ramp=$(seconds "${CAP_RAMP:-20s}")
+hold=$(seconds "${CAP_HOLD:-70s}")
 BROWSER_AT=${BROWSER_AT:-$(( plateaus * ramp + (plateaus - 1) * hold ))}
 # The stages, the 30 s ramp down and the 30 s graceful stop of the test, and 2 minutes more.
 K6_DEADLINE=$(( plateaus * (ramp + hold) + 60 + 120 ))

@@ -457,9 +457,9 @@ until main next moves, and the next run of main builds main again the same way.
 
 **Measuring capacity.** `deploy/run-capacity` runs the staircase test of
 `src/cool-capacity-test.js` through `capacity-profile` against the build in the
-tree: 10, 20, 40, 80, 120, then 160 users, each typing in a document of its
-own, with a minute of ramp and three minutes held at each step, so about 25
-minutes. It records a flamegraph of coolwsd and every kit, the timeline of
+tree: steps of 10 users from 10 to 160, each typing in the documents of the
+scenario, with 20 seconds of ramp and 70 seconds held at each step, so about 25
+minutes, or less when a step fails. It records a flamegraph of coolwsd and every kit, the timeline of
 memory and CPU, and the edit latency of each user, and one real browser user
 joins at the last step. It holds the lock of the timer and stops when `cool-ci doctor` fails, and
 its results go to `/var/lib/cool-perf/capacity/<time>-<commit>/`, which the

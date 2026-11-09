@@ -1707,8 +1707,10 @@ function runBranch(r) {
     plateaus.forEach((p) => {
       if (p.start >= end) return;
       g += `<rect class="band" x="${X(p.start)}" y="${pt}" width="${X(Math.min(p.end, end)) - X(p.start)}" height="${ph}"/>`;
-      if (first)
-        g += `<text class="band-l" x="${(X(p.start) + X(Math.min(p.end, end))) / 2}" y="${pt - 6}">${p.users} users</text>`;
+      // a narrow band, as with steps of 10 users, gives the number alone
+      const bw = X(Math.min(p.end, end)) - X(p.start);
+      if (first && bw >= 14)
+        g += `<text class="band-l" x="${(X(p.start) + X(Math.min(p.end, end))) / 2}" y="${pt - 6}">${p.users}${bw >= 60 ? " users" : ""}</text>`;
     });
     [0, 0.5, 1].forEach((f) => {
       const v = top * f;

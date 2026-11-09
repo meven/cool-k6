@@ -17,7 +17,9 @@
  *
  *   edit_latency    a typed character -> the server moving that user's cursor (invalidatecursor:)
  *   doc_load_time   the load message -> the document status (status:)
- *   session_errors  sessions that failed to load, lost their socket, or had a keystroke time out
+ *   session_errors  sessions that failed to load, lost their socket, or had a keystroke time out,
+ *                   against the sessions open at the end of the hold. A failure in a ramp counts
+ *                   against the plateau that the ramp leads to.
  *
  * The summary prints one line per plateau and names the capacity: the largest plateau that met every
  * threshold. A run stops early once more than half of the sessions fail, since the plateaus above
@@ -46,9 +48,9 @@
  * them, and num_prespawn_children in coolwsd.xml decides how many kits wait ready.
  *
  * Env:
- *   CAP_VUS           - comma-separated user plateaus                (default "10,20,40,80,120,160")
- *   CAP_RAMP          - time to climb to each plateau                (default "1m")
- *   CAP_HOLD          - time held at each plateau                    (default "3m")
+ *   CAP_VUS           - comma-separated user plateaus                (default "10,20,...,160")
+ *   CAP_RAMP          - time to climb to each plateau                (default "20s")
+ *   CAP_HOLD          - time held at each plateau                    (default "70s")
  *   CAP_SESSION       - seconds a user keeps the document open       (default 300)
  *   CAP_USERS_PER_DOC - users editing the same document              (default 1)
  *   CAP_FILE_ID       - WOPI file id to open                         (default 11, blank.odt)
@@ -73,10 +75,11 @@ import { wopiHost, wopiUrl } from './config.js';
 
 const num = (name, fallback) => Number(__ENV[name] ?? fallback);
 
-const PLATEAUS = (__ENV['CAP_VUS'] || '10,20,40,80,120,160')
+// Steps of 10 users up to 160, so that the capacity lands within 10 users.
+const PLATEAUS = (__ENV['CAP_VUS'] || Array.from({ length: 16 }, (_, i) => 10 * (i + 1)).join(','))
     .split(',').map((s) => Number(s.trim())).filter((n) => n > 0);
-const RAMP = __ENV['CAP_RAMP'] || '1m';
-const HOLD = __ENV['CAP_HOLD'] || '3m';
+const RAMP = __ENV['CAP_RAMP'] || '20s';
+const HOLD = __ENV['CAP_HOLD'] || '70s';
 const SESSION_MS = num('CAP_SESSION', 300) * 1000;
 const USERS_PER_DOC = Math.max(1, num('CAP_USERS_PER_DOC', 1));
 const FILE_ID = __ENV['CAP_FILE_ID'] || 11;  // documents/blank.odt
@@ -207,6 +210,14 @@ function plateauTag() {
     return { plateau: hold ? String(hold.users) : 'ramp' };
 }
 
+// The plateau that a failure counts against: the hold under way, or the one that the ramp leads
+// to, so that a session that fails while users join counts against the step they join.
+function failureTag() {
+    const t = exec.instance.currentTestRunDuration / 1000;
+    const hold = HOLDS.find((h) => t < h.end);
+    return { plateau: hold ? String(hold.users) : 'ramp' };
+}
+
 function randomBetween(low, high) {
     return low + Math.random() * (high - low);
 }
@@ -262,7 +273,8 @@ export default async function () {
             if (s.done) return;
             s.done = true;
             for (const id of s.timers) clearTimeout(id);
-            sessionErrors.add(s.failed ? 1 : 0, plateauTag());
+            // A session that ends well was counted at the end of each hold it lasted through.
+            if (s.failed) sessionErrors.add(1, failureTag());
             resolve();
         }
 
@@ -410,6 +422,15 @@ export default async function () {
 
         // From the start of the session, so that a socket that never opens fails too.
         later(() => { if (!s.loaded) fail(); }, LOAD_TIMEOUT_MS);
+        // A session counts once for each hold that ends while it is open and has not failed, so
+        // that a hold shorter than a session still has the sessions that went well in its rate.
+        const now = exec.instance.currentTestRunDuration;
+        for (const { users, end } of HOLDS) {
+            if (end * 1000 > now) {
+                later(() => { if (!s.failed) sessionErrors.add(0, { plateau: String(users) }); },
+                    end * 1000 - now);
+            }
+        }
         client = new CoolClientWs(wopiClient, wopiSrc, () => {
             s.openedAt = Date.now();
             client.openDocument(wopiSrc);
