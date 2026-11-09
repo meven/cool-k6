@@ -72,6 +72,7 @@ set -a; . /etc/cool-perf.env; set +a
 measure_ref() {
     local ref=$1 base= i
     build_bundles
+    build_documents
     local build_args=(--no-save --ref "$ref")
     [ "${COOL_PERF_ENGINE:-1}" = 1 ] && build_args+=(--engine)
     [ -n "$from" ] && build_args+=(--from "$from")

@@ -24,6 +24,8 @@ __pycache__/
 # enough to commit and are tracked.
 documents/*mb.*
 documents/impress-duplicate.odp
+# the gen-docs.py that the corpus was generated with (deploy/common.sh)
+documents/.built-from
 
 # The WOPI host's TLS pair, generated per checkout (see the README). A browser
 # test needs the host on https, since the host page refuses to submit to a COOL

@@ -44,6 +44,7 @@ if [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$head" ]; then
     npm run build
     echo "$head" > "$stamp"
 fi
+build_documents
 
 # cool-ci labels a run with the 12-character sha of the commit that it measured,
 # and last-runs.json holds the label of the last published run of each branch. When

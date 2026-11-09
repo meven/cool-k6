@@ -44,6 +44,7 @@ set -a; . /etc/cool-perf.env; set +a
 . deploy/common.sh
 take_lock "$wait"
 build_bundles
+build_documents
 ./cool-ci doctor
 
 store=${COOL_PERF_STORE:-/var/lib/cool-perf}
