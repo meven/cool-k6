@@ -34,8 +34,8 @@ Configuration is all environment, so a Jenkins job needs no arguments:
     COOL_PERF_PROBE_MAX      a run is busy when its machine probe is slower than the usual
                              time by this factor (default 1.12)
     COOL_PERF_STEAL_MAX      a run is busy above this CPU steal percentage (default 2)
-    COOL_PERF_BUSY_RETRIES   how many busy runs of a commit are left unpublished before one
-                             is published with its busy mark (default 3, 0 publishes them all)
+    COOL_PERF_BUSY_RETRIES   how many busy runs of a commit leave it to be measured again; each
+                             is published with its busy mark (default 3, 0 measures none again)
     COOL_PERF_PROBE_INTERVAL seconds between two machine probes during a run (default 20)
     HOST_IP            IP the k6 container reaches the host on (default: auto)
     WOPI_PORT          port for the test WOPI host (default 3000)
@@ -540,20 +540,24 @@ def cmd_run(args) -> int:
         print(f"not publishing: {runid} stays in results/")
         return suite_rc
 
-    if reasons and busy_retry(store, label or runid, int(env("COOL_PERF_BUSY_RETRIES", "3"))):
-        print(f"not publishing {runid}: the next run measures {label} again")
-        return suite_rc
-
-    pub_rc = publish(runid, store, int(env("COOL_PERF_KEEP", "20")), junit=junit)
+    # A busy machine slows the timings, but the instruction counts and the memory stay
+    # meaningful, so a busy run is published with its mark. It does not count as the run of
+    # its commit while retries are left, so the next run measures the commit again for timings.
+    again = bool(reasons) and busy_retry(store, label or runid,
+                                         int(env("COOL_PERF_BUSY_RETRIES", "3")))
+    pub_rc = publish(runid, store, int(env("COOL_PERF_KEEP", "20")), junit=junit,
+                     remember=not again)
+    if again:
+        print(f"published {runid} with its busy mark: the next run measures {label} again")
     return suite_rc or pub_rc
 
 
 def busy_retry(store: Path, label: str, retries: int) -> bool:
-    """Whether a busy run of @p label is to be measured again rather than published.
+    """Whether the commit of a busy run of @p label is to be measured again.
 
     The store keeps how many busy runs of the label came before, in busy-retries.json. Once
-    there were @p retries of them, the run is published with its busy mark, so that a commit
-    on a machine that stays busy still gets a point."""
+    there were @p retries of them, the run counts as the run of its commit, so that a commit
+    on a machine that stays busy is not measured again every hour."""
     path = store / "busy-retries.json"
     try:
         counts = json.loads(path.read_text())
@@ -581,9 +585,11 @@ def latest_runid(results: Path) -> str | None:
     return runs[-1] if runs else None
 
 
-def publish(runid: str, store: Path, keep: int, junit: Path | None = None) -> int:
+def publish(runid: str, store: Path, keep: int, junit: Path | None = None,
+            remember: bool = True) -> int:
     """Copy one run into the store, delete it from results/ unless COOL_PERF_KEEP_RESULTS=1,
-    prune old ones, rebuild the store dashboard.
+    prune old ones, rebuild the store dashboard. Without @p remember, the run does not become
+    the last run of its branch, which deploy/nightly then measures again.
 
     The store is the durable half: a CI workspace is wiped between builds, so
     the history that the charts plot has to live outside it. The dashboard is
@@ -621,6 +627,9 @@ def publish(runid: str, store: Path, keep: int, junit: Path | None = None) -> in
     if rc != 0:
         print("could not rebuild the store dashboard", file=sys.stderr)
         return rc
+    if not remember:
+        print(f"\ndashboard: {store / 'index.html'}")
+        return 0
     label = build_label()[0]
     # The last label of each branch, which deploy/nightly compares the tip of main with:
     # last-run.json names a change once one was measured after main. A store from before

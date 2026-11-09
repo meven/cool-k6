@@ -304,7 +304,7 @@ as a copy of `deploy/cool-perf.env`, which explains each one:
 | `COOL_PERF_SCHEDULE_DOMAINS` | `collabora.com,collabora.co.uk` | whose patch sets the Schedule tab accepts |
 | `COOL_PERF_PROBE_MAX` | `1.12` | a run is busy when the machine probe is slower than usual by this factor |
 | `COOL_PERF_STEAL_MAX` | `2` | a run is busy when the hypervisor took more than this percentage of the CPU time |
-| `COOL_PERF_BUSY_RETRIES` | `3` | busy runs of a commit that are not published before one is published with a busy mark |
+| `COOL_PERF_BUSY_RETRIES` | `3` | busy runs of a commit after which the commit is not measured again; each is published with a busy mark |
 | `COOL_PERF_SKIP_UNCHANGED` | `1` | skip the build and the measurement while `COOL_SRC_REF` is at the commit of the last published run |
 | `COOL_PERF_ENGINE` | `1` | rebuild the engine at each run, see below |
 | `COOL_PERF_SAVE_BUILDS` | `0` | keep each run's build as a 4 GB snapshot |
@@ -356,8 +356,10 @@ and run `bootstrap` again.
 usual, and every chart then has a spike at the same commit. During the run a
 probe does a fixed amount of work every 20 seconds, and the run reads the CPU
 steal time of the VM. Both go in `machine.json` in the run directory, and the
-run detail of the dashboard shows them. A busy run is not published, so the
-next hour measures the same commit again. Pinning the VM to its own cores on
+run detail of the dashboard shows them. A busy run is published with a busy
+mark: its timings stay off the lines of the charts as faded dots, while its
+memory and instruction counts, which a busy machine barely changes, stay on
+them. The next hour measures the same commit again for its timings. Pinning the VM to its own cores on
 one NUMA node of the host makes busy runs rare:
 
 ```

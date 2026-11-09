@@ -352,11 +352,12 @@ function render(svg, runs, W = 520, H = 300) {
         return x ? x.avg : null;
       }),
     );
+  // memory, like the instruction counts, holds on a busy machine, so busy runs stay on its lines
   if (SHOW.mem) {
-    plot("master_mem mem", yMem, masterOf);
-    plot("cool_mem mem", yMem, memOf);
-    plot("browser_mem mem", yMem, heapOf);
-    plot("tab_mem mem", yTab, tabOf);
+    plot("master_mem mem", yMem, masterOf, null, true);
+    plot("cool_mem mem", yMem, memOf, null, true);
+    plot("browser_mem mem", yMem, heapOf, null, true);
+    plot("tab_mem mem", yTab, tabOf, null, true);
   }
   // drawn last, so they stay on top of the other lines
   if (SHOW.instr)
