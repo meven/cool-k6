@@ -1455,6 +1455,22 @@ function runBranch(r) {
         ? ` title="${esc(`${r.capacity_k6} users by the session targets alone, before the first OOM kill counts.`)}"`
         : "";
 
+  // What ended the capacity: the first stage that failed, and the targets it missed, with an OOM
+  // kill first since it ends the stage whatever the sessions did.
+  function stoppedBy(r) {
+    if (!r.done) return "-";
+    const p = r.plateaus.find((x) => !passed(x));
+    if (!p) return "every stage passed";
+    const why = [];
+    if (p.oom_kills) why.push(`${p.oom_kills} OOM kill${p.oom_kills > 1 ? "s" : ""}`);
+    if (!p.reached) return `${p.users} users, not reached${why.length ? ": " + why.join(", ") : ""}`;
+    if (p.error_rate > 0) why.push(`${(100 * p.error_rate).toFixed(1)}% of sessions failed`);
+    if (p.measured && p.edit_p95 >= 300) why.push(`edit p95 ${Math.round(p.edit_p95)} ms`);
+    if (p.measured && p.load_p95 >= 10000) why.push(`load p95 ${(p.load_p95 / 1000).toFixed(1)} s`);
+    if (!p.measured && !why.length) why.push("nothing measured");
+    return `${p.users} users: ${why.join(", ") || "failed"}`;
+  }
+
   function drawList() {
     if (!list.length) {
       tab.innerHTML = "";
@@ -1464,15 +1480,11 @@ function runBranch(r) {
     msg.textContent = "";
     const shownRuns = list.filter((r) => !filter || scenario(r) === filter);
     tab.innerHTML =
-      "<thead><tr><th>started</th><th>commit</th><th class='txt'>scenario</th><th>capacity</th><th>stages</th>" +
+      "<thead><tr><th>started</th><th>commit</th><th class='txt'>scenario</th><th>capacity</th><th class='txt'>first failed stage</th>" +
       "<th>limits</th><th>peak memory</th><th>OOM kills</th><th></th></tr></thead><tbody>" +
       shownRuns
         .map((r) => {
           const n = cores(r.cpus);
-          const stages = r.plateaus
-            .filter((p) => p.reached)
-            .map((p) => `${p.users} ${passed(p) ? "ok" : p.measured && p.ok ? "oom" : "no"}`)
-            .join(", ");
           return (
             `<tr${r.run === run ? ' class="sel"' : ""}>` +
             `<td><button type="button" class="linkish" data-run="${esc(r.run)}">` +
@@ -1480,7 +1492,7 @@ function runBranch(r) {
             `<td><code>${esc(r.commit)}</code></td>` +
             `<td class="txt" title="${esc(describe(r))}">${esc(scenario(r))}</td>` +
             `<td${capTitle(r)}>${capText(r)}</td>` +
-            `<td>${esc(stages || "-")}</td>` +
+            `<td class="txt why">${esc(stoppedBy(r))}</td>` +
             `<td>${n ? n + " cores" : "unknown"}, ${r.memory_max_mb ? gb(r.memory_max_mb) : "unknown"}</td>` +
             `<td>${gb(r.memory_peak_mb)}</td>` +
             `<td>${r.oom_kills == null ? "-" : r.oom_kills}</td>` +

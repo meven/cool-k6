@@ -100,7 +100,9 @@ def plateaus(cap: dict | None, kills: list[list] | None = None) -> list[dict]:
         # capacity.json gives each hold from 7 November 2026, older ones are the defaults
         start = r.get("start", t + RAMP_S)
         end = r.get("end", start + HOLD_S)
-        oom = None if kills is None or not r.get("reached") else \
+        # the first stage that the run did not reach is where it stopped, often on these kills
+        first_missed = not r.get("reached") and all(p["reached"] for p in out)
+        oom = None if kills is None or not (r.get("reached") or first_missed) else \
             sum(n for k, n in kills if t <= k < end)
         t = end
         out.append({"users": r.get("users"), "start": start, "end": end, "oom_kills": oom,

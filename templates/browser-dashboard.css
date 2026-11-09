@@ -635,6 +635,11 @@ body.has-full::before {
 .cmp td {
   white-space: nowrap;
 }
+/* the cause of the first failed stage of a capacity run, which can name several targets */
+.cmp td.why {
+  white-space: normal;
+  min-width: 16em;
+}
 .cmp tbody th {
   text-align: left;
   vertical-align: top;
