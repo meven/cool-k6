@@ -95,32 +95,37 @@ def default_cool_cmd() -> str:
 # The build-id cache of a capture, under its output directory.
 BUILDID_DIR = "buildid"
 
-# Every frame of coolwsd and forkit carries this annotation, which flamegraph.pl strips from
-# the name it shows and searches, so its frames can have colours of their own.
+# Every frame of coolwsd carries this annotation, and every frame of forkit the other one.
+# flamegraph.pl strips both from the name it shows and searches, so the frames of each
+# process can have colours of their own.
 WSD_TAG = "_[i]"
-FLAME_LEGEND = "aqua: coolwsd and forkit, red to yellow: document kit"
+FORKIT_TAG = "_[w]"
+FLAME_LEGEND = "aqua: coolwsd, purple: forkit, red to yellow: document kit"
 # A frame for each process side under the threads, so that each side is one block with
 # its share of the samples. flamegraph.pl sorts by name, which puts coolwsd first.
 WSD_ROOT = "[coolwsd and forkit]"
 KIT_ROOT = "[kit]"
 
 
-def process_stack(frames: list[str], wsd: bool) -> str:
+def process_stack(frames: list[str], wsd: bool, forkit: bool = False) -> str:
     """A collapsed stack, thread first, under the frame of its process side, with every
-    frame tagged when it is coolwsd or forkit."""
+    frame tagged when it is coolwsd or forkit. The frame of the side keeps the coolwsd tag
+    for both, so that coolwsd and forkit stay one block."""
     # a background save thread is named after its document, and a kit and a spare kit are
     # numbered like the document thread of coolwsd, so that the threads of a capacity run
     # with many documents merge
     frames = [re.sub(r"^(kitbgsv|kitbroker|kit_spare|docbroker).*", r"\1", frames[0]), *frames[1:]]
     if wsd:
-        return ";".join(f + WSD_TAG for f in [WSD_ROOT, *frames])
+        tag = FORKIT_TAG if forkit else WSD_TAG
+        return ";".join([WSD_ROOT + WSD_TAG, *(f + tag for f in frames)])
     return ";".join([KIT_ROOT, *frames])
 
 
-def tag_by_process(lines, wsd_pids: set[str]):
+def tag_by_process(lines, wsd_pids: set[str], forkit_pids: set[str] = frozenset()):
     """Collapsed stacks from stackcollapse-perf.pl --pid, put under the process side
-    they were sampled in. The pid is dropped from the thread frame again, so the
-    threads of all kits merge as before."""
+    they were sampled in, and tagged as forkit when their pid is one of forkit_pids. The
+    pid is dropped from the thread frame again, so the threads of all kits merge as
+    before."""
     for line in lines:
         stack, _, count = line.rstrip("\n").rpartition(" ")
         if not stack:
@@ -129,7 +134,8 @@ def tag_by_process(lines, wsd_pids: set[str]):
         comm, _, pid = frames[0].rpartition("-")
         if not comm or not pid.isdigit():
             comm, pid = frames[0], ""
-        yield process_stack([comm, *frames[1:]], pid in wsd_pids) + f" {count}\n"
+        yield process_stack([comm, *frames[1:]], pid in wsd_pids or pid in forkit_pids,
+                            pid in forkit_pids) + f" {count}\n"
 
 
 def stack_shares(stacks: list[str]) -> tuple[float, float]:
@@ -145,7 +151,7 @@ def stack_shares(stacks: list[str]) -> tuple[float, float]:
         total += n
         if frames[0] == KIT_ROOT:
             kit += n
-        if frames[-1].removesuffix(WSD_TAG) == "[unknown]":
+        if frames[-1].removesuffix(WSD_TAG).removesuffix(FORKIT_TAG) == "[unknown]":
             unknown += n
     if not total:
         return 0.0, 0.0
@@ -154,16 +160,21 @@ def stack_shares(stacks: list[str]) -> tuple[float, float]:
 
 def render_flamegraph(stacks: list[str], svg_path: Path) -> None:
     """Draw tagged collapsed stacks. The kits keep the default hot palette, and the
-    coolwsd and forkit frames take an aqua from palette.map, which flamegraph.pl --cp
-    reads by the full frame name, annotation included."""
-    wsd_frames = {f for line in stacks if WSD_TAG in line
-                  for f in line.rpartition(" ")[0].split(";")}
+    coolwsd frames take an aqua and the forkit frames a purple from palette.map, which
+    flamegraph.pl --cp reads by the full frame name, annotation included."""
+    tagged = {f for line in stacks if WSD_TAG in line
+              for f in line.rpartition(" ")[0].split(";")}
     with tempfile.TemporaryDirectory() as tmp:
         with open(Path(tmp) / "palette.map", "w") as pal:
-            for name in sorted(wsd_frames):
+            for name in sorted(tagged):
                 v = (zlib.crc32(name.encode()) % 1000) / 1000
-                pal.write(f"{name}->rgb({50 + int(60 * v)},{165 + int(55 * v)},"
-                          f"{165 + int(55 * v)})\n")
+                if name.endswith(FORKIT_TAG):
+                    rgb = (150 + int(50 * v), 110 + int(50 * v), 210 + int(40 * v))
+                elif name.endswith(WSD_TAG):
+                    rgb = (50 + int(60 * v), 165 + int(55 * v), 165 + int(55 * v))
+                else:
+                    continue
+                pal.write(f"{name}->rgb({rgb[0]},{rgb[1]},{rgb[2]})\n")
         with svg_path.open("w") as svg:
             subprocess.run(["flamegraph.pl", "--cp", "--subtitle", FLAME_LEGEND],
                            input="".join(stacks), stdout=svg, text=True, cwd=tmp)
@@ -583,7 +594,7 @@ RENDER_JOB = "render-job.json"
 
 
 def render_capture(out_dir: Path, perf_cmd: list[str], wsd_pids: list[str],
-                   phases: "Phases") -> None:
+                   phases: "Phases", forkit_pids: list[str] = ()) -> None:
     """Draw out_dir/flamegraph.svg from out_dir/perf.data, and print the share of the
     kit and of the unresolved frames."""
     print("rendering flamegraph ...")
@@ -597,7 +608,7 @@ def render_capture(out_dir: Path, perf_cmd: list[str], wsd_pids: list[str],
     p2 = subprocess.Popen(["stackcollapse-perf.pl", "--pid"],
                           stdin=p1.stdout, stdout=subprocess.PIPE, text=True)
     p1.stdout.close()
-    stacks = list(tag_by_process(p2.stdout, set(wsd_pids)))
+    stacks = list(tag_by_process(p2.stdout, set(wsd_pids), set(forkit_pids)))
     render_flamegraph(stacks, out_dir / "flamegraph.svg")
     for p in (p1, p2):
         p.wait()
@@ -628,7 +639,9 @@ def render_deferred(out_dir: Path) -> int:
         print(f"no render job in {out_dir}: {e}", file=sys.stderr)
         return 1
     phases = Phases()
-    render_capture(out_dir, job["perf_cmd"], job["wsd_pids"], phases)
+    # a job written before forkit_pids draws forkit in the colours of coolwsd
+    render_capture(out_dir, job["perf_cmd"], job["wsd_pids"], phases,
+                   job.get("forkit_pids", ()))
     metrics_path = out_dir / "metrics.json"
     try:
         metrics = json.loads(metrics_path.read_text())
@@ -1150,7 +1163,8 @@ def main() -> int:
         # Sample resident memory every couple of seconds while the workload
         # runs, so the JSON carries a time series and a true concurrent peak.
         # coolwsd's and forkit's pids are stable for the run, so resolve once.
-        mem_wsd_pids = sorted(set(ours(pgrep(["-x", "coolwsd"]) + pgrep(["-x", "forkit"]))))
+        mem_forkit_pids = sorted(set(ours(pgrep(["-x", "forkit"]))))
+        mem_wsd_pids = sorted(set(ours(pgrep(["-x", "coolwsd"])) + mem_forkit_pids))
         # The browser runs in the k6 container and starts its processes as the
         # page needs them, so those groups are looked up again at each sample.
         mem_sampler = MemorySampler({
@@ -1227,10 +1241,11 @@ def main() -> int:
 
         if args.defer_render:
             (out_dir / RENDER_JOB).write_text(json.dumps(
-                {"perf_cmd": perf_cmd, "wsd_pids": mem_wsd_pids}) + "\n")
+                {"perf_cmd": perf_cmd, "wsd_pids": mem_wsd_pids,
+                 "forkit_pids": mem_forkit_pids}) + "\n")
             print(f"flamegraph: deferred, run --render-only --out-dir {out_dir}")
         else:
-            render_capture(out_dir, perf_cmd, mem_wsd_pids, phases)
+            render_capture(out_dir, perf_cmd, mem_wsd_pids, phases, mem_forkit_pids)
 
         total_elapsed = int(time.monotonic() - start_ts)
         print()
