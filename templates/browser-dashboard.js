@@ -1564,7 +1564,13 @@ function runBranch(r) {
         ? "The run did not record when the kernel killed processes of the server."
         : r.oom.length
           ? "The red lines are where the kernel killed processes of the server for lack of memory."
-          : "The kernel killed no process of the server.");
+          : "The kernel killed no process of the server.") +
+      ((r.cgroup_memory || []).length
+        ? " On the memory chart, the server cgroup is what the kernel charges against the limit. " +
+          "coolwsd reports the private memory of each kit, which leaves out the background saves " +
+          "and the pages a kit shares with the save it forked, so the gap between the two lines " +
+          "grows while documents save."
+        : "");
     document.getElementById("capstages").innerHTML =
       "<thead><tr><th>users</th><th>open documents</th><th>edit p95</th><th>edits</th><th>load p95</th>" +
       "<th>loads</th><th>failed sessions</th><th>OOM kills</th><th>result</th></tr></thead><tbody>" +
@@ -1623,19 +1629,25 @@ function runBranch(r) {
         ],
       },
       {
-        title: "server memory as coolwsd reports it, GB",
+        title: "server memory, GB",
         unit: " GB",
         digits: 2,
         limit: r.memory_max_mb && r.memory_max_mb / 1024,
         limitLabel: r.memory_max_mb ? `limit ${gb(r.memory_max_mb)}` : "",
         series: [
           {
-            name: "coolwsd, forkit and kits",
+            name: "reported by coolwsd",
             cls: "s0",
             rows: r.memory.map((x) => [x[0], (x[1] + x[2] + x[3]) / 1024]),
           },
-          { name: "kits", cls: "s1", rows: r.memory.map((x) => [x[0], x[3] / 1024]) },
-        ],
+          { name: "of which kits", cls: "s1", rows: r.memory.map((x) => [x[0], x[3] / 1024]) },
+          // what the kernel charges to the server, which the limit applies to
+          {
+            name: "server cgroup",
+            cls: "s2",
+            rows: (r.cgroup_memory || []).map((x) => [x[0], x[1] / 1024]),
+          },
+        ].filter((se) => se.name !== "server cgroup" || se.rows.length),
         extra: (t) => {
           const m = nearest(r.memory, t);
           return m ? `, ${m[4]} kits` : "";

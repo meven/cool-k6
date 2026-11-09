@@ -81,7 +81,7 @@ def detail(store: Path, run: str) -> dict | None:
     t0 = _first_t_ms(d / "timeline.csv")
     out = summary(d, m)
     out.update(users=users(d), edits=edits(d, t0), cpu=cpu(d, t0), memory=memory(d),
-               oom=oom_kills(d, t0))
+               oom=oom_kills(d, t0), cgroup_memory=cgroup_memory(d, t0))
     # the documents open during each stage, at most
     for p in out["plateaus"]:
         held = [m[5] for m in out["memory"] if p["start"] <= m[0] < p["end"]]
@@ -219,6 +219,25 @@ def cpu(d: Path, t0: int | None) -> list[list]:
             by.setdefault(int(t // STEP) * STEP, []).append((server, load))
     return [[t, round(sum(s for s, _ in v) / len(v), 2), round(sum(x for _, x in v) / len(v), 2)]
             for t, v in sorted(by.items())]
+
+
+def cgroup_memory(d: Path, t0: int | None) -> list[list]:
+    """[t, MB] of the server cgroup in each bucket, the most it held, from the cgroup_mb column
+    of timeline.csv: what the kernel charges against the limit, background saves included.
+    Empty for a run from before that column."""
+    if t0 is None:
+        return []
+    by: dict[int, int] = {}
+    with _open(d / "timeline.csv") as f:
+        for r in csv.DictReader(f) if f else ():
+            try:
+                t = (int(r["t_ms"]) - t0) / 1000
+                mb = int(r.get("cgroup_mb") or "")
+            except (KeyError, ValueError):
+                continue
+            b = int(t // STEP) * STEP
+            by[b] = max(by.get(b, 0), mb)
+    return [[t, mb] for t, mb in sorted(by.items())]
 
 
 def memory(d: Path) -> list[list]:

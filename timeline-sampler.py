@@ -6,7 +6,10 @@ Writes into OUT_DIR, until it is sent SIGTERM:
   - timeline.csv: one row per sample, with the host's available memory, swap and major-fault
     traffic, CPU busy and iowait shares, and the CPU used by coolwsd, the forkit, all document
     kits, all background saves, the WOPI host (node), k6 and Chromium. With --cgroup, also the
-    count of processes that the kernel has killed for lack of memory in that cgroup so far.
+    count of processes that the kernel has killed for lack of memory in that cgroup so far, and
+    the memory that the kernel charges to the cgroup (memory.current), which counts what
+    coolwsd's own figures leave out: the background saves, and the pages that a kit shares
+    with the save it forked.
   - kit-cpu.csv: one row per sample and document kit, with the CPU the kit used since the last
     sample.
   - events.csv: when a kit or a background save appears and ends, with its pid and name. A kit is
@@ -70,6 +73,17 @@ def read_oom_kills(cgroup):
     except OSError:
         pass
     return ""
+
+
+def read_cgroup_mb(cgroup):
+    """The memory.current of the cgroup in MB, or an empty field without one."""
+    if not cgroup:
+        return ""
+    try:
+        with open(os.path.join(cgroup, "memory.current")) as f:
+            return str(int(f.read()) // 1048576)
+    except (OSError, ValueError):
+        return ""
 
 
 def kind_of(comm, cmdline):
@@ -139,7 +153,7 @@ def main():
     kit_cpu = open(os.path.join(args.out_dir, "kit-cpu.csv"), "w", buffering=1)
     events = open(os.path.join(args.out_dir, "events.csv"), "w", buffering=1)
     timeline.write("t_ms,mem_available_mb,swap_free_mb,swap_in_pages,swap_out_pages,major_faults,"
-                   "cpu_busy,cpu_iowait," + ",".join(f"{k}_cpu" for k in kinds) + ",bgsaves,oom_kills\n")
+                   "cpu_busy,cpu_iowait," + ",".join(f"{k}_cpu" for k in kinds) + ",bgsaves,oom_kills,cgroup_mb\n")
     kit_cpu.write("t_ms,pid,name,cpu\n")
     events.write("t_ms,event,pid,name\n")
 
@@ -188,7 +202,7 @@ def main():
             f"{vm['pswpin'] - prev_vm['pswpin']},{vm['pswpout'] - prev_vm['pswpout']},"
             f"{vm['pgmajfault'] - prev_vm['pgmajfault']},"
             f"{(busy - prev_stat[0]) / d_total * NCPU:.2f},{(iowait - prev_stat[1]) / d_total * NCPU:.2f},"
-            + ",".join(f"{cpu[k]:.2f}" for k in kinds) + f",{bgsaves},{read_oom_kills(args.cgroup)}\n")
+            + ",".join(f"{cpu[k]:.2f}" for k in kinds) + f",{bgsaves},{read_oom_kills(args.cgroup)},{read_cgroup_mb(args.cgroup)}\n")
 
         prev_stat, prev_vm, prev_procs, prev_t = (busy, iowait, total), vm, procs, t
 
