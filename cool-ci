@@ -32,7 +32,7 @@ Configuration is all environment, so a Jenkins job needs no arguments:
     PERF_EVENT         perf sampling event (default cycles, self-tested and
                        downgraded automatically when it captures nothing)
     COOL_PERF_PROBE_MAX      a run is busy when its machine probe is slower than the usual
-                             time by this factor (default 1.2)
+                             time by this factor (default 1.12)
     COOL_PERF_STEAL_MAX      a run is busy above this CPU steal percentage (default 2)
     COOL_PERF_BUSY_RETRIES   how many busy runs of a commit are left unpublished before one
                              is published with its busy mark (default 3, 0 publishes them all)
@@ -522,7 +522,7 @@ def cmd_run(args) -> int:
     store = store_dir()
     reasons = judge(machine, baseline_ms(store / "results") if (store / "results").is_dir()
                     else None,
-                    float(env("COOL_PERF_PROBE_MAX", "1.2")),
+                    float(env("COOL_PERF_PROBE_MAX", "1.12")),
                     float(env("COOL_PERF_STEAL_MAX", "2")))
     machine["busy"] = bool(reasons)
     (ROOT / "results" / runid / "machine.json").write_text(json.dumps(machine, indent=2) + "\n")

@@ -302,7 +302,7 @@ as a copy of `deploy/cool-perf.env`, which explains each one:
 | `COOL_PERF_STORE` | `/var/lib/cool-perf` | the published runs and the dashboard |
 | `COOL_PERF_KEEP` | `240` | how many runs the store keeps, about 2 GB |
 | `COOL_PERF_SCHEDULE_DOMAINS` | `collabora.com,collabora.co.uk` | whose patch sets the Schedule tab accepts |
-| `COOL_PERF_PROBE_MAX` | `1.2` | a run is busy when the machine probe is slower than usual by this factor |
+| `COOL_PERF_PROBE_MAX` | `1.12` | a run is busy when the machine probe is slower than usual by this factor |
 | `COOL_PERF_STEAL_MAX` | `2` | a run is busy when the hypervisor took more than this percentage of the CPU time |
 | `COOL_PERF_BUSY_RETRIES` | `3` | busy runs of a commit that are not published before one is published with a busy mark |
 | `COOL_PERF_SKIP_UNCHANGED` | `1` | skip the build and the measurement while `COOL_SRC_REF` is at the commit of the last published run |
