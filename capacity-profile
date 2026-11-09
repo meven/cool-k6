@@ -111,6 +111,9 @@ STARTED_PIDS=()
 # coolwsd, forkit and the kits run in the server cgroup, on SERVER_CPUS and in SERVER_MEMORY.
 # Everything else of the run stays in the runner cgroup, on the other cores.
 own=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)
+# An earlier run in the same service moved this shell into the runner cgroup, whose cores are the
+# client cores. The server cgroup goes beside the runner again, not inside it.
+[ "${own##*/}" = runner ] && own=${own%/runner}
 [ -w "$own/cgroup.subtree_control" ] \
     || die "the server limits need a delegated cgroup v2, run under systemd-run with -p Delegate=yes"
 # cgroup v2 enables a controller for the children of a cgroup only when that cgroup holds no
@@ -119,7 +122,9 @@ mkdir -p "$own/runner"
 for pid in $(cat "$own/cgroup.procs"); do echo "$pid" > "$own/runner/cgroup.procs" 2>/dev/null || true; done
 echo "+cpuset +memory" > "$own/cgroup.subtree_control" \
     || die "cannot enable the cpuset and memory controllers in $own"
-CLIENT_CPUS=$(python3 - "$(cat "$own/cpuset.cpus.effective")" "$SERVER_CPUS" <<'EOF'
+# The cores of the list $1 that are not in the list $2, one by one: "0-3" "1" gives 0,2,3.
+cpus_minus() {
+    python3 - "$1" "$2" <<'EOF'
 import sys
 def cpus(s):
     out = set()
@@ -129,17 +134,25 @@ def cpus(s):
     return out
 print(",".join(map(str, sorted(cpus(sys.argv[1]) - cpus(sys.argv[2])))))
 EOF
-) || die "SERVER_CPUS=$SERVER_CPUS is not a list of cores"
+}
+CLIENT_CPUS=$(cpus_minus "$(cat "$own/cpuset.cpus.effective")" "$SERVER_CPUS") \
+    || die "SERVER_CPUS=$SERVER_CPUS is not a list of cores"
 [ -n "$CLIENT_CPUS" ] || die "no core is left for k6 and the browser user outside SERVER_CPUS=$SERVER_CPUS"
 echo "$CLIENT_CPUS" > "$own/runner/cpuset.cpus" || die "cannot pin the runner to cores $CLIENT_CPUS"
 SERVER_CG=$own/server
 mkdir -p "$SERVER_CG"
 echo "$SERVER_CPUS" > "$SERVER_CG/cpuset.cpus" || die "cannot give the server cores $SERVER_CPUS"
+# The kernel gives a cgroup the cores of its parent when the cores it asks for are not among
+# them, without an error.
+server_effective=$(cat "$SERVER_CG/cpuset.cpus.effective")
+[ "$(cpus_minus "$server_effective" "")" = "$(cpus_minus "$SERVER_CPUS" "")" ] \
+    || die "the server cgroup runs on cores $server_effective, not $SERVER_CPUS"
 echo "$SERVER_MEMORY" > "$SERVER_CG/memory.max" || die "cannot limit the server to $SERVER_MEMORY"
 echo 0 > "$SERVER_CG/memory.swap.max"
 echo "server cgroup $SERVER_CG: cores $SERVER_CPUS, memory $SERVER_MEMORY; k6 and the browser on cores $CLIENT_CPUS"
 # The limits, so that a run in progress shows them; stop_started adds what the server used.
 { echo "cpuset.cpus: $(cat "$SERVER_CG/cpuset.cpus")"
+  echo "cpuset.cpus.effective: $(cat "$SERVER_CG/cpuset.cpus.effective")"
   echo "memory.max: $(cat "$SERVER_CG/memory.max")"; } > "$OUT_DIR/server-cgroup.txt"
 # Passed to k6, which writes them into capacity.json beside the capacity.
 export CAP_SERVER_CPUS=$SERVER_CPUS CAP_SERVER_MEMORY=$SERVER_MEMORY
@@ -151,6 +164,7 @@ stop_started() {
     if [ -n "$SERVER_CG" ] && [ -d "$SERVER_CG" ]; then
         # How close the server came to its limit, and how often the kernel killed in it.
         { echo "cpuset.cpus: $(cat "$SERVER_CG/cpuset.cpus")"
+          echo "cpuset.cpus.effective: $(cat "$SERVER_CG/cpuset.cpus.effective")"
           echo "memory.max: $(cat "$SERVER_CG/memory.max")"
           echo "memory.peak: $(cat "$SERVER_CG/memory.peak" 2>/dev/null || echo unknown)"
           cat "$SERVER_CG/memory.events"; } > "$OUT_DIR/server-cgroup.txt" 2>/dev/null || true
