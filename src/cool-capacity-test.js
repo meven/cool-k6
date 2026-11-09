@@ -296,6 +296,8 @@ export default async function () {
             viewId: null, locks: new Map(), object: null, editing: true,
             // the parts of the document, which name a slide to show by its identifier
             parts: [],
+            // the keystrokes answered in this session
+            edits: 0,
         };
         let client;
 
@@ -313,8 +315,15 @@ export default async function () {
             resolve();
         }
 
-        function fail() {
+        // One FAIL line for each failed session, with what failed and where, since the summary
+        // only counts them.
+        function fail(reason) {
+            if (s.failed) return;
             s.failed = true;
+            const kept = s.openedAt ? Date.now() - s.openedAt : 0;
+            console.warn(`FAIL reason=${reason} doc=${fileId}~${group} seat=${seat} `
+                + `role=${editor ? 'editor' : 'viewer'} kind=${s.kind} loaded=${s.loaded} `
+                + `editing=${s.editing} edits=${s.edits} after_ms=${kept} vu=${exec.vu.idInTest}`);
             close();
         }
 
@@ -468,13 +477,13 @@ export default async function () {
             later(() => {
                 if (s.editSentAt === sentAt) {
                     editTimeouts.add(1, plateauTag());
-                    fail();
+                    fail(`edit-timeout char=${JSON.stringify(ch)}`);
                 }
             }, EDIT_TIMEOUT_MS);
         }
 
         // From the start of the session, so that a socket that never opens fails too.
-        later(() => { if (!s.loaded) fail(); }, LOAD_TIMEOUT_MS);
+        later(() => { if (!s.loaded) fail('load-timeout'); }, LOAD_TIMEOUT_MS);
         // A session counts once for each hold that ends while it is open and has not failed, so
         // that a hold shorter than a session still has the sessions that went well in its rate.
         const now = exec.instance.currentTestRunDuration;
@@ -538,13 +547,14 @@ export default async function () {
                 console.log(`EDIT t_ms=${now} ms=${now - s.editSentAt} doc=${fileId}~${group} `
                     + `vu=${exec.vu.idInTest}`);
                 s.editSentAt = 0;
+                s.edits++;
                 later(typeChar, TYPE_STEP_MS);
             } else if (e.data.startsWith('invalidatetiles:')) {
                 requestVisibleTiles();
             }
         };
-        client.socket.onclose = () => {
-            if (!s.closing) s.failed = true;
+        client.socket.onclose = (e) => {
+            if (!s.closing) fail(`socket-closed code=${e?.code ?? '-'}`);
             finish();
         };
     });
