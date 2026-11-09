@@ -1607,7 +1607,13 @@ function runBranch(r) {
             cls: "s1",
             rows: r.memory.filter((x) => x.length > 5).map((x) => [x[0], x[5]]),
           },
-        ],
+          // the most that ran at once in each bucket
+          {
+            name: "background saves",
+            cls: "s2",
+            rows: r.cpu.filter((x) => x.length > 4).map((x) => [x[0], x[4]]),
+          },
+        ].filter((se) => se.name !== "background saves" || se.rows.length),
       },
       {
         title: "edit latency, keystroke to answer, ms",
@@ -1626,7 +1632,12 @@ function runBranch(r) {
         series: [
           { name: "server", cls: "s0", rows: r.cpu.map((x) => [x[0], x[1]]) },
           { name: "k6, browser and WOPI host", cls: "s1", rows: r.cpu.map((x) => [x[0], x[2]]) },
-        ],
+          {
+            name: "of which background saves",
+            cls: "s2",
+            rows: r.cpu.filter((x) => x.length > 3).map((x) => [x[0], x[3]]),
+          },
+        ].filter((se) => se.name !== "of which background saves" || se.rows.length),
       },
       {
         title: "server memory, GB",

@@ -202,11 +202,13 @@ def edits(d: Path, t0: int | None) -> list[list]:
 
 
 def cpu(d: Path, t0: int | None) -> list[list]:
-    """[t, server cores, k6 and browser cores] in each bucket, from timeline.csv: the cores
-    that coolwsd, forkit, the kits and their background saves used, and those of the load."""
+    """[t, server cores, k6 and browser cores, background save cores, background saves] in each
+    bucket, from timeline.csv: the cores that coolwsd, forkit, the kits and their background
+    saves used, those of the load, the part of the server cores that the background saves used,
+    and the most background saves that ran at once."""
     if t0 is None:
         return []
-    by: dict[int, list[tuple[float, float]]] = {}
+    by: dict[int, list[tuple[float, float, float, int]]] = {}
     with _open(d / "timeline.csv") as f:
         for r in csv.DictReader(f) if f else ():
             try:
@@ -214,10 +216,13 @@ def cpu(d: Path, t0: int | None) -> list[list]:
                 server = sum(float(r.get(k) or 0) for k in
                              ("coolwsd_cpu", "forkit_cpu", "kit_cpu", "bgsave_cpu"))
                 load = sum(float(r.get(k) or 0) for k in ("k6_cpu", "chromium_cpu", "wopi_cpu"))
+                bgsave = float(r.get("bgsave_cpu") or 0)
+                bgsaves = int(r.get("bgsaves") or 0)
             except (KeyError, ValueError):
                 continue
-            by.setdefault(int(t // STEP) * STEP, []).append((server, load))
-    return [[t, round(sum(s for s, _ in v) / len(v), 2), round(sum(x for _, x in v) / len(v), 2)]
+            by.setdefault(int(t // STEP) * STEP, []).append((server, load, bgsave, bgsaves))
+    return [[t, *(round(sum(s[i] for s in v) / len(v), 2) for i in range(3)),
+             max(s[3] for s in v)]
             for t, v in sorted(by.items())]
 
 
