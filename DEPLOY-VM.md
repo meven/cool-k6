@@ -337,7 +337,14 @@ the timer fires again holds the lock, so the new run exits at once.
 The engine is configured like a production engine, with
 `--with-distro=CPLinux-LOKit`: optimised, and with symbols, so that the
 flamegraphs show function names. Packaging and translations are turned off,
-because a measurement never loads them.
+because a measurement never loads them. `--with-system-openssl` links the
+OpenSSL of the distribution, built with its assembly code, so the engine builds
+no OpenSSL of its own, and coolwsd encrypts with the AES instructions of the
+CPU, as a server with the distribution's OpenSSL does. `--enable-python=system`
+and `--with-system-nss` take Python and NSS from the distribution too: no
+measurement runs a script or signs a document, and both take long to build.
+The libraries that render and lay out text, such as cairo, pixman, freetype,
+harfbuzz and icu, stay bundled, as production ships them.
 
 The server is configured with `--enable-debug` and `-O2 -g`. The debug build is
 required: `cool-ci` starts coolwsd with `--find-free-port`, and the flamegraph
@@ -346,11 +353,17 @@ build. The `-O2` keeps the code optimised; `--enable-developer` would compile
 it at `-O0`. A debug coolwsd also logs at trace level, which costs some time in
 every number, but costs it the same way in every run.
 
-`ENGINE_AUTOGEN_ARGS` and `ONLINE_AUTOGEN_ARGS` replace these options when
-`bootstrap` is run. To change the configuration of a tree that is already
-configured, run `autogen.sh` in it by hand, or delete
-`/home/collabora/online/engine/config_host.mk` or `/home/collabora/online/Makefile`
-and run `bootstrap` again.
+`ENGINE_AUTOGEN_ARGS` and `ONLINE_AUTOGEN_ARGS` in `/etc/cool-perf.env`
+replace these options when `bootstrap` is run. To change the configuration of
+a tree that is already configured, run `bootstrap --reconfigure` as the service
+user. It waits for the run that holds the lock, configures and builds the
+engine and the server again, and holds the lock until both are built, so no run
+measures a tree that is half rebuilt. A change of engine options rebuilds most
+of the engine.
+
+```
+sudo -iu collabora ~collabora/perf-dashboard/deploy/bootstrap --reconfigure
+```
 
 **Busy runs.** On a host that runs other work, a whole run can be slower than
 usual, and every chart then has a spike at the same commit. During the run a

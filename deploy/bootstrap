@@ -10,9 +10,22 @@
 # or screen. A step that is already done is skipped, so after a failure run it
 # again and it continues where it stopped.
 #
+# After a change to ENGINE_AUTOGEN_ARGS or ONLINE_AUTOGEN_ARGS, --reconfigure
+# configures and builds the engine and the server again, once the run that
+# holds the lock has ended:
+#
+#   sudo -iu collabora ~collabora/perf-dashboard/deploy/bootstrap --reconfigure
+#
 # Settings come from /etc/cool-perf.env. ENGINE_AUTOGEN_ARGS and
 # ONLINE_AUTOGEN_ARGS replace the configure options below.
 set -euo pipefail
+
+RECONFIGURE=
+case "${1:-}" in
+    --reconfigure) RECONFIGURE=1 ;;
+    "") ;;
+    *) echo "usage: $0 [--reconfigure]" >&2; exit 2 ;;
+esac
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
@@ -27,7 +40,11 @@ TREE=$COOLWSD_DIR
 
 # The engine as production builds it (CPLinux-LOKit: optimised, with symbols
 # for perf), less packaging and translations, which a measurement never loads.
-ENGINE_AUTOGEN_ARGS=${ENGINE_AUTOGEN_ARGS:---with-distro=CPLinux-LOKit --without-package-format --without-lang}
+# The system OpenSSL is built with its assembly code. Python and NSS come from
+# the system too, since no measurement runs a script or signs a document, and
+# both take long to build. The libraries that render and lay out text stay
+# bundled, as production ships them.
+ENGINE_AUTOGEN_ARGS=${ENGINE_AUTOGEN_ARGS:---with-distro=CPLinux-LOKit --without-package-format --without-lang --with-system-openssl --enable-python=system --with-system-nss}
 # The server needs --enable-debug: cool-ci starts coolwsd with
 # --find-free-port, and the flamegraph pass adds --singlekit, and coolwsd only
 # accepts both options in a debug build. -O2 keeps the code optimised, where
@@ -44,7 +61,11 @@ step() { echo; echo "=== $*"; }
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
 mkdir -p "$STATE"
 exec 9>"$STATE/lock"
-flock -n 9 || { echo "a bootstrap or a nightly run is already running" >&2; exit 1; }
+if [ -n "$RECONFIGURE" ]; then
+    flock -n 9 || { echo "=== waiting for the run that holds the lock to end"; flock 9; }
+else
+    flock -n 9 || { echo "a bootstrap or a nightly run is already running" >&2; exit 1; }
+fi
 
 step "test bundles"
 npm ci --no-audit --no-fund
@@ -84,20 +105,26 @@ fi
 ccache --max-size=50G >/dev/null
 
 step "configuring the engine"
-if [ ! -f "$TREE/engine/config_host.mk" ]; then
+if [ -n "$RECONFIGURE" ] || [ ! -f "$TREE/engine/config_host.mk" ]; then
     # shellcheck disable=SC2086
     (cd "$TREE/engine" && ./autogen.sh $ENGINE_AUTOGEN_ARGS)
+fi
+# The server configure takes the OpenSSL that the engine built, as long as one
+# is in its workdir, even after the engine moved to the system OpenSSL.
+if grep -qx 'SYSTEM_OPENSSL=TRUE' "$TREE/engine/config_host.mk"; then
+    rm -rf "$TREE/engine/workdir/UnpackedTarball/openssl" \
+        "$TREE/engine/workdir/ExternalProject/openssl"
 fi
 
 # The server's configure checks for engine/instdir, so the engine is built
 # first.
 step "building the engine (hours the first time)"
-if [ ! -f "$TREE/engine/instdir/program/versionrc" ]; then
+if [ -n "$RECONFIGURE" ] || [ ! -f "$TREE/engine/instdir/program/versionrc" ]; then
     make -C "$TREE/engine" -j"${COOL_BUILD_JOBS:-$(nproc)}"
 fi
 
 step "configuring the server"
-if [ ! -f "$TREE/Makefile" ]; then
+if [ -n "$RECONFIGURE" ] || [ ! -f "$TREE/Makefile" ]; then
     # eval keeps the quoting of CFLAGS='-O2 -g' in the variable.
     (cd "$TREE" && eval "./autogen.sh $ONLINE_AUTOGEN_ARGS")
 fi
