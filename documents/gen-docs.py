@@ -254,6 +254,8 @@ def build_calc(target: int, blank: bool, label: str) -> None:
     embedded, sheet = 0, 0
     while embedded < target:
         tbl = Table(name=f"Data {sheet + 1}")
+        # ODF declares the columns of a sheet before its rows, as office suites write them.
+        tbl.addElement(TableColumn(numbercolumnsrepeated=12))
         for r in range(400):
             row = TableRow()
             for c in range(12):
