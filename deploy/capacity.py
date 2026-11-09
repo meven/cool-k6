@@ -202,27 +202,35 @@ def edits(d: Path, t0: int | None) -> list[list]:
 
 
 def cpu(d: Path, t0: int | None) -> list[list]:
-    """[t, server cores, k6 and browser cores, background save cores, background saves] in each
-    bucket, from timeline.csv: the cores that coolwsd, forkit, the kits and their background
-    saves used, those of the load, the part of the server cores that the background saves used,
-    and the most background saves that ran at once."""
+    """The cores in each bucket, from timeline.csv, as rows of
+    [t, server, load, background saves, most background saves at once,
+     coolwsd and forkit, kits, k6, browser user, WOPI host].
+    The server is coolwsd, forkit, the kits and their background saves, which all run in the
+    server cgroup. The load is k6, the browser user and the WOPI host. The cores are averages
+    over the bucket; the number of background saves is the most that ran at once."""
     if t0 is None:
         return []
-    by: dict[int, list[tuple[float, float, float, int]]] = {}
+    by: dict[int, list[tuple]] = {}
     with _open(d / "timeline.csv") as f:
         for r in csv.DictReader(f) if f else ():
             try:
                 t = (int(r["t_ms"]) - t0) / 1000
-                server = sum(float(r.get(k) or 0) for k in
-                             ("coolwsd_cpu", "forkit_cpu", "kit_cpu", "bgsave_cpu"))
-                load = sum(float(r.get(k) or 0) for k in ("k6_cpu", "chromium_cpu", "wopi_cpu"))
-                bgsave = float(r.get("bgsave_cpu") or 0)
+                c = {k: float(r.get(f"{k}_cpu") or 0) for k in
+                     ("coolwsd", "forkit", "kit", "bgsave", "k6", "chromium", "wopi")}
                 bgsaves = int(r.get("bgsaves") or 0)
             except (KeyError, ValueError):
                 continue
-            by.setdefault(int(t // STEP) * STEP, []).append((server, load, bgsave, bgsaves))
-    return [[t, *(round(sum(s[i] for s in v) / len(v), 2) for i in range(3)),
-             max(s[3] for s in v)]
+            server = c["coolwsd"] + c["forkit"] + c["kit"] + c["bgsave"]
+            load = c["k6"] + c["chromium"] + c["wopi"]
+            by.setdefault(int(t // STEP) * STEP, []).append(
+                (server, load, c["bgsave"], bgsaves, c["coolwsd"] + c["forkit"], c["kit"],
+                 c["k6"], c["chromium"], c["wopi"]))
+
+    def mean(v: list[tuple], i: int) -> float:
+        return round(sum(s[i] for s in v) / len(v), 2)
+
+    return [[t, mean(v, 0), mean(v, 1), mean(v, 2), max(s[3] for s in v),
+             *(mean(v, i) for i in range(4, 9))]
             for t, v in sorted(by.items())]
 
 

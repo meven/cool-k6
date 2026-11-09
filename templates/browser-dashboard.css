@@ -1029,6 +1029,9 @@ footer {
 .cap-chart .cl.s2 {
   stroke: var(--s2);
 }
+.cap-chart .cl.s3 {
+  stroke: var(--s3);
+}
 .cap-chart .oom {
   stroke: var(--worse);
   stroke-width: 1.5;

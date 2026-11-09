@@ -1609,7 +1609,7 @@ function runBranch(r) {
     drawCharts();
   }
 
-  // Four charts on one time axis, each with its own unit, rather than two units on one chart.
+  // Five charts on one time axis, each with its own unit, rather than two units on one chart.
   function drawCharts() {
     const r = shown;
     const end = Math.max(
@@ -1617,6 +1617,9 @@ function runBranch(r) {
       ...[r.users, r.edits, r.cpu, r.memory].map((s) => (s.length ? s[s.length - 1][0] : 0)),
     );
     const n = cores(r.cpus);
+    // [t, value i] of the CPU rows that have more than `after` values, so that a run from before
+    // a column existed draws no line for it
+    const part = (after, i) => r.cpu.filter((x) => x.length > after).map((x) => [x[0], x[i]]);
     const specs = [
       {
         title: "users and open documents",
@@ -1644,21 +1647,32 @@ function runBranch(r) {
           { name: "median", cls: "s1", rows: r.edits.map((x) => [x[0], x[1]]) },
         ],
       },
+      // The server runs on its own cores, under the limit; the load runs on the other cores.
       {
-        title: "CPU, cores",
+        title: "server CPU, cores",
         unit: "",
         digits: 2,
         limit: n,
         limitLabel: n ? `limit ${n} cores` : "",
         series: [
           { name: "server", cls: "s0", rows: r.cpu.map((x) => [x[0], x[1]]) },
-          { name: "k6, browser and WOPI host", cls: "s1", rows: r.cpu.map((x) => [x[0], x[2]]) },
-          {
-            name: "of which background saves",
-            cls: "s2",
-            rows: r.cpu.filter((x) => x.length > 3).map((x) => [x[0], x[3]]),
-          },
-        ].filter((se) => se.name !== "of which background saves" || se.rows.length),
+          { name: "kits", cls: "s1", rows: part(5, 6) },
+          { name: "background saves", cls: "s2", rows: part(3, 3) },
+          { name: "coolwsd and forkit", cls: "s3", rows: part(5, 5) },
+        ].filter((se) => se.rows.length),
+      },
+      {
+        title: "load CPU, cores",
+        unit: "",
+        digits: 2,
+        // a run from before the split has the three together
+        series: part(5, 7).length
+          ? [
+              { name: "k6", cls: "s0", rows: part(5, 7) },
+              { name: "browser user", cls: "s1", rows: part(5, 8) },
+              { name: "WOPI host", cls: "s2", rows: part(5, 9) },
+            ]
+          : [{ name: "k6, browser user and WOPI host", cls: "s0", rows: part(0, 2) }],
       },
       {
         title: "server memory, GB",
