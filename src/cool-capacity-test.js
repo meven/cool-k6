@@ -16,8 +16,10 @@
  * own thresholds:
  *
  *   edit_latency    a typed character -> the server moving that user's cursor (invalidatecursor:)
- *   doc_load_time   the load message -> the document status (status:)
+ *   doc_load_time   the load message -> the document status (status:), from the first attempt
+ *   load_retries    loads asked for again because the server was still unloading the document
  *   session_errors  sessions that failed to load, lost their socket, or had a keystroke time out,
+ *                   or whose document was still unloading after every retry,
  *                   against the sessions open at the end of the hold. A failure in a ramp counts
  *                   against the plateau that the ramp leads to.
  *
@@ -145,6 +147,8 @@ const SERVER = { cpus: __ENV['CAP_SERVER_CPUS'] || null, memory: __ENV['CAP_SERV
 // The server answers a load with status: well within limit_load_secs, 100 s by default.
 const LOAD_TIMEOUT_MS = 100000;
 const EDIT_TIMEOUT_MS = 10000;
+// The browser gives up on a document that is still unloading after this many retries.
+const MAX_UNLOADING_RETRIES = 10;
 // How long a user of a presentation waits for another view to release the object it selected.
 const LOCK_WAIT_MS = 30000;
 const TILE_REQUEST_GAP_MS = 200;
@@ -222,6 +226,7 @@ const editLatency = new Trend('edit_latency', true);
 const docLoadTime = new Trend('doc_load_time', true);
 const sessionErrors = new Rate('session_errors');
 const editTimeouts = new Counter('edit_timeouts');
+const loadRetries = new Counter('load_retries');
 
 // The plateau whose hold is under way, or 'ramp' between two holds.
 function plateauTag() {
@@ -298,6 +303,8 @@ export default async function () {
             parts: [],
             // the keystrokes answered in this session
             edits: 0,
+            // the loads asked for again, and whether the next one is due
+            retries: 0, retrying: false,
         };
         let client;
 
@@ -323,7 +330,8 @@ export default async function () {
             const kept = s.openedAt ? Date.now() - s.openedAt : 0;
             console.warn(`FAIL reason=${reason} doc=${fileId}~${group} seat=${seat} `
                 + `role=${editor ? 'editor' : 'viewer'} kind=${s.kind} loaded=${s.loaded} `
-                + `editing=${s.editing} edits=${s.edits} after_ms=${kept} vu=${exec.vu.idInTest}`);
+                + `editing=${s.editing} edits=${s.edits} retries=${s.retries} after_ms=${kept} `
+                + `vu=${exec.vu.idInTest}`);
             close();
         }
 
@@ -493,70 +501,106 @@ export default async function () {
                     end * 1000 - now);
             }
         }
-        client = new CoolClientWs(wopiClient, wopiSrc, () => {
-            s.openedAt = Date.now();
-            client.openDocument(wopiSrc);
-        });
-
-        // Text frames are protocol messages, binary frames are tiles.
-        client.socket.binaryType = 'arraybuffer';
-        client.socket.onmessage = (e) => {
-            if (typeof e.data !== 'string') {
-                if (e.data instanceof ArrayBuffer) tileReceived(e.data);
+        // The server refuses a document that it is still unloading from the last session, and the
+        // browser asks for it again after .5, 2, 4.5 ... seconds, ten times at most.
+        const isUnloading = (text) => String(text ?? '').includes('kind=docunloading');
+        function retryUnloading() {
+            if (s.retrying) return;
+            if (s.retries >= MAX_UNLOADING_RETRIES) {
+                fail('docunloading');
                 return;
             }
-            if (!s.loaded && e.data.startsWith('status:')) {
-                s.loaded = true;
-                docLoadTime.add(Date.now() - s.openedAt, plateauTag());
-                client.send(`clientzoom tilepixelwidth=${TILE_PX} tilepixelheight=${TILE_PX} `
-                    + `tiletwipwidth=${TILE_TWIPS} tiletwipheight=${TILE_TWIPS}`);
-                // The status is JSON, with "type" as in the older "type=" form of the message.
-                const type = /"type"\s*:\s*"(\w+)"|\btype=(\w+)/.exec(e.data);
-                s.kind = type?.[1] ?? type?.[2] ?? 'text';
-                s.viewId = /"viewid"\s*:\s*(\d+)/.exec(e.data)?.[1] ?? null;
-                try {
-                    s.parts = JSON.parse(e.data.substring(e.data.indexOf('{'))).parts ?? [];
-                } catch (err) { /* the older status: of key=value pairs */ }
-                sendVisibleArea();
-                placeCursor();
-                requestVisibleTiles();
-                // A viewer keeps the document open for the session, without typing.
-                if (!editor) later(close, SESSION_MS);
-                else if (s.editing) nextWord();
-            } else if (e.data.startsWith('viewlock:')) {
-                try {
-                    const lock = JSON.parse(e.data.substring(e.data.indexOf(':') + 1));
-                    if (lock.rectangle === 'EMPTY') s.locks.delete(String(lock.viewId));
-                    else s.locks.set(String(lock.viewId), String(lock.objectId));
-                } catch (err) { /* not JSON */ }
-                if (s.object && !lockedByOther(s.object)) startEditing();
-            } else if (e.data.startsWith('graphicselection:') && !s.editing) {
-                s.object = /"id"\s*:\s*"(\w+)"/.exec(e.data)?.[1] ?? null;
-                if (s.object && !lockedByOther(s.object)) startEditing();
-            } else if (e.data.startsWith('invalidatecursor:')
-                       || (s.kind === 'spreadsheet' && e.data.startsWith('cellcursor:'))) {
-                // A sheet answers Enter by moving the cell cursor rather than the text cursor.
-                const payload = e.data.substring(e.data.indexOf(':') + 1).trim();
-                let rect = payload;
-                try { rect = JSON.parse(payload).rectangle ?? ''; } catch (err) { /* plain rectangle */ }
-                followCursor(String(rect));
-                if (!s.editSentAt) return;
-                const now = Date.now();
-                editLatency.add(now - s.editSentAt, plateauTag());
-                // One line per edit, for lining slow edits up with what the server did then.
-                console.log(`EDIT t_ms=${now} ms=${now - s.editSentAt} doc=${fileId}~${group} `
-                    + `vu=${exec.vu.idInTest}`);
-                s.editSentAt = 0;
-                s.edits++;
-                later(typeChar, TYPE_STEP_MS);
-            } else if (e.data.startsWith('invalidatetiles:')) {
-                requestVisibleTiles();
-            }
-        };
-        client.socket.onclose = (e) => {
-            if (!s.closing) fail(`socket-closed code=${e?.code ?? '-'}`);
-            finish();
-        };
+            s.retries++;
+            loadRetries.add(1, plateauTag());
+            s.retrying = true;
+            try { client.close(); } catch (e) { /* already closed */ }
+            later(() => { s.retrying = false; connect(); }, 500 * s.retries * s.retries);
+        }
+
+        // A new socket for each attempt to load. The events of an earlier socket are ignored.
+        function connect() {
+            const c = new CoolClientWs(wopiClient, wopiSrc, () => {
+                // The load time counts from the first attempt, as the user waits through all.
+                if (!s.openedAt) s.openedAt = Date.now();
+                c.openDocument(wopiSrc);
+            });
+            client = c;
+
+            // Text frames are protocol messages, binary frames are tiles.
+            c.socket.binaryType = 'arraybuffer';
+            c.socket.onerror = (e) => {
+                console.error(`WebSocket error: ${e.error}`);
+                if (c === client && !s.loaded && isUnloading(e.error)) retryUnloading();
+            };
+            c.socket.onmessage = (e) => {
+                if (c !== client) return;
+                if (!s.loaded && typeof e.data === 'string' && isUnloading(e.data)) {
+                    retryUnloading();
+                    return;
+                }
+                if (typeof e.data !== 'string') {
+                    if (e.data instanceof ArrayBuffer) tileReceived(e.data);
+                    return;
+                }
+                if (!s.loaded && e.data.startsWith('status:')) {
+                    s.loaded = true;
+                    docLoadTime.add(Date.now() - s.openedAt, plateauTag());
+                    client.send(`clientzoom tilepixelwidth=${TILE_PX} tilepixelheight=${TILE_PX} `
+                        + `tiletwipwidth=${TILE_TWIPS} tiletwipheight=${TILE_TWIPS}`);
+                    // The status is JSON, with "type" as in the older "type=" form of the message.
+                    const type = /"type"\s*:\s*"(\w+)"|\btype=(\w+)/.exec(e.data);
+                    s.kind = type?.[1] ?? type?.[2] ?? 'text';
+                    s.viewId = /"viewid"\s*:\s*(\d+)/.exec(e.data)?.[1] ?? null;
+                    try {
+                        s.parts = JSON.parse(e.data.substring(e.data.indexOf('{'))).parts ?? [];
+                    } catch (err) { /* the older status: of key=value pairs */ }
+                    sendVisibleArea();
+                    placeCursor();
+                    requestVisibleTiles();
+                    // A viewer keeps the document open for the session, without typing.
+                    if (!editor) later(close, SESSION_MS);
+                    else if (s.editing) nextWord();
+                } else if (e.data.startsWith('viewlock:')) {
+                    try {
+                        const lock = JSON.parse(e.data.substring(e.data.indexOf(':') + 1));
+                        if (lock.rectangle === 'EMPTY') s.locks.delete(String(lock.viewId));
+                        else s.locks.set(String(lock.viewId), String(lock.objectId));
+                    } catch (err) { /* not JSON */ }
+                    if (s.object && !lockedByOther(s.object)) startEditing();
+                } else if (e.data.startsWith('graphicselection:') && !s.editing) {
+                    s.object = /"id"\s*:\s*"(\w+)"/.exec(e.data)?.[1] ?? null;
+                    if (s.object && !lockedByOther(s.object)) startEditing();
+                } else if (e.data.startsWith('invalidatecursor:')
+                           || (s.kind === 'spreadsheet' && e.data.startsWith('cellcursor:'))) {
+                    // A sheet answers Enter by moving the cell cursor rather than the text cursor.
+                    const payload = e.data.substring(e.data.indexOf(':') + 1).trim();
+                    let rect = payload;
+                    try { rect = JSON.parse(payload).rectangle ?? ''; } catch (err) { /* plain rectangle */ }
+                    followCursor(String(rect));
+                    if (!s.editSentAt) return;
+                    const now = Date.now();
+                    editLatency.add(now - s.editSentAt, plateauTag());
+                    // One line per edit, for lining slow edits up with what the server did then.
+                    console.log(`EDIT t_ms=${now} ms=${now - s.editSentAt} doc=${fileId}~${group} `
+                        + `vu=${exec.vu.idInTest}`);
+                    s.editSentAt = 0;
+                    s.edits++;
+                    later(typeChar, TYPE_STEP_MS);
+                } else if (e.data.startsWith('invalidatetiles:')) {
+                    requestVisibleTiles();
+                }
+            };
+            c.socket.onclose = (e) => {
+                if (c !== client || s.retrying) return;
+                if (!s.loaded && isUnloading(e?.reason)) {
+                    retryUnloading();
+                    return;
+                }
+                if (!s.closing) fail(`socket-closed code=${e?.code ?? '-'}`);
+                finish();
+            };
+        }
+        connect();
     });
 }
 
