@@ -1078,6 +1078,7 @@ function runBranch(r) {
     // a run in the window. A unit shares the lane of the branch that it is named after, as
     // cool-perf-gerrit-18257.service measures the branch gerrit-18257.
     const unitLane = (u) => u.unit.replace(/^cool-perf-/, "").replace(/\.(service|timer)$/, "");
+    const unitTip = (u, text) => text + (u.scenarios ? ", " + scenariosText(u) : "");
     const branchRuns = RUNS.filter((r) => r.branch !== "main" && Date.parse(r.ts) >= t0);
     const lanes = ["main", "queue"];
     [...state.by_hand.map(unitLane), ...branchRuns.map((r) => r.branch)].forEach((l) => {
@@ -1192,16 +1193,17 @@ function runBranch(r) {
       }
     });
     state.by_hand.forEach((u) => {
-      if (u.at) mark(unitLane(u), Date.parse(u.at), "queued", `${u.unit}, starts ${day(u.at)}`);
+      if (u.at)
+        mark(unitLane(u), Date.parse(u.at), "queued", unitTip(u, `${u.unit}, starts ${day(u.at)}`));
       else if (u.since && u.state === "running")
-        span(unitLane(u), u.since, u.measuring_since, now, u.unit);
+        span(unitLane(u), u.since, u.measuring_since, now, unitTip(u, u.unit));
       else if (u.since)
         bar(
           unitLane(u),
           Date.parse(u.since),
           now,
           "queued",
-          `${u.unit}, waiting for the lock since ${day(u.since)}`,
+          unitTip(u, `${u.unit}, waiting for the lock since ${day(u.since)}`),
         );
     });
     // after the bars, so that a running unit does not hide the runs it already published
@@ -1215,6 +1217,13 @@ function runBranch(r) {
     );
     add(`<line x1="${x(now)}" x2="${x(now)}" y1="${top - 4}" y2="${H - 20}" class="now"/>`);
     tl.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="runs of the last and the next 12 hours">${parts.join("")}</svg>`;
+  }
+
+  // The capacity scenarios of a unit of deploy/run-capacity, in the order it runs them, with the
+  // one it measures now marked.
+  function scenariosText(u) {
+    const now = u.scenario ? u.scenarios.indexOf(u.scenario) : -1;
+    return "capacity: " + u.scenarios.map((sc, i) => (i === now ? sc + " (now)" : sc)).join(", ");
   }
 
   function drawTable() {
@@ -1231,7 +1240,9 @@ function runBranch(r) {
       return (
         `<tr class="st-${running ? "running" : "queued"}"><td class="l">${running ? "running" : "scheduled"}</td>` +
         `<td class="l" colspan="4"><code>${esc(u.unit)}</code>` +
-        `<span class="ref">started by hand with systemd-run</span></td>` +
+        `<span class="ref">started by hand with systemd-run</span>` +
+        (u.scenarios ? `<div class="ref">${esc(scenariosText(u))}</div>` : "") +
+        `</td>` +
         `<td class="l">${esc(start)}</td><td></td></tr>`
       );
     });

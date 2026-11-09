@@ -181,6 +181,47 @@ def measuring_since(unit: dict, holder: tuple[str, str] | None) -> str | None:
     return at if held_by == group or held_by.startswith(group + "/") else None
 
 
+def command_of(unit: dict) -> list[str]:
+    """The command line of a service, from the argv[] of its ExecStart."""
+    m = re.search(r"argv\[\]=(.*?) ;", unit.get("ExecStart", ""))
+    return m.group(1).split() if m else []
+
+
+def capacity_scenarios(argv: list[str], environment: str) -> list[str] | None:
+    """The scenarios that a unit of deploy/run-capacity runs, in order: its arguments, all of
+    them for "all", else the CAP_SCENARIO of its environment, else blank.odt. None for a unit
+    that runs something else."""
+    if not argv or Path(argv[0]).name != "run-capacity":
+        return None
+    names = [a for a in argv[1:] if not a.startswith("-")]
+    if names == ["all"]:
+        try:
+            text = (REPO / "deploy" / "run-capacity").read_text()
+            names = " ".join(re.findall(r'^SCENARIOS\+?="([^"]*)"', text, re.M)).split()
+        except OSError:
+            pass
+    if names:
+        return names
+    m = re.search(r"(?:^|\s)CAP_SCENARIO=(\S+)", environment)
+    return [m.group(1)] if m else ["blank.odt"]
+
+
+def capacity_running() -> str | None:
+    """The scenario of the capacity run in progress: the newest run of the store, while it has
+    no capacity.json yet."""
+    root = STORE / "capacity"
+    try:
+        newest = max((d for d in root.iterdir() if d.is_dir()), key=lambda d: d.name)
+    except (OSError, ValueError):
+        return None
+    if (newest / "capacity.json").exists():
+        return None
+    try:
+        return (newest / "scenario").read_text().strip() or "blank.odt"
+    except OSError:
+        return "blank.odt"
+
+
 def units_by_hand(holder: tuple[str, str] | None = None) -> list[dict]:
     """The cool-perf units that someone started with systemd-run, running or waiting for their
     time, as the units of DEPLOY-VM.md are."""
@@ -192,21 +233,31 @@ def units_by_hand(holder: tuple[str, str] | None = None) -> list[dict]:
     names = [line.split()[0] for line in out.splitlines() if line.split()]
     names = [n for n in names if n not in OWN_UNITS]
     found = []
+    # a timer of systemd-run starts the service of the same name, which holds the command
+    services = {u.get("Id"): u for u in systemctl_show(
+        [n.rsplit(".", 1)[0] + ".service" for n in names], ["Id", "ExecStart", "Environment"])}
     for u in systemctl_show(names, ["Id", "ActiveState", "ActiveEnterTimestamp",
                                     "InactiveExitTimestamp", "NextElapseUSecRealtime",
                                     "ControlGroup"]):
+        service = services.get(u.get("Id", "").rsplit(".", 1)[0] + ".service", {})
+        scenarios = capacity_scenarios(command_of(service), service.get("Environment", ""))
         # scheduled: a timer of systemd-run that has not fired; waiting: started, but waiting
         # for the lock
         if u.get("Id", "").endswith(".timer"):
             if when(u.get("NextElapseUSecRealtime")):
                 found.append({"unit": u["Id"], "state": "scheduled",
-                              "at": when(u.get("NextElapseUSecRealtime"))})
+                              "at": when(u.get("NextElapseUSecRealtime")),
+                              "scenarios": scenarios})
         elif u.get("ActiveState") in ("active", "activating"):
             waiting = waits_for_lock(u)
+            measuring = None if waiting else measuring_since(u, holder)
             found.append({"unit": u["Id"],
                           "state": "waiting" if waiting else "running",
                           "since": started(u),
-                          "measuring_since": None if waiting else measuring_since(u, holder)})
+                          "measuring_since": measuring,
+                          # the capacity scenarios it runs, and the one it measures now
+                          "scenarios": scenarios,
+                          "scenario": capacity_running() if scenarios and measuring else None})
     return found
 
 
