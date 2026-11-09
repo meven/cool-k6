@@ -100,7 +100,10 @@ BUILDID_DIR = "buildid"
 # process can have colours of their own.
 WSD_TAG = "_[i]"
 FORKIT_TAG = "_[w]"
-FLAME_LEGEND = "aqua: coolwsd, purple: forkit, red to yellow: document kit"
+# and every frame of a background save, a process forked from a kit and named kitbgsv_*
+BGSAVE_TAG = "_[j]"
+FLAME_LEGEND = ("aqua: coolwsd, purple: forkit, red to yellow: document kit, "
+                "green: background save")
 # A frame for each process side under the threads, so that each side is one block with
 # its share of the samples. flamegraph.pl sorts by name, which puts coolwsd first.
 WSD_ROOT = "[coolwsd and forkit]"
@@ -118,6 +121,10 @@ def process_stack(frames: list[str], wsd: bool, forkit: bool = False) -> str:
     if wsd:
         tag = FORKIT_TAG if forkit else WSD_TAG
         return ";".join([WSD_ROOT + WSD_TAG, *(f + tag for f in frames)])
+    # A background save stays under the kit frame, in colours of its own. It is forked while
+    # the capture runs, so it is known by its name rather than by a pid given in advance.
+    if frames[0] == "kitbgsv":
+        return ";".join([KIT_ROOT, *(f + BGSAVE_TAG for f in frames)])
     return ";".join([KIT_ROOT, *frames])
 
 
@@ -151,7 +158,8 @@ def stack_shares(stacks: list[str]) -> tuple[float, float]:
         total += n
         if frames[0] == KIT_ROOT:
             kit += n
-        if frames[-1].removesuffix(WSD_TAG).removesuffix(FORKIT_TAG) == "[unknown]":
+        if frames[-1].removesuffix(WSD_TAG).removesuffix(FORKIT_TAG).removesuffix(BGSAVE_TAG) \
+                == "[unknown]":
             unknown += n
     if not total:
         return 0.0, 0.0
@@ -160,9 +168,10 @@ def stack_shares(stacks: list[str]) -> tuple[float, float]:
 
 def render_flamegraph(stacks: list[str], svg_path: Path) -> None:
     """Draw tagged collapsed stacks. The kits keep the default hot palette, and the
-    coolwsd frames take an aqua and the forkit frames a purple from palette.map, which
-    flamegraph.pl --cp reads by the full frame name, annotation included."""
-    tagged = {f for line in stacks if WSD_TAG in line
+    coolwsd frames take an aqua, the forkit frames a purple and the background save frames
+    a green from palette.map, which flamegraph.pl --cp reads by the full frame name,
+    annotation included."""
+    tagged = {f for line in stacks if WSD_TAG in line or BGSAVE_TAG in line
               for f in line.rpartition(" ")[0].split(";")}
     with tempfile.TemporaryDirectory() as tmp:
         with open(Path(tmp) / "palette.map", "w") as pal:
@@ -172,6 +181,8 @@ def render_flamegraph(stacks: list[str], svg_path: Path) -> None:
                     rgb = (150 + int(50 * v), 110 + int(50 * v), 210 + int(40 * v))
                 elif name.endswith(WSD_TAG):
                     rgb = (50 + int(60 * v), 165 + int(55 * v), 165 + int(55 * v))
+                elif name.endswith(BGSAVE_TAG):
+                    rgb = (90 + int(60 * v), 170 + int(50 * v), 70 + int(40 * v))
                 else:
                     continue
                 pal.write(f"{name}->rgb({rgb[0]},{rgb[1]},{rgb[2]})\n")
