@@ -187,7 +187,10 @@ if ! cool_up; then
     cool_cmd=$(COOLWSD_DIR=$COOLWSD_DIR python3 "$ROOT/cool-use-build" run-cmd) \
         || die "cool-use-build run-cmd failed"
     # A fixed port for k6, and trace logging off: it takes cpu from what is being measured.
+    # coolwsd logs to its standard error, so that its warnings, which name refused loads and
+    # failed saves, land in coolwsd.log beside the output of the kits.
     cool_cmd=$(sed -e 's/--find-free-port//' -e 's/logging\.level=[a-z]*/logging.level=warning/' \
+                   -e 's/logging\.file\[@enable\]=true/logging.file[@enable]=false/' \
                    -e 's/logging_ui_cmd\.file\[@enable\]=true/logging_ui_cmd.file[@enable]=false/' \
                    <<< "$cool_cmd")
     # A release build verifies the WOPI host (SSL_VERIFY in configure.ac), against this CA.
