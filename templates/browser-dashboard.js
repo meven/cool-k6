@@ -513,18 +513,22 @@ document.querySelector(".views").addEventListener("click", (e) => {
 });
 syncViews();
 
-// The address holds the branch of the charts and the two sides of the comparison.
+// The address holds the branch of the charts, the two sides of the comparison and the open
+// capacity run.
 // The history of the runs was a Runs tab of its own, so an old #view=runs opens the schedule.
 let VIEW = ((v) =>
   v === "runs" ? "schedule" : ["compare", "schedule", "capacity"].includes(v) ? v : "charts")(
   new URLSearchParams(location.hash.slice(1)).get("view"),
 );
+// The folder name of the open capacity run, such as 20261109T125214Z-c18edbcbb3cd, or null.
+let CAPRUN = new URLSearchParams(location.hash.slice(1)).get("run");
 function writeHash() {
   const h = new URLSearchParams();
   if (VIEW !== "charts") h.set("view", VIEW);
   if (BRANCH !== "main") h.set("branch", BRANCH);
   if (CMP.a) h.set("a", CMP.a.from + (CMP.a.to ? ".." + CMP.a.to : ""));
   if (CMP.b) h.set("b", CMP.b.from + (CMP.b.to ? ".." + CMP.b.to : ""));
+  if (VIEW === "capacity" && CAPRUN) h.set("run", CAPRUN);
   history.replaceState(null, "", h.toString() ? "#" + h : location.pathname + location.search);
 }
 
@@ -1380,7 +1384,7 @@ function runBranch(r) {
     det = document.getElementById("capdet"),
     charts = document.getElementById("capcharts");
   let list = null,
-    run = null,
+    run = CAPRUN,
     shown = null;
   const cores = (cpus) =>
     (cpus || "")
@@ -1523,17 +1527,22 @@ function runBranch(r) {
       msg.textContent = "The capacity runs could not be read: " + err.message;
       return;
     }
-    if (!run || !list.some((r) => r.run === run)) {
+    // a run in the address that the store no longer holds, deleted or mistyped
+    const missing = run && !list.some((r) => r.run === run) ? run : null;
+    if (!run || missing) {
       const first = list.find((r) => r.done && r.plateaus.some((p) => p.measured)) || list[0];
       run = first ? first.run : null;
     }
     drawFilter();
     drawList();
-    if (run) pick(run);
+    if (run) await pick(run);
+    if (missing) msg.textContent = `There is no capacity run ${missing}, so the latest one is shown.`;
   }
 
   async function pick(id) {
     run = id;
+    CAPRUN = id;
+    writeHash();
     drawList();
     try {
       const res = await fetch(`api/capacity/${encodeURIComponent(id)}`, { cache: "no-store" });
