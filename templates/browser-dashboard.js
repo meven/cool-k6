@@ -1436,8 +1436,24 @@ function runBranch(r) {
     if (first && filter && scenario(list.find((r) => r.run === run) || {}) !== filter) pick(first.run);
     else drawList();
   });
+  // A stage in which the kernel killed a process of the server for lack of memory ends the
+  // capacity, even when every session of it passed.
+  const passed = (p) => p.measured && p.ok && !p.oom_kills;
   const result = (p) =>
-    !p.reached ? "not reached" : !p.measured ? "not measured" : p.ok ? "passed" : "FAILED";
+    !p.reached ? "not reached" : !p.measured ? "not measured" : !p.ok ? "FAILED" :
+      p.oom_kills ? "OOM kill" : "passed";
+  const capText = (r) =>
+    !r.done ? (r.state === "stopped" ? "stopped" : "running")
+      : r.capacity == null && r.oom_kills ? "unknown"
+      : !r.capacity ? "none"
+      : r.capacity + (r.plateaus.length && r.plateaus.every(passed) ? "+" : "") + " users";
+
+  const capTitle = (r) =>
+    r.capacity == null && r.oom_kills && r.done
+      ? ` title="${esc(`The kernel killed ${r.oom_kills} processes of the server, and this run did not record when.`)}"`
+      : r.capacity_k6 != null && r.capacity_k6 !== r.capacity
+        ? ` title="${esc(`${r.capacity_k6} users by the session targets alone, before the first OOM kill counts.`)}"`
+        : "";
 
   function drawList() {
     if (!list.length) {
@@ -1455,16 +1471,15 @@ function runBranch(r) {
           const n = cores(r.cpus);
           const stages = r.plateaus
             .filter((p) => p.reached)
-            .map((p) => `${p.users} ${p.ok && p.measured ? "ok" : "no"}`)
+            .map((p) => `${p.users} ${passed(p) ? "ok" : p.measured && p.ok ? "oom" : "no"}`)
             .join(", ");
-          const top = r.plateaus.length && r.plateaus.every((p) => p.ok && p.measured);
           return (
             `<tr${r.run === run ? ' class="sel"' : ""}>` +
             `<td><button type="button" class="linkish" data-run="${esc(r.run)}">` +
             `${esc(when(r.ts))}</button></td>` +
             `<td><code>${esc(r.commit)}</code></td>` +
             `<td class="txt" title="${esc(describe(r))}">${esc(scenario(r))}</td>` +
-            `<td>${!r.done ? (r.state === "stopped" ? "stopped" : "running") : !r.capacity ? "none" : r.capacity + (top ? "+" : "") + " users"}</td>` +
+            `<td${capTitle(r)}>${capText(r)}</td>` +
             `<td>${esc(stages || "-")}</td>` +
             `<td>${n ? n + " cores" : "unknown"}, ${r.memory_max_mb ? gb(r.memory_max_mb) : "unknown"}</td>` +
             `<td>${gb(r.memory_peak_mb)}</td>` +
@@ -1527,10 +1542,15 @@ function runBranch(r) {
       `the users worked on ${describe(r)}. ` +
       "The shaded bands are the " +
       "stages, where the users hold steady and the figures in the table are measured; " +
-      "between them the users ramp up.";
+      "between them the users ramp up. " +
+      (r.oom == null
+        ? "The run did not record when the kernel killed processes of the server."
+        : r.oom.length
+          ? "The red lines are where the kernel killed processes of the server for lack of memory."
+          : "The kernel killed no process of the server.");
     document.getElementById("capstages").innerHTML =
       "<thead><tr><th>users</th><th>open documents</th><th>edit p95</th><th>edits</th><th>load p95</th>" +
-      "<th>loads</th><th>failed sessions</th><th>result</th></tr></thead><tbody>" +
+      "<th>loads</th><th>failed sessions</th><th>OOM kills</th><th>result</th></tr></thead><tbody>" +
       r.plateaus
         .map(
           (p) =>
@@ -1538,7 +1558,7 @@ function runBranch(r) {
             `<td>${p.reached ? Math.round(p.edit_p95) + " ms" : "-"}</td><td>${p.edits ?? "-"}</td>` +
             `<td>${p.reached ? Math.round(p.load_p95) + " ms" : "-"}</td><td>${p.loads ?? "-"}</td>` +
             `<td>${p.reached && p.error_rate != null ? (100 * p.error_rate).toFixed(1) + "%" : "-"}</td>` +
-            `<td>${result(p)}</td></tr>`,
+            `<td>${p.oom_kills ?? "-"}</td><td>${result(p)}</td></tr>`,
         )
         .join("") +
       "</tbody>";
@@ -1607,7 +1627,10 @@ function runBranch(r) {
     ];
     charts.innerHTML = "";
     const w = Math.max(320, charts.clientWidth || 800);
-    const svgs = specs.map((sp, i) => chart(sp, w, end, r.plateaus, i === 0, i === specs.length - 1));
+    const oom = r.oom || [];
+    const svgs = specs.map((sp, i) =>
+      chart(sp, w, end, r.plateaus, oom, i === 0, i === specs.length - 1),
+    );
     svgs.forEach((s) => charts.appendChild(s));
     // one crosshair over every chart, at the same time
     const move = (e) => {
@@ -1632,6 +1655,8 @@ function runBranch(r) {
           .filter(Boolean);
         if (vals.length) lines.push(`${sp.title}: ${vals.join(", ")}${sp.extra ? sp.extra(t) : ""}`);
       });
+      const k = oom.find((x) => x[0] <= t && t < x[0] + 10);
+      if (k) lines.push(`OOM kills in the server: ${k[1]}`);
       tip.textContent = lines.join("\n");
       tip.classList.add("multi");
       tip.hidden = false;
@@ -1660,7 +1685,7 @@ function runBranch(r) {
     return [1, 2, 2.5, 5, 10].map((m) => m * p).find((m) => m >= v);
   };
 
-  function chart(sp, w, end, plateaus, first, last) {
+  function chart(sp, w, end, plateaus, oom, first, last) {
     // the first chart names the stages under its title and legend
     const pt = PAD.t + (first ? 14 : 0);
     const h = 150 + (first ? 14 : 0) + (last ? 22 : 0),
@@ -1697,6 +1722,10 @@ function runBranch(r) {
       g += `<line class="limit" x1="${PAD.l}" x2="${w - PAD.r}" y1="${Y(sp.limit)}" y2="${Y(sp.limit)}"/>`;
       g += `<text class="ax lim" x="${w - PAD.r}" y="${Y(sp.limit) - 4}">${esc(sp.limitLabel)}</text>`;
     }
+    // a line where the kernel killed processes of the server for lack of memory
+    oom.forEach(([t]) => {
+      if (t <= end) g += `<line class="oom" x1="${X(t)}" x2="${X(t)}" y1="${pt}" y2="${pt + ph}"/>`;
+    });
     sp.series.forEach((se) => {
       if (!se.rows.length) return;
       g += `<path class="cl ${se.cls}" d="${se.rows.map((x, i) => (i ? "L" : "M") + X(x[0]).toFixed(1) + " " + Y(x[1]).toFixed(1)).join("")}"/>`;

@@ -40,6 +40,8 @@ def runs(store: Path) -> list[dict]:
 def summary(d: Path, m: re.Match, newest: bool = True) -> dict:
     cap = _json(d / "capacity.json")
     cg = cgroup(d)
+    kills = oom_kills(d, _first_t_ms(d / "timeline.csv"))
+    steps = plateaus(cap, kills)
     # Only the newest run can still be running, and only while it writes its files.
     if cap is not None:
         state = "done"
@@ -54,12 +56,14 @@ def summary(d: Path, m: re.Match, newest: bool = True) -> dict:
         # a run without capacity.json is still running, or k6 did not finish
         "done": cap is not None,
         "state": state,
-        "capacity": cap.get("capacity") if cap else None,
+        "capacity": capacity(cap, steps, kills, cg.get("oom_kill")),
+        # the largest stage that k6 passed, whether or not the kernel killed in the server
+        "capacity_k6": cap.get("capacity") if cap else None,
         "users_per_document": cap.get("usersPerDocument") if cap else None,
         # the CAP_SCENARIO of the run, which deploy/run-capacity also writes when the run starts,
         # or None for copies of one document
         "scenario": (cap or {}).get("scenario") or _text(d / "scenario"),
-        "plateaus": plateaus(cap),
+        "plateaus": steps,
         "cpus": cg.get("cpus"),
         "memory_max_mb": cg.get("memory_max_mb"),
         "memory_peak_mb": cg.get("memory_peak_mb"),
@@ -76,7 +80,8 @@ def detail(store: Path, run: str) -> dict | None:
         return None
     t0 = _first_t_ms(d / "timeline.csv")
     out = summary(d, m)
-    out.update(users=users(d), edits=edits(d, t0), cpu=cpu(d, t0), memory=memory(d))
+    out.update(users=users(d), edits=edits(d, t0), cpu=cpu(d, t0), memory=memory(d),
+               oom=oom_kills(d, t0))
     # the documents open during each stage, at most
     for p in out["plateaus"]:
         held = [m[5] for m in out["memory"] if p["start"] <= m[0] < p["end"]]
@@ -84,7 +89,10 @@ def detail(store: Path, run: str) -> dict | None:
     return out
 
 
-def plateaus(cap: dict | None) -> list[dict]:
+def plateaus(cap: dict | None, kills: list[list] | None = None) -> list[dict]:
+    """The stages of capacity.json. With the OOM kills of the run, each stage also counts the
+    kills from the end of the stage before, so that a kill in the ramp counts against the stage
+    that the ramp leads to."""
     rows = (cap or {}).get("plateaus") or []
     t = 0
     out = []
@@ -92,13 +100,54 @@ def plateaus(cap: dict | None) -> list[dict]:
         # capacity.json gives each hold from 7 November 2026, older ones are the defaults
         start = r.get("start", t + RAMP_S)
         end = r.get("end", start + HOLD_S)
+        oom = None if kills is None or not r.get("reached") else \
+            sum(n for k, n in kills if t <= k < end)
         t = end
-        out.append({"users": r.get("users"), "start": start, "end": end,
+        out.append({"users": r.get("users"), "start": start, "end": end, "oom_kills": oom,
                     "reached": r.get("reached"), "measured": r.get("measured"),
                     "ok": r.get("ok"), "edit_p95": r.get("editP95"), "edits": r.get("edits"),
                     "load_p95": r.get("loadP95"), "loads": r.get("loads"),
                     "error_rate": r.get("errorRate")})
     return out
+
+
+def capacity(cap: dict | None, steps: list[dict], kills: list[list] | None,
+             total_kills: int | None) -> int | None:
+    """The users of the last stage before the first one that failed or in which the kernel
+    killed a process of the server for lack of memory. A run that did not record when the kills
+    happened has no capacity once it had one."""
+    if not cap:
+        return None
+    if kills is None:
+        return cap.get("capacity") if not total_kills else None
+    best = 0
+    for p in steps:
+        if not (p["measured"] and p["ok"]) or p["oom_kills"]:
+            break
+        best = p["users"]
+    return best
+
+
+def oom_kills(d: Path, t0: int | None) -> list[list] | None:
+    """[t, kills] of each bucket in which the kernel killed processes of the server cgroup for
+    lack of memory, from the oom_kills column of timeline.csv, or None for a run from before
+    that column."""
+    if t0 is None:
+        return None
+    by: dict[int, int] = {}
+    prev = None
+    with _open(d / "timeline.csv") as f:
+        for r in csv.DictReader(f) if f else ():
+            try:
+                t = (int(r["t_ms"]) - t0) / 1000
+                n = int(r.get("oom_kills") or "")
+            except (KeyError, ValueError):
+                continue
+            if prev is not None and n > prev:
+                b = int(t // STEP) * STEP
+                by[b] = by.get(b, 0) + n - prev
+            prev = n
+    return None if prev is None else [[t, n] for t, n in sorted(by.items())]
 
 
 def cgroup(d: Path) -> dict:

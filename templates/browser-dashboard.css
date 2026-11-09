@@ -1021,6 +1021,11 @@ footer {
 .cap-chart .cl.s1 {
   stroke: var(--s1);
 }
+.cap-chart .oom {
+  stroke: var(--worse);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+}
 .cap-chart .cross {
   stroke: var(--ink-faint);
   stroke-width: 1;

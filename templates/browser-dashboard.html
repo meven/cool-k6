@@ -328,9 +328,11 @@ $css</style>
             The capacity runs of the VM, newest first, which deploy/run-capacity starts. Users join
             in a staircase and type in the documents of the run's scenario, and coolwsd, forkit and the
             kits run on a limited number of cores and memory. A stage passes when the 95th
-            percentile of the edits and of the loads stays under its target, and under 1% of the
-            sessions fail. The capacity is the largest stage that passed, up to the first that did
-            not, so a run where every stage passed only gives a lower bound.
+            percentile of the edits and of the loads stays under its target, under 1% of the
+            sessions fail, and the kernel kills no process of the server for lack of memory. The
+            capacity is the largest stage that passed, up to the first that did not, so a run where
+            every stage passed only gives a lower bound. Runs from before 9 November 2026 did not
+            record when the OOM kills happened, so one with any OOM kill has no capacity.
           </p>
           <p class="cmp-note">
             <label

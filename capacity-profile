@@ -40,9 +40,10 @@
 # line of browser.log), browser-memory.csv (the browser user's Chromium processes and JS heap),
 # server-memory.csv (coolwsd, forkit and kits from /cool/getMetrics, plus the host's available
 # memory), metrics.prom (every /cool/getMetrics sample in full), timeline.csv, kit-cpu.csv and
-# events.csv (timeline-sampler.py: host memory, swap and CPU, the CPU of each COOL process, and the
-# background saves, every 0.5 s), browser.log. latency-spikes.py OUT_DIR lines the slow edits that
-# k6 logs on its EDIT lines up with that timeline.
+# events.csv (timeline-sampler.py: host memory, swap and CPU, the CPU of each COOL process, the
+# background saves and the OOM kills in the server cgroup, every 0.5 s), browser.log.
+# latency-spikes.py OUT_DIR lines the slow edits that k6 logs on its EDIT lines up with that
+# timeline.
 
 set -euo pipefail
 
@@ -383,7 +384,7 @@ if [ "$MEM_FLOOR_MB" -gt 0 ]; then
 fi
 metrics_sample "$(date +%s)" &
 METRICS_PID=$!
-python3 "$ROOT/timeline-sampler.py" "$OUT_DIR" &
+python3 "$ROOT/timeline-sampler.py" "$OUT_DIR" --cgroup "$SERVER_CG" &
 TIMELINE_PID=$!
 wait "$K6_PID" || k6_status=$?
 K6_PID=

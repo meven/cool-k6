@@ -5,7 +5,8 @@ timeline-sampler.py: sample the host and the COOL processes every INTERVAL secon
 Writes into OUT_DIR, until it is sent SIGTERM:
   - timeline.csv: one row per sample, with the host's available memory, swap and major-fault
     traffic, CPU busy and iowait shares, and the CPU used by coolwsd, the forkit, all document
-    kits, all background saves, the WOPI host (node), k6 and Chromium.
+    kits, all background saves, the WOPI host (node), k6 and Chromium. With --cgroup, also the
+    count of processes that the kernel has killed for lack of memory in that cgroup so far.
   - kit-cpu.csv: one row per sample and document kit, with the CPU the kit used since the last
     sample.
   - events.csv: when a kit or a background save appears and ends, with its pid and name. A kit is
@@ -15,7 +16,7 @@ Writes into OUT_DIR, until it is sent SIGTERM:
 CPU columns are in CPUs (1.0 is one core busy for the whole interval). Times are Unix epoch
 milliseconds, the clock k6 uses for Date.now().
 
-    ./timeline-sampler.py OUT_DIR [--interval 0.5]
+    ./timeline-sampler.py OUT_DIR [--interval 0.5] [--cgroup /sys/fs/cgroup/...]
 """
 import argparse
 import os
@@ -54,6 +55,21 @@ def read_vmstat():
             if key in ("pswpin", "pswpout", "pgmajfault"):
                 out[key] = int(value)
     return out
+
+
+def read_oom_kills(cgroup):
+    """The oom_kill count of the cgroup's memory.events, or an empty field without one."""
+    if not cgroup:
+        return ""
+    try:
+        with open(os.path.join(cgroup, "memory.events")) as f:
+            for line in f:
+                key, _, value = line.partition(" ")
+                if key == "oom_kill":
+                    return value.strip()
+    except OSError:
+        pass
+    return ""
 
 
 def kind_of(comm, cmdline):
@@ -106,6 +122,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("out_dir")
     parser.add_argument("--interval", type=float, default=0.5)
+    parser.add_argument("--cgroup", default="", help="the cgroup v2 directory of the server")
     args = parser.parse_args()
 
     running = True
@@ -122,7 +139,7 @@ def main():
     kit_cpu = open(os.path.join(args.out_dir, "kit-cpu.csv"), "w", buffering=1)
     events = open(os.path.join(args.out_dir, "events.csv"), "w", buffering=1)
     timeline.write("t_ms,mem_available_mb,swap_free_mb,swap_in_pages,swap_out_pages,major_faults,"
-                   "cpu_busy,cpu_iowait," + ",".join(f"{k}_cpu" for k in kinds) + ",bgsaves\n")
+                   "cpu_busy,cpu_iowait," + ",".join(f"{k}_cpu" for k in kinds) + ",bgsaves,oom_kills\n")
     kit_cpu.write("t_ms,pid,name,cpu\n")
     events.write("t_ms,event,pid,name\n")
 
@@ -171,7 +188,7 @@ def main():
             f"{vm['pswpin'] - prev_vm['pswpin']},{vm['pswpout'] - prev_vm['pswpout']},"
             f"{vm['pgmajfault'] - prev_vm['pgmajfault']},"
             f"{(busy - prev_stat[0]) / d_total * NCPU:.2f},{(iowait - prev_stat[1]) / d_total * NCPU:.2f},"
-            + ",".join(f"{cpu[k]:.2f}" for k in kinds) + f",{bgsaves}\n")
+            + ",".join(f"{cpu[k]:.2f}" for k in kinds) + f",{bgsaves},{read_oom_kills(args.cgroup)}\n")
 
         prev_stat, prev_vm, prev_procs, prev_t = (busy, iowait, total), vm, procs, t
 
