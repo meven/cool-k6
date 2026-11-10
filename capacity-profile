@@ -222,10 +222,10 @@ openssl s_client -connect "$wopi_hostport" -servername localhost -CAfile "$TLS_D
     || die "the WOPI host at $WOPI_HOST does not present a certificate from" \
            "$TLS_DIR/ca-cert.pem, so coolwsd would refuse every session"
 
+COOLWSD_PID=$(pgrep -o -x coolwsd) || die "no coolwsd process"
 if [ -z "${NO_PERF:-}" ]; then
     command -v stackcollapse-perf.pl >/dev/null && command -v flamegraph.pl >/dev/null \
         || die "stackcollapse-perf.pl and flamegraph.pl must be on PATH (FlameGraph), or set NO_PERF=1"
-    COOLWSD_PID=$(pgrep -o -x coolwsd) || die "no coolwsd process"
     FORKIT_PID=$(pgrep -o -x forkit) || die "no forkit process"
     if [ "$(cat /proc/sys/kernel/perf_event_paranoid)" -gt 1 ] && [ "${PERF_CMD[0]}" != sudo ]; then
         echo "perf_event_paranoid is above 1: perf will likely fail, set PERF=\"sudo perf\"" \
@@ -347,6 +347,17 @@ mem_watch() {
         return
     done
 }
+# Sends k6 a SIGTERM when coolwsd exits, for example when the kernel OOM killer picks it. Without
+# coolwsd every user only fails, so the rest of the ramp measures nothing.
+server_watch() {
+    while sleep 1; do
+        kill -0 "$COOLWSD_PID" 2>/dev/null && continue
+        echo "capacity-profile: coolwsd (pid $COOLWSD_PID) exited, stopping k6" >&2
+        echo "$(( $(date +%s) - $2 ))" > "$OUT_DIR/.server-exited"
+        kill -TERM "$1" 2>/dev/null || true
+        return
+    done
+}
 # Server memory as coolwsd reports it: coolwsd (PSS), the forkit (RSS) and the document kits. Each
 # /cool/getMetrics answer is kept whole in metrics.prom, and server-memory.csv has one row of
 # memory columns per sample, with the host's available memory for comparison.
@@ -378,9 +389,10 @@ metrics_sample() {
 METRICS_AUTH=${METRICS_AUTH:-admin:admin}
 
 MEM_WATCH_PID=
+SERVER_WATCH_PID=
 METRICS_PID=
 TIMELINE_PID=
-trap '[ -z "$MEM_WATCH_PID" ] || kill "$MEM_WATCH_PID" 2>/dev/null || true; [ -z "$METRICS_PID" ] || kill "$METRICS_PID" 2>/dev/null || true; [ -z "$TIMELINE_PID" ] || kill "$TIMELINE_PID" 2>/dev/null || true; stop_k6; stop_perf; stop_browser; stop_started; exit 130' INT TERM
+trap '[ -z "$MEM_WATCH_PID" ] || kill "$MEM_WATCH_PID" 2>/dev/null || true; [ -z "$SERVER_WATCH_PID" ] || kill "$SERVER_WATCH_PID" 2>/dev/null || true; [ -z "$METRICS_PID" ] || kill "$METRICS_PID" 2>/dev/null || true; [ -z "$TIMELINE_PID" ] || kill "$TIMELINE_PID" 2>/dev/null || true; stop_k6; stop_perf; stop_browser; stop_started; exit 130' INT TERM
 
 echo "k6: ${K6[*]}"
 k6_status=0
@@ -399,6 +411,8 @@ if [ "$MEM_FLOOR_MB" -gt 0 ]; then
     mem_watch "$K6_PID" &
     MEM_WATCH_PID=$!
 fi
+server_watch "$K6_PID" "$(date +%s)" &
+SERVER_WATCH_PID=$!
 metrics_sample "$(date +%s)" &
 METRICS_PID=$!
 python3 "$ROOT/timeline-sampler.py" "$OUT_DIR" --cgroup "$SERVER_CG" &
@@ -407,6 +421,8 @@ wait "$K6_PID" || k6_status=$?
 K6_PID=
 kill "$K6_WATCHDOG_PID" 2>/dev/null || true
 [ -z "$MEM_WATCH_PID" ] || kill "$MEM_WATCH_PID" 2>/dev/null || true
+kill "$SERVER_WATCH_PID" 2>/dev/null || true
+SERVER_WATCH_PID=
 kill "$METRICS_PID" 2>/dev/null || true
 METRICS_PID=
 kill "$TIMELINE_PID" 2>/dev/null || true
@@ -421,8 +437,15 @@ if [ -e "$OUT_DIR/.memory-floor" ]; then
     [ "$k6_status" -ne 0 ] || k6_status=1
 fi
 
+server_exited=
+if [ -e "$OUT_DIR/.server-exited" ]; then
+    server_exited=$(cat "$OUT_DIR/.server-exited")
+    rm -f "$OUT_DIR/.server-exited"
+    [ "$k6_status" -ne 0 ] || k6_status=1
+fi
+
 if [ -n "$BROWSER_PID" ]; then
-    if [ -n "$memory_floor" ]; then
+    if [ -n "$memory_floor" ] || [ -n "$server_exited" ]; then
         stop_browser
     elif [ ! -e "$OUT_DIR/.browser-started" ]; then
         echo "the run ended before the browser user's start, no browser profile" >&2
@@ -454,5 +477,7 @@ fi
 
 echo
 ls -la "$OUT_DIR"
+[ -z "$server_exited" ] \
+    || echo "the run was stopped early: coolwsd exited ${server_exited}s after the start of k6" >&2
 [ -z "$memory_floor" ] || echo "the run was stopped early: MemAvailable dropped under ${MEM_FLOOR_MB} MB" >&2
 exit "$k6_status"
