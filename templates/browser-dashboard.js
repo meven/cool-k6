@@ -468,6 +468,7 @@ function setFull(sec) {
     old.classList.remove("full");
     old.querySelector(".fullbtn").textContent = "full view";
     old.querySelector(".fullbtn").setAttribute("aria-pressed", "false");
+    old.querySelectorAll(".fulllink").forEach((l) => l.remove());
     const svg = old.querySelector("svg[data-key]");
     render(svg, viewOf(svg.dataset.key));
   }
@@ -477,6 +478,14 @@ function setFull(sec) {
   sec.classList.add("full");
   sec.querySelector(".fullbtn").textContent = "close";
   sec.querySelector(".fullbtn").setAttribute("aria-pressed", "true");
+  // the newest commit of the chart against the one measured before it
+  const last = viewOf(sec.querySelector("svg[data-key]").dataset.key)
+    .filter((r) => r.runid)
+    .pop();
+  const cl = last && compareLink(last.runid, "compare with the previous commit");
+  if (cl) sec.querySelector(".fullbtn").insertAdjacentHTML("beforebegin", cl);
+  const l = sec.querySelector("h2 > a.cmplink");
+  if (l) l.classList.add("fulllink");
   drawFull();
 }
 host.addEventListener("click", (e) => {
@@ -623,6 +632,30 @@ function sideRuns(side) {
   if (i > j) [i, j] = [j, i];
   return new Set(list.slice(i, j + 1).flatMap((p) => p.runids));
 }
+// The point measured before p: the previous commit of its branch, or for the first commit
+// of a branch the run of main at the commit that the branch is built on.
+function prevPoint(p) {
+  const list = POINTS[p.branch],
+    i = list.indexOf(p);
+  if (i > 0) return list[i - 1];
+  const base = p.branch !== "main" && shaOf(p.base);
+  return (base && (POINTS.main || []).filter((q) => shaOf(q.commit) === base).pop()) || null;
+}
+// A link to the Compare tab with the commit of a run against the commit measured before it.
+function compareLink(runid, text) {
+  const b = runid && Object.values(POINTS).flat().find((p) => p.runids.includes(runid)),
+    a = b && prevPoint(b);
+  if (!a) return "";
+  const h = new URLSearchParams({ view: "compare", a: a.id, b: b.id });
+  return `<a class="cmplink" href="#${esc(h.toString())}" data-a="${esc(a.id)}" data-b="${esc(b.id)}" title="${esc(pointName(a))} against ${esc(pointName(b))}">${esc(text)}</a>`;
+}
+let openCompare = null; // set once the Compare tab is built
+document.addEventListener("click", (e) => {
+  const l = e.target.closest && e.target.closest("a.cmplink");
+  if (!l || !openCompare || e.button || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  e.preventDefault();
+  openCompare(l.dataset.a, l.dataset.b);
+});
 function sideName(side) {
   const f = POINT_BY_ID[side.from],
     t = side.to && POINT_BY_ID[side.to];
@@ -888,6 +921,15 @@ function renderCompare() {
   });
   document.getElementById("cmpall").addEventListener("change", renderCompare);
   renderCompare();
+  openCompare = (a, b) => {
+    CMP = { a: { from: a, to: "" }, b: { from: b, to: "" } };
+    CMP_NOTE = "";
+    fillSide("a");
+    fillSide("b");
+    modal.hidden = true;
+    show("compare");
+    renderCompare();
+  };
 })();
 
 // ---- the list of runs, and their deletion -------------------------------------------
@@ -1992,6 +2034,8 @@ function openDetail(runs, i) {
   if (r.file) meta += `  ·  ${esc(r.file)}`;
   if (r.runid) meta += `  ·  run ${esc(r.runid)}`;
   meta += commitRange(runs, i);
+  const cl = compareLink(r.runid, "compare every test with the previous commit");
+  if (cl) meta += `  ·  ${cl}`;
   mmeta.innerHTML = meta;
   const cols = ["avg", "min", "med", "p90", "p95", "max"];
   let h =
