@@ -1042,6 +1042,12 @@ footer {
 .cap-chart .cl.s3 {
   stroke: var(--s3);
 }
+.cap-chart .cl.s4 {
+  stroke: var(--s4);
+}
+.cap-chart .cl.s5 {
+  stroke: var(--s5);
+}
 .cap-chart .oom {
   stroke: var(--worse);
   stroke-width: 1.5;

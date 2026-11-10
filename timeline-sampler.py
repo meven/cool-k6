@@ -9,7 +9,11 @@ Writes into OUT_DIR, until it is sent SIGTERM:
     count of processes that the kernel has killed for lack of memory in that cgroup so far, and
     the memory that the kernel charges to the cgroup (memory.current), which counts what
     coolwsd's own figures leave out: the background saves, and the pages that a kit shares
-    with the save it forked.
+    with the save it forked. Every MEM_INTERVAL seconds, also the proportional set size (Pss) of
+    coolwsd, the forkit, all kits and all background saves, in MB. Pss splits each page among
+    the processes that map it, so a kit and the save it forked count their shared pages once,
+    and the four add up to the memory that the server processes map. A column is empty in the
+    other rows, and in every row when a process of its kind could not be read.
   - kit-cpu.csv: one row per sample and document kit, with the CPU the kit used since the last
     sample.
   - events.csv: when a kit or a background save appears and ends, with its pid and name. A kit is
@@ -19,7 +23,7 @@ Writes into OUT_DIR, until it is sent SIGTERM:
 CPU columns are in CPUs (1.0 is one core busy for the whole interval). Times are Unix epoch
 milliseconds, the clock k6 uses for Date.now().
 
-    ./timeline-sampler.py OUT_DIR [--interval 0.5] [--cgroup /sys/fs/cgroup/...]
+    ./timeline-sampler.py OUT_DIR [--interval 0.5] [--mem-interval 2] [--cgroup /sys/fs/cgroup/...]
 """
 import argparse
 import os
@@ -104,6 +108,40 @@ def kind_of(comm, cmdline):
     return None
 
 
+# The kinds of server process whose memory is sampled, in the order of their columns.
+MEM_KINDS = ("coolwsd", "forkit", "kit", "bgsave")
+
+
+def read_pss_kb(pid):
+    """The Pss of a process in kB from smaps_rollup: 0 for a process that has ended, None for one
+    that cannot be read. The kernel walks the page tables of the process to answer."""
+    try:
+        with open(f"/proc/{pid}/smaps_rollup") as f:
+            for line in f:
+                if line.startswith("Pss:"):
+                    return int(line.split()[1])
+    except (FileNotFoundError, ProcessLookupError):
+        return 0
+    except (OSError, ValueError):
+        return None
+    return 0
+
+
+def pss_by_kind(procs):
+    """The Pss in MB of each kind of MEM_KINDS, or "" for a kind with a process that could not
+    be read, as a partial sum would look like less memory."""
+    kb = dict.fromkeys(MEM_KINDS, 0)
+    unreadable = set()
+    for pid, (kind, _, _) in procs.items():
+        if kind in kb:
+            v = read_pss_kb(pid)
+            if v is None:
+                unreadable.add(kind)
+            else:
+                kb[kind] += v
+    return {k: "" if k in unreadable else str(kb[k] // 1024) for k in MEM_KINDS}
+
+
 def scan_processes():
     """pid -> (kind, comm, cpu ticks) for the processes this run cares about."""
     procs = {}
@@ -136,6 +174,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("out_dir")
     parser.add_argument("--interval", type=float, default=0.5)
+    # Reading smaps_rollup of every server process costs a page table walk each time, so the
+    # memory is sampled less often than the CPU.
+    parser.add_argument("--mem-interval", type=float, default=2.0)
     parser.add_argument("--cgroup", default="", help="the cgroup v2 directory of the server")
     args = parser.parse_args()
 
@@ -153,7 +194,8 @@ def main():
     kit_cpu = open(os.path.join(args.out_dir, "kit-cpu.csv"), "w", buffering=1)
     events = open(os.path.join(args.out_dir, "events.csv"), "w", buffering=1)
     timeline.write("t_ms,mem_available_mb,swap_free_mb,swap_in_pages,swap_out_pages,major_faults,"
-                   "cpu_busy,cpu_iowait," + ",".join(f"{k}_cpu" for k in kinds) + ",bgsaves,oom_kills,cgroup_mb\n")
+                   "cpu_busy,cpu_iowait," + ",".join(f"{k}_cpu" for k in kinds) + ",bgsaves,oom_kills,cgroup_mb,"
+                   + ",".join(f"{k}_pss_mb" for k in MEM_KINDS) + "\n")
     kit_cpu.write("t_ms,pid,name,cpu\n")
     events.write("t_ms,event,pid,name\n")
 
@@ -161,6 +203,7 @@ def main():
     prev_vm = read_vmstat()
     prev_procs = scan_processes()
     prev_t = time.time()
+    next_mem = prev_t
     for pid, (kind, comm, _) in prev_procs.items():
         if kind in ("kit", "bgsave"):
             events.write(f"{int(prev_t * 1000)},present,{pid},{comm}\n")
@@ -197,12 +240,17 @@ def main():
                 events.write(f"{t_ms},end,{pid},{comm}\n")
 
         bgsaves = sum(1 for kind, _, _ in procs.values() if kind == "bgsave")
+        pss = dict.fromkeys(MEM_KINDS, "")
+        if t >= next_mem:
+            pss = pss_by_kind(procs)
+            next_mem = t + args.mem_interval
         timeline.write(
             f"{t_ms},{mem.get('MemAvailable', 0)},{mem.get('SwapFree', 0)},"
             f"{vm['pswpin'] - prev_vm['pswpin']},{vm['pswpout'] - prev_vm['pswpout']},"
             f"{vm['pgmajfault'] - prev_vm['pgmajfault']},"
             f"{(busy - prev_stat[0]) / d_total * NCPU:.2f},{(iowait - prev_stat[1]) / d_total * NCPU:.2f},"
-            + ",".join(f"{cpu[k]:.2f}" for k in kinds) + f",{bgsaves},{read_oom_kills(args.cgroup)},{read_cgroup_mb(args.cgroup)}\n")
+            + ",".join(f"{cpu[k]:.2f}" for k in kinds) + f",{bgsaves},{read_oom_kills(args.cgroup)},{read_cgroup_mb(args.cgroup)},"
+            + ",".join(pss[k] for k in MEM_KINDS) + "\n")
 
         prev_stat, prev_vm, prev_procs, prev_t = (busy, iowait, total), vm, procs, t
 

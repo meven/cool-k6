@@ -81,7 +81,8 @@ def detail(store: Path, run: str) -> dict | None:
     t0 = _first_t_ms(d / "timeline.csv")
     out = summary(d, m)
     out.update(users=users(d), edits=edits(d, t0), cpu=cpu(d, t0), memory=memory(d),
-               oom=oom_kills(d, t0), cgroup_memory=cgroup_memory(d, t0))
+               oom=oom_kills(d, t0), cgroup_memory=cgroup_memory(d, t0),
+               memory_kinds=memory_kinds(d, t0))
     # the documents open during each stage, at most
     for p in out["plateaus"]:
         held = [m[5] for m in out["memory"] if p["start"] <= m[0] < p["end"]]
@@ -251,6 +252,30 @@ def cgroup_memory(d: Path, t0: int | None) -> list[list]:
             b = int(t // STEP) * STEP
             by[b] = max(by.get(b, 0), mb)
     return [[t, mb] for t, mb in sorted(by.items())]
+
+
+def memory_kinds(d: Path, t0: int | None) -> list[list]:
+    """The memory of the server by kind of process, in MB, as rows of
+    [t, coolwsd, forkit, kits, background saves, not in a process], the averages over each bucket
+    of the samples that have every column, from the Pss columns and cgroup_mb of timeline.csv.
+    Pss splits each page among the processes that map it, so the kinds add up to what the server
+    processes map; what the cgroup holds beyond that is page cache and kernel memory. Empty for a
+    run from before the Pss columns, or whose processes could not be read."""
+    if t0 is None:
+        return []
+    kinds = ("coolwsd", "forkit", "kit", "bgsave")
+    by: dict[int, list[list[int]]] = {}
+    with _open(d / "timeline.csv") as f:
+        for r in csv.DictReader(f) if f else ():
+            try:
+                t = (int(r["t_ms"]) - t0) / 1000
+                pss = [int(r[f"{k}_pss_mb"]) for k in kinds]
+                cg = int(r["cgroup_mb"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            by.setdefault(int(t // STEP) * STEP, []).append(pss + [max(0, cg - sum(pss))])
+    return [[t, *(round(sum(s[i] for s in v) / len(v)) for i in range(5))]
+            for t, v in sorted(by.items())]
 
 
 def memory(d: Path) -> list[list]:

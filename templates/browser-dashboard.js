@@ -1704,20 +1704,51 @@ function runBranch(r) {
         digits: 2,
         limit: r.memory_max_mb && r.memory_max_mb / 1024,
         limitLabel: r.memory_max_mb ? `limit ${gb(r.memory_max_mb)}` : "",
-        series: [
-          {
-            name: "reported by coolwsd",
-            cls: "s0",
-            rows: r.memory.map((x) => [x[0], (x[1] + x[2] + x[3]) / 1024]),
-          },
-          { name: "of which kits", cls: "s1", rows: r.memory.map((x) => [x[0], x[3] / 1024]) },
-          // what the kernel charges to the server, which the limit applies to
-          {
-            name: "server cgroup",
-            cls: "s2",
-            rows: (r.cgroup_memory || []).map((x) => [x[0], x[1] / 1024]),
-          },
-        ].filter((se) => se.name !== "server cgroup" || se.rows.length),
+        // The kinds of process by their Pss, which add up to what the processes map, beside what
+        // the kernel charges to the server cgroup, which the limit applies to. A run from before
+        // the Pss columns has coolwsd's own figures only.
+        series: (r.memory_kinds || []).length
+          ? [
+              {
+                name: "server cgroup",
+                cls: "s0",
+                rows: (r.cgroup_memory || []).map((x) => [x[0], x[1] / 1024]),
+              },
+              { name: "kits", cls: "s1", rows: r.memory_kinds.map((x) => [x[0], x[3] / 1024]) },
+              {
+                name: "background saves",
+                cls: "s2",
+                rows: r.memory_kinds.map((x) => [x[0], x[4] / 1024]),
+              },
+              {
+                name: "coolwsd and forkit",
+                cls: "s3",
+                rows: r.memory_kinds.map((x) => [x[0], (x[1] + x[2]) / 1024]),
+              },
+              {
+                name: "page cache and kernel",
+                cls: "s4",
+                rows: r.memory_kinds.map((x) => [x[0], x[5] / 1024]),
+              },
+              {
+                name: "reported by coolwsd",
+                cls: "s5",
+                rows: r.memory.map((x) => [x[0], (x[1] + x[2] + x[3]) / 1024]),
+              },
+            ]
+          : [
+              {
+                name: "reported by coolwsd",
+                cls: "s0",
+                rows: r.memory.map((x) => [x[0], (x[1] + x[2] + x[3]) / 1024]),
+              },
+              { name: "of which kits", cls: "s1", rows: r.memory.map((x) => [x[0], x[3] / 1024]) },
+              {
+                name: "server cgroup",
+                cls: "s2",
+                rows: (r.cgroup_memory || []).map((x) => [x[0], x[1] / 1024]),
+              },
+            ].filter((se) => se.name !== "server cgroup" || se.rows.length),
         extra: (t) => {
           const m = nearest(r.memory, t);
           return m ? `, ${m[4]} kits` : "";
