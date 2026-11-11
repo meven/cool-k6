@@ -69,6 +69,7 @@ from odf.number import (NumberStyle, Number, PercentageStyle, DateStyle, Year, M
                         Text as NumberText)
 from odf.opendocument import OpenDocumentChart
 from odf import chart
+from odf.element import Element
 from odf.draw import (Page, Frame, Image, Object as DrawObject, Rect, Ellipse, Line, Polygon,
                       TextBox, CustomShape, EnhancedGeometry)
 
@@ -409,6 +410,73 @@ def _finance_styles(doc) -> dict[str, Style]:
     return styles
 
 
+CALCEXT = "urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0"
+
+
+def _calcext(name: str, **attributes) -> Element:
+    """An element of the namespace that LibreOffice writes conditional formats in, which odfpy
+    does not know. The keyword names take "_" for "-"."""
+    return Element(qname=(CALCEXT, name), check_grammar=False,
+                   qattributes={(CALCEXT, k.replace("_", "-")): str(v)
+                                for k, v in attributes.items()})
+
+
+def _conditional_formats(doc, sheet: str, last: int) -> Element:
+    """The conditional formats of the @p sheet of the finance workbook, whose data ends in row
+    @p last: what a finance team marks in a ledger and in its summary."""
+    formats = _calcext("conditional-formats")
+
+    def add(target: str, rule: Element) -> None:
+        fmt = _calcext("conditional-format", target_range_address=target)
+        fmt.addElement(rule, check_grammar=False)
+        formats.addElement(fmt, check_grammar=False)
+
+    def entries(rule: Element, *pairs) -> Element:
+        for kind, value, *colour in pairs:
+            if colour:
+                rule.addElement(_calcext("color-scale-entry", value=value, type=kind,
+                                         color=colour[0]), check_grammar=False)
+            else:
+                rule.addElement(_calcext("formatting-entry", value=value, type=kind),
+                                check_grammar=False)
+        return rule
+
+    if sheet == "Sales":
+        # margin %: red for the lowest, green for the highest
+        add(f"Sales.Q2:Sales.Q{last}", entries(
+            _calcext("color-scale"), ("minimum", 0, "#f8696b"), ("percentile", 50, "#ffeb84"),
+            ("maximum", 0, "#63be7b")))
+        # revenue: a bar in proportion to the amount
+        add(f"Sales.M2:Sales.M{last}", entries(
+            _calcext("data-bar", positive_color="#638ec6", negative_color="#ff0000",
+                     axis_color="#000000", axis_position="automatic", max_length=100),
+            ("auto-minimum", 0), ("auto-maximum", 0)))
+        # discounts of 20% and more, and the large orders
+        add(f"Sales.L2:Sales.L{last}", _calcext(
+            "condition", apply_style_name="High discount", value=">=0.2",
+            base_cell_address="Sales.L2"))
+        add(f"Sales.J2:Sales.J{last}", _calcext(
+            "condition", apply_style_name="Large order", value=">=100",
+            base_cell_address="Sales.J2"))
+    else:
+        # the margin % of each month against the others
+        add(f"Charts.R4:Charts.R{last}", entries(
+            _calcext("icon-set", icon_set_type="3Arrows"),
+            ("percent", 0), ("percent", 33), ("percent", 67)))
+    return formats
+
+
+def _named_cell_styles(doc) -> None:
+    """The cell styles that the conditions of the finance workbook apply, which a condition names
+    and so must be common styles."""
+    for name, colour, background in (("High discount", "#9c0006", "#ffc7ce"),
+                                     ("Large order", "#006100", "#c6efce")):
+        style = Style(name=name, family="table-cell")
+        style.addElement(TextProperties(color=colour, fontweight="bold"))
+        style.addElement(TableCellProperties(backgroundcolor=background))
+        doc.styles.addElement(style)
+
+
 def _cell(value=None, style=None, formula=None):
     """A cell of @p value: a str, a float or int, or a datetime.date."""
     kw = {"stylename": style} if style is not None else {}
@@ -494,6 +562,7 @@ def build_calc_finance() -> None:
     last = len(rows) + 1
     doc = OpenDocumentSpreadsheet()
     st = _finance_styles(doc)
+    _named_cell_styles(doc)
 
     # The Sales sheet: the ledger.
     sales = Table(name="Sales")
@@ -526,6 +595,7 @@ def build_calc_finance() -> None:
                  f"of:=IF([.M{i}]=0;0;[.P{i}]/[.M{i}])")):
             row.addElement(_cell(value, style, formula))
         sales.addElement(row)
+    sales.addElement(_conditional_formats(doc, "Sales", last), check_grammar=False)
     doc.spreadsheet.addElement(sales)
 
     # The Pivot sheet: the revenue by region and product line, one column per year. The cells
@@ -631,6 +701,7 @@ def build_calc_finance() -> None:
                    (11, 10 + len(FINANCE_CHANNELS), "T"), ["U"], 10)
     _finance_chart(doc, shapes, "Gross margin %", "line", "15.8cm", "10.7cm",
                    (4, end, "N"), ["R"], 3)
+    charts.addElement(_conditional_formats(doc, "Charts", end), check_grammar=False)
     doc.spreadsheet.addElement(charts)
 
     ranges = DatabaseRanges()
@@ -903,15 +974,19 @@ def convert_to_ooxml(app: str, label: str) -> bool:
     """Write the big document of @p app again in the Microsoft format, by converting the one
     just written. Converting rather than building it again is what makes the two comparable:
     same content, two formats, so a difference in load time is the format's.
+    """
+    if app not in OOXML:
+        return False
+    odf, fmt = OOXML[app]
+    return convert_document(app, f"{app}-{label}.{odf}", fmt)
+
+
+def convert_document(app: str, source: str, fmt: str) -> bool:
+    """Write @p source of documents/ again in the format @p fmt, beside it.
 
     Needs a desktop LibreOffice on PATH. The engine of an Online build will not do: its
     soffice.bin refuses --convert-to.
     """
-    if app not in OOXML:
-        return False
-
-    odf, fmt = OOXML[app]
-    source = f"{app}-{label}.{odf}"
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     if not soffice:
         print(f"{app}: no soffice on PATH, so no {fmt} document", file=sys.stderr)
@@ -980,6 +1055,8 @@ def main() -> None:
         if app == "calc":
             build_calc_finance()
             print(f"calc: calc-finance.ods written to {OUT}")
+            if args.ooxml:
+                convert_document(app, "calc-finance.ods", "xlsx")
     if args.image:
         build_image(target, label)
 

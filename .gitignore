@@ -25,6 +25,7 @@ __pycache__/
 documents/*mb.*
 documents/impress-duplicate.odp
 documents/calc-finance.ods
+documents/calc-finance.xlsx
 # the gen-docs.py that the corpus was generated with (deploy/common.sh)
 documents/.built-from
 
