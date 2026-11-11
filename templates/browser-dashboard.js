@@ -1534,13 +1534,16 @@ function runBranch(r) {
     !p.reached ? "not reached" : !p.measured ? "not measured" : !p.ok ? "FAILED" :
       p.oom_kills ? "OOM kill" : "passed";
   const capText = (r) =>
-    !r.done ? (r.state === "stopped" ? "stopped" : "running")
+    r.heap_profile ? (r.done ? "heap profile" : "heap profile, running")
+      : !r.done ? (r.state === "stopped" ? "stopped" : "running")
       : r.capacity == null && r.oom_kills ? "unknown"
       : !r.capacity ? "none"
       : r.capacity + (r.plateaus.length && r.plateaus.every(passed) ? "+" : "") + " users";
 
   const capTitle = (r) =>
-    r.capacity == null && r.oom_kills && r.done
+    r.heap_profile
+      ? ` title="${esc("Recorded under heaptrack, which slows the server down: its timings and capacity do not compare with other runs.")}"`
+      : r.capacity == null && r.oom_kills && r.done
       ? ` title="${esc(`The kernel killed ${r.oom_kills} processes of the server, and this run did not record when.`)}"`
       : r.capacity_k6 != null && r.capacity_k6 !== r.capacity
         ? ` title="${esc(`${r.capacity_k6} users by the session targets alone, before the first OOM kill counts.`)}"`
@@ -1549,7 +1552,7 @@ function runBranch(r) {
   // What ended the capacity: the first stage that failed, and the targets it missed, with an OOM
   // kill first since it ends the stage whatever the sessions did.
   function stoppedBy(r) {
-    if (!r.done) return "-";
+    if (!r.done || r.heap_profile) return "-";
     const p = r.plateaus.find((x) => !passed(x));
     if (!p) return "every stage passed";
     const why = [];
@@ -1589,6 +1592,7 @@ function runBranch(r) {
             `<td>${r.oom_kills == null ? "-" : r.oom_kills}</td>` +
             `<td><a href="capacity/${esc(r.run)}/">data</a>` +
             (r.flamegraph ? ` <a href="capacity/${esc(r.run)}/flamegraph.svg">flamegraph</a>` : "") +
+            (r.heap_page ? ` <a href="capacity/${esc(r.run)}/heap.html">heap</a>` : "") +
             "</td></tr>"
           );
         })
@@ -1644,6 +1648,11 @@ function runBranch(r) {
       `${scenario(r)}: run of ${when(r.ts)}, commit ${r.commit}`;
     const n = cores(r.cpus);
     document.getElementById("capdnote").textContent =
+      (r.heap_profile
+        ? "This run recorded the allocations of the server with heaptrack, which slows it " +
+          "down several times, so its times, its stages and its CPU do not compare with " +
+          "other runs. " + (r.heap_page ? "Its heap profile has a page of its own. " : "")
+        : "") +
       (n && r.memory_max_mb
         ? `The server ran on ${n} cores and in ${gb(r.memory_max_mb)}, and `
         : "The run did not record the cores and memory of the server, and ") +

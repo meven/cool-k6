@@ -96,6 +96,10 @@ def summary(d: Path, m: re.Match, newest: bool = True) -> dict:
         "memory_peak_mb": cg.get("memory_peak_mb"),
         "oom_kills": cg.get("oom_kill"),
         "flamegraph": _size(d / "flamegraph.svg") > 1000,
+        # a run under heaptrack, whose timings and capacity do not compare with the others, and
+        # whether heap-report.py has written its page yet
+        "heap_profile": (d / "heap-profile").is_file(),
+        "heap_page": (d / "heap.html").is_file(),
     }
 
 
