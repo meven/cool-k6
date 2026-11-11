@@ -7,6 +7,7 @@ capacity-profile. The series start at the start of k6: timeline-sampler.py, the
 """
 import csv
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -25,6 +26,29 @@ RAMP_S, HOLD_S = 60, 180
 # A run without capacity.json whose files have not changed for this long was stopped.
 STALE_S = 600
 
+# The summary and the series of each run, with the names, sizes and times of the files of the run
+# that they were read from. k6.log alone reaches gigabytes when the users fail in a loop, so a run
+# is read again only once its files change.
+_CACHE: dict[tuple[str, str], tuple[tuple, dict]] = {}
+
+
+def _files(d: Path) -> tuple:
+    try:
+        return tuple(sorted((e.name, e.stat().st_size, e.stat().st_mtime_ns)
+                            for e in os.scandir(d) if e.is_file()))
+    except OSError:
+        return ()
+
+
+def _cached(kind: str, d: Path, read) -> dict:
+    files = _files(d)
+    hit = _CACHE.get((kind, d.name))
+    if hit and hit[0] == files:
+        return hit[1]
+    value = read()
+    _CACHE[(kind, d.name)] = (files, value)
+    return value
+
 
 def runs(store: Path) -> list[dict]:
     """A summary of every capacity run, newest first."""
@@ -33,7 +57,10 @@ def runs(store: Path) -> list[dict]:
     for d in sorted(root.iterdir(), reverse=True) if root.is_dir() else ():
         m = RUN.fullmatch(d.name)
         if m and d.is_dir():
-            out.append(summary(d, m, newest=not out))
+            newest = not out
+            # The state of the newest run depends on the clock, not only on its files.
+            out.append(summary(d, m, newest) if newest else
+                       _cached("summary", d, lambda: summary(d, m, False)))
     return out
 
 
@@ -78,9 +105,17 @@ def detail(store: Path, run: str) -> dict | None:
     d = store / "capacity" / run
     if not m or not d.is_dir():
         return None
+    if _json(d / "capacity.json") is None:
+        return _detail(d, m)
+    # A copy, since the stages gain the documents of each below.
+    return json.loads(json.dumps(_cached("detail", d, lambda: _detail(d, m))))
+
+
+def _detail(d: Path, m: re.Match) -> dict:
     t0 = _first_t_ms(d / "timeline.csv")
     out = summary(d, m)
-    out.update(users=users(d), edits=edits(d, t0), cpu=cpu(d, t0), memory=memory(d),
+    users_by_step, edits_by_step = k6_series(d, t0)
+    out.update(users=users_by_step, edits=edits_by_step, cpu=cpu(d, t0), memory=memory(d),
                oom=oom_kills(d, t0), cgroup_memory=cgroup_memory(d, t0),
                memory_kinds=memory_kinds(d, t0))
     # the documents open during each stage, at most
@@ -174,32 +209,28 @@ def cgroup(d: Path) -> dict:
     return out
 
 
-def users(d: Path) -> list[list]:
-    """The users k6 runs, once per bucket, from the progress lines of k6.log."""
-    by: dict[int, int] = {}
+def k6_series(d: Path, t0: int | None) -> tuple[list[list], list[list]]:
+    """From one read of k6.log: the users k6 runs, once per bucket, from its progress lines, and
+    [t, median ms, p95 ms, edits] of the keystrokes answered in each bucket, which is empty
+    without @p t0."""
+    users_by: dict[int, int] = {}
+    edits_by: dict[int, list[int]] = {}
     for line in _lines(d / "k6.log"):
-        m = VUS.match(line)
-        if m:
-            t = int(m.group(1)) * 60 + float(m.group(2))
-            by[int(t // STEP) * STEP] = int(m.group(3))
-    return [[t, n] for t, n in sorted(by.items())]
-
-
-def edits(d: Path, t0: int | None) -> list[list]:
-    """[t, median ms, p95 ms, edits] of the keystrokes answered in each bucket."""
-    if t0 is None:
-        return []
-    by: dict[int, list[int]] = {}
-    for line in _lines(d / "k6.log"):
-        m = EDIT.search(line)
-        if m:
-            t = (int(m.group(1)) - t0) / 1000
-            by.setdefault(int(t // STEP) * STEP, []).append(int(m.group(2)))
-    out = []
-    for t, ms in sorted(by.items()):
+        if line.startswith("running ("):
+            m = VUS.match(line)
+            if m:
+                t = int(m.group(1)) * 60 + float(m.group(2))
+                users_by[int(t // STEP) * STEP] = int(m.group(3))
+        elif t0 is not None and "EDIT t_ms=" in line:
+            m = EDIT.search(line)
+            if m:
+                t = (int(m.group(1)) - t0) / 1000
+                edits_by.setdefault(int(t // STEP) * STEP, []).append(int(m.group(2)))
+    edit_rows = []
+    for t, ms in sorted(edits_by.items()):
         ms.sort()
-        out.append([t, _pct(ms, 0.5), _pct(ms, 0.95), len(ms)])
-    return out
+        edit_rows.append([t, _pct(ms, 0.5), _pct(ms, 0.95), len(ms)])
+    return [[t, n] for t, n in sorted(users_by.items())], edit_rows
 
 
 def cpu(d: Path, t0: int | None) -> list[list]:
