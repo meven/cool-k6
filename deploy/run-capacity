@@ -8,6 +8,7 @@
 #   deploy/run-capacity --wait            queue behind a run of the timer
 #   deploy/run-capacity --gerrit 19945    build the current patch set of a Gerrit change first,
 #                                         or 19945/2 for one patch set, under the same lock
+#   deploy/run-capacity --ref origin/main build a ref of the online repository first, the same way
 #   deploy/run-capacity writer calc       one run for each CAP_SCENARIO named, one after the other
 #   deploy/run-capacity all               every scenario of cool-capacity-test.js
 #   CAP_VUS=10,20 deploy/run-capacity     any CAP_* variable of cool-capacity-test.js, and
@@ -29,12 +30,14 @@ SCENARIOS+=" writer-shared calc-shared impress-shared finance-shared"
 
 wait=
 change=
+ref=
 scenarios=()
 while [ $# -gt 0 ]; do
     case $1 in
         --wait) wait=1; shift ;;
         --gerrit) change=$2; shift 2 ;;
-        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --ref) ref=$2; shift 2 ;;
+        -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         all) read -ra scenarios <<< "$SCENARIOS"; shift ;;
         -*) echo "unknown argument: $1" >&2; exit 2 ;;
         *) [[ " $SCENARIOS " == *" $1 "* ]] || { echo "unknown scenario: $1" >&2; exit 2; }
@@ -50,11 +53,16 @@ set -a; . /etc/cool-perf.env; set +a
 take_lock "$wait"
 # The build is made under the same lock as the runs, so no other run can build another commit in
 # the tree between the two.
-if [ -n "$change" ]; then
-    ref=$(gerrit_ref "$change")
-    build_args=(--no-save --ref "$ref" --from "$GERRIT_URL/online")
+[ -z "$change" ] || [ -z "$ref" ] || { echo "give --gerrit or --ref, not both" >&2; exit 2; }
+if [ -n "$change" ] || [ -n "$ref" ]; then
+    if [ -n "$change" ]; then
+        ref=$(gerrit_ref "$change")
+        build_args=(--no-save --ref "$ref" --from "$GERRIT_URL/online")
+    else
+        build_args=(--no-save --ref "$ref")
+    fi
     [ "${COOL_PERF_ENGINE:-1}" = 1 ] && build_args+=(--engine)
-    echo "=== building $ref of change ${change%%/*}"
+    echo "=== building $ref${change:+ of change ${change%%/*}}"
     ./cool-build "${build_args[@]}"
 fi
 build_bundles

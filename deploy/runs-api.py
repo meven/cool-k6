@@ -250,12 +250,12 @@ def capacity_scenarios(argv: list[str], environment: str) -> list[str] | None:
     that runs something else."""
     if not argv or Path(argv[0]).name != "run-capacity":
         return None
-    # the arguments that are not options, nor the value of --gerrit
+    # the arguments that are not options, nor the value of --gerrit or --ref
     names, skip = [], False
     for a in argv[1:]:
         if skip:
             skip = False
-        elif a == "--gerrit":
+        elif a in ("--gerrit", "--ref"):
             skip = True
         elif not a.startswith("-"):
             names.append(a)
