@@ -1,16 +1,34 @@
 import express from 'express';
+import { readFileSync, statSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 
 let router = express.Router();
 export default router;
 
-import files from './files.json' with { type: 'json' };
+// files.json is read again whenever it changes on disk, so that a WOPI host left running serves
+// the documents that a later checkout adds.
+const FILES_JSON = new URL('./files.json', import.meta.url);
+let files = {};
+let filesMtimeMs = -1;
+function currentFiles() {
+    try {
+        const mtimeMs = statSync(FILES_JSON).mtimeMs;
+        if (mtimeMs !== filesMtimeMs) {
+            files = JSON.parse(readFileSync(FILES_JSON, 'utf8'));
+            filesMtimeMs = mtimeMs;
+        }
+    } catch (e) {
+        console.error(`files.json could not be read, keeping the last table: ${e}`);
+    }
+    return files;
+}
 
 // The capacity test opens a copy of a document for each group of users as "<id>~<group>",
 // because COOL keys a document on the path of its WOPISrc. Every copy serves the file of <id>.
 function fileFor(fileId) {
-    return files[fileId] ?? files[fileId.split('~')[0]];
+    const table = currentFiles();
+    return table[fileId] ?? table[fileId.split('~')[0]];
 }
 
 /* *
