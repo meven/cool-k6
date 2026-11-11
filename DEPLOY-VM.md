@@ -538,6 +538,50 @@ user. `capacity.json` names the capacity, the largest step that met every
 target, and `python3 latency-spikes.py <run dir>` lines the slow edits up with
 the timeline.
 
+**Heap profile of the server.** With `HEAPTRACK` set to a heaptrack that has
+`--follow-children`, a capacity run records every allocation of coolwsd,
+forkit, the kits and their background saves instead of a perf profile.
+`heap-report.py` then writes `heap.html` beside the other results, with the
+allocations, the temporary allocations, the peak and the leaks of each kind
+of process, a flamegraph of each, and the full stacks of the busiest process
+of each kind. The Capacity tab marks the run as a heap profile and links its
+page. heaptrack slows the server down several times, so give such a run one
+short step:
+
+```
+sudo systemd-run --unit=cool-perf-heap \
+  -p User=collabora -p Group=collabora \
+  -p EnvironmentFile=/etc/cool-perf.env \
+  -p WorkingDirectory=/home/collabora/perf-dashboard \
+  -p Delegate=yes -p TimeoutStartSec=12h \
+  -p KillMode=control-group \
+  -p Environment=HEAPTRACK=/opt/heaptrack/bin/heaptrack \
+  -p Environment=CAP_VUS=10 -p Environment=CAP_HOLD=180s \
+  deploy/run-capacity --wait finance-shared
+```
+
+Every process writes its raw trace into `heaptrack/` of the run while it
+runs, about 200 MB a minute for a kit that a user edits, and
+`heap-report.py` deletes them once it has drawn the flamegraphs. Interpreting
+them takes a few minutes after k6 ends. heaptrack also makes each process
+larger, so a scenario with many documents may need a larger `SERVER_MEMORY`.
+
+`--follow-children` is on the branch `work/meven/follow-children` of
+heaptrack. To build it into `/opt/heaptrack`:
+
+```
+sudo apt-get install -y libunwind-dev libdw-dev zstd \
+  libboost-iostreams-dev libboost-program-options-dev \
+  libboost-filesystem-dev libboost-container-dev
+git clone -b work/meven/follow-children \
+  https://invent.kde.org/sdk/heaptrack.git heaptrack
+cmake -S heaptrack -B heaptrack/build \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DHEAPTRACK_BUILD_GUI=OFF \
+  -DCMAKE_INSTALL_PREFIX=/opt/heaptrack
+cmake --build heaptrack/build -j4
+sudo cmake --install heaptrack/build
+```
+
 **Updating perf-dashboard.** Pull the new commit (see step 1), then run
 `deploy/setup-vm --no-packages` as root if anything in `deploy/` changed. The
 next run rebuilds the test bundles by itself, because they are rebuilt whenever

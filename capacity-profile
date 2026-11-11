@@ -30,6 +30,13 @@
 #                    run on the other cores, so the server has its cores to itself.
 #   METRICS_INTERVAL - seconds between two samples of coolwsd's /cool/getMetrics (default 10)
 #   METRICS_AUTH   - admin console user:password for /cool/getMetrics (default admin:admin)
+#   HEAPTRACK      - a heaptrack with --follow-children, to record the allocations of coolwsd,
+#                    forkit, the kits and their background saves instead of a perf profile.
+#                    heap-report.py then writes heap.html, heaptrack.json, and per kind of
+#                    process flamegraphs of the peak, the allocations, the temporary allocations
+#                    and the leaks. heaptrack slows the server down several times, so the
+#                    capacity of such a run says nothing: use a few users, and the default
+#                    SERVER_MEMORY leaves room for what heaptrack adds to each process.
 #
 # Outputs in OUT_DIR: coolwsd.log and wopi.log when started here, k6.log, capacity.json, perf.data
 # (coolwsd, forkit and kits), perf.log, flamegraph.svg, and with a server cgroup perf-stat.csv
@@ -85,6 +92,19 @@ wait_up() {
 mkdir -p "$OUT_DIR"
 chmod o+w "$OUT_DIR"
 echo "output: $OUT_DIR"
+
+if [ -n "${HEAPTRACK:-}" ]; then
+    [ -x "$HEAPTRACK" ] || die "HEAPTRACK=$HEAPTRACK is not an executable heaptrack"
+    heaptrack_help=$("$HEAPTRACK" --help 2>&1 || true)
+    [[ $heaptrack_help == *--follow-children* ]] \
+        || die "$HEAPTRACK has no --follow-children, which the kits that forkit forks need"
+    command -v zstd >/dev/null && command -v flamegraph.pl >/dev/null \
+        || die "heap-report.py needs zstd and flamegraph.pl on PATH"
+    # perf and heaptrack would each slow down what the other measures.
+    NO_PERF=1
+    echo "heaptrack: $HEAPTRACK" > "$OUT_DIR/heap-profile"
+    mkdir -p "$OUT_DIR/heaptrack"
+fi
 
 # The WOPI host's certificate is signed by a local CA that coolwsd is told to trust, so coolwsd
 # verifies the host as it would in production. Both are created the first time they are missing.
@@ -195,11 +215,16 @@ if ! cool_up; then
                    <<< "$cool_cmd")
     # A release build verifies the WOPI host (SSL_VERIFY in configure.ac), against this CA.
     cool_cmd+=" --o:storage.ssl.ca_file_path=$TLS_DIR/ca-cert.pem"
+    # Each process writes its raw trace while it runs, and heap-report.py interprets them in
+    # parallel once coolwsd ends.
+    [ -z "${HEAPTRACK:-}" ] \
+        || cool_cmd="$HEAPTRACK --follow-children --raw -o $OUT_DIR/heaptrack/ht $cool_cmd"
     echo "starting coolwsd: $cool_cmd"
     # shellcheck disable=SC2086 # the command line is split into its words on purpose
     (echo "$BASHPID" > "$SERVER_CG/cgroup.procs"
      cd "$COOLWSD_DIR" && exec setsid $cool_cmd) > "$OUT_DIR/coolwsd.log" 2>&1 < /dev/null &
     STARTED_PIDS+=($!)
+    COOL_STARTED_PID=$!
     wait_up cool_up 90 || die "coolwsd did not come up, see $OUT_DIR/coolwsd.log"
 fi
 
@@ -223,6 +248,10 @@ openssl s_client -connect "$wopi_hostport" -servername localhost -CAfile "$TLS_D
            "$TLS_DIR/ca-cert.pem, so coolwsd would refuse every session"
 
 COOLWSD_PID=$(pgrep -o -x coolwsd) || die "no coolwsd process"
+if [ -n "${HEAPTRACK:-}" ]; then
+    [ -n "${COOL_STARTED_PID:-}" ] || die "HEAPTRACK needs a coolwsd that this script starts"
+    FORKIT_PID=$(pgrep -o -x forkit) || die "no forkit process"
+fi
 if [ -z "${NO_PERF:-}" ]; then
     command -v stackcollapse-perf.pl >/dev/null && command -v flamegraph.pl >/dev/null \
         || die "stackcollapse-perf.pl and flamegraph.pl must be on PATH (FlameGraph), or set NO_PERF=1"
@@ -429,6 +458,21 @@ kill "$TIMELINE_PID" 2>/dev/null || true
 wait "$TIMELINE_PID" 2>/dev/null || true
 TIMELINE_PID=
 stop_perf
+
+if [ -n "${HEAPTRACK:-}" ]; then
+    # The kits write the end of their traces as they exit, and heaptrack compresses every trace
+    # once coolwsd ends.
+    kill -TERM "$COOLWSD_PID" 2>/dev/null || true
+    for i in $(seq 600); do
+        kill -0 "$COOL_STARTED_PID" 2>/dev/null || break
+        sleep 1
+    done
+    kill -0 "$COOL_STARTED_PID" 2>/dev/null \
+        && echo "heaptrack still runs 600 s after coolwsd was asked to stop" >&2
+    python3 "$ROOT/heap-report.py" "$OUT_DIR" --heaptrack "$HEAPTRACK" \
+        --coolwsd-pid "$COOLWSD_PID" --forkit-pid "$FORKIT_PID" --jobs "$(nproc)" \
+        || echo "heap-report.py failed" >&2
+fi
 
 memory_floor=
 if [ -e "$OUT_DIR/.memory-floor" ]; then
