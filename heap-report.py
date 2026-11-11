@@ -9,7 +9,8 @@ that exec started. This script:
   - interprets the raw traces in parallel, into ht.<pid>.zst data files;
   - names the kind of each process: coolwsd and forkit by the pids given, the kits, their
     background saves and the spare kits by the names in events.csv, any other process "other";
-  - writes heap-<kind>-<cost>.svg, a flamegraph of the stacks of all the processes of a kind,
+  - writes heap-all-<cost>.svg, a flamegraph of every process with the frames of each kind in
+    colours of their own, and heap-<kind>-<cost>.svg, the stacks of the processes of one kind,
     for the costs peak (bytes held at the peak of each process), allocations (calls),
     temporary (allocations freed before any other allocation) and leaked (bytes still held
     when the process ended);
@@ -34,6 +35,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import zlib
 from pathlib import Path
 
 COSTS = ("peak", "allocations", "temporary", "leaked")
@@ -186,7 +189,7 @@ the same time. A temporary allocation is freed before any other allocation.</p>
 """
 
 
-def page(run: str, kinds: dict) -> str:
+def page(run: str, kinds: dict, every: dict[str, str]) -> str:
     def mb(n):
         return f"{n / 1e6:.1f} MB"
 
@@ -204,7 +207,73 @@ def page(run: str, kinds: dict) -> str:
             f"<td>{mb(k['peak_sum'])}</td><td>{mb(k['leaked'])}</td><td class='l'>{links}</td>"
             f"<td class='l'>" + (f'<a href="{html.escape(report)}">text</a>' if report else "")
             + "</td></tr>")
+    if every:
+        links = " ".join(f'<a href="{html.escape(name)}">{cost}</a>'
+                         for cost, name in every.items())
+        rows.insert(0, "<tr><td>every process</td><td></td><td></td><td></td><td></td><td></td>"
+                       f"<td></td><td></td><td class='l'>{links}</td><td></td></tr>")
     return PAGE.format(run=html.escape(run), rows="\n".join(rows))
+
+
+# The combined flamegraph puts each process under the frame of its side, as the perf flamegraph of
+# the run does, and tags every frame of a kind with an annotation that flamegraph.pl hides from
+# the name it shows and searches. The frames of each kind then take colours of their own from
+# palette.map, which flamegraph.pl --cp reads by the full frame name, annotation included. The
+# document kits keep the default red to yellow, and the helpers that coolwsd starts take its
+# colour.
+TAGS = {"coolwsd": "_[i]", "other": "_[i]", "forkit": "_[w]", "bgsave": "_[j]", "spare": "_[k]",
+        "kit": ""}
+SIDES = {"coolwsd": "[coolwsd and forkit]", "forkit": "[coolwsd and forkit]",
+         "other": "[coolwsd and forkit]"}
+KIT_SIDE = "[kit]"
+PROCESS_FRAME = {"kit": "kitbroker", "bgsave": "kitbgsv", "spare": "kit_spare",
+                 "coolwsd": "coolwsd", "forkit": "forkit", "other": "coolwsd helper"}
+LEGEND = ("aqua: coolwsd, purple: forkit, red to yellow: document kit, green: background save, "
+          "blue grey: spare kit")
+
+
+def tagged(kind: str, stack: str) -> str:
+    """@p stack of a process of @p kind, under the frame of its side and of its kind, with
+    every frame tagged. The side of coolwsd keeps the coolwsd tag, so that coolwsd and forkit
+    stay one block."""
+    tag = TAGS.get(kind, "")
+    side = SIDES.get(kind, KIT_SIDE)
+    side_tag = TAGS["coolwsd"] if side != KIT_SIDE else ""
+    frames = [PROCESS_FRAME.get(kind, kind), *stack.split(";")]
+    return ";".join([side + side_tag, *(f + tag for f in frames)])
+
+
+def colour(name: str) -> tuple[int, int, int] | None:
+    """The colour of a tagged frame, varied a little by its name, or None for a frame of a
+    document kit."""
+    v = (zlib.crc32(name.encode()) % 1000) / 1000
+    if name.endswith(TAGS["forkit"]):
+        return 150 + int(50 * v), 110 + int(50 * v), 210 + int(40 * v)
+    if name.endswith(TAGS["coolwsd"]):
+        return 50 + int(60 * v), 165 + int(55 * v), 165 + int(55 * v)
+    if name.endswith(TAGS["bgsave"]):
+        return 90 + int(60 * v), 170 + int(50 * v), 70 + int(40 * v)
+    if name.endswith(TAGS["spare"]):
+        return 120 + int(40 * v), 140 + int(40 * v), 175 + int(40 * v)
+    return None
+
+
+def folded_text(stacks: dict[str, int]) -> str:
+    return "".join(f"{s} {n}\n" for s, n in stacks.items())
+
+
+def render_all(stacks: dict[str, int], cost: str, svg: Path) -> None:
+    names = {f for s in stacks for f in s.split(";")}
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(Path(tmp) / "palette.map", "w") as pal:
+            for name in sorted(names):
+                rgb = colour(name)
+                if rgb:
+                    pal.write(f"{name}->rgb({rgb[0]},{rgb[1]},{rgb[2]})\n")
+        with open(svg, "w") as f:
+            subprocess.run(["flamegraph.pl", "--cp", "--title", f"every process: {cost}",
+                            "--subtitle", LEGEND, "--countname", COUNT_NAMES[cost]],
+                           input=folded_text(stacks), text=True, stdout=f, cwd=tmp)
 
 
 def main() -> None:
@@ -260,29 +329,38 @@ def main() -> None:
         k["temporary_share"] = round(k["temporary"] / k["allocations"], 4) if k["allocations"] \
             else None
 
-    # One flamegraph per kind and cost, from the stacks of all its processes.
-    jobs = [(kind, cost) for kind in kinds for cost in COSTS]
+    # The stacks of each process for each cost, read once for the flamegraphs of its kind and
+    # for the one of every process.
+    pairs = [(i, cost) for i in range(len(processes)) for cost in COSTS]
+    folded_of = dict(zip(pairs, pool.map(
+        lambda pair: stacks(printer, processes[pair[0]]["file"], pair[1]), pairs)))
 
     def draw(job):
         kind, cost = job
         merged: dict[str, int] = {}
-        for proc in processes:
-            if proc["kind"] == kind:
-                for stack, n in stacks(printer, proc["file"], cost).items():
+        for i, proc in enumerate(processes):
+            if kind == "all" or proc["kind"] == kind:
+                for stack, n in folded_of[(i, cost)].items():
+                    if kind == "all":
+                        stack = tagged(proc["kind"], stack)
                     merged[stack] = merged.get(stack, 0) + n
         if not merged:
             return None
         svg = args.out_dir / f"heap-{kind}-{cost}.svg"
-        folded = "".join(f"{s} {n}\n" for s, n in merged.items())
-        with open(svg, "w") as f:
-            subprocess.run(["flamegraph.pl", "--title", f"{kind}: {cost}", "--countname",
-                            COUNT_NAMES[cost], "--colors", "mem"],
-                           input=folded, text=True, stdout=f)
+        if kind == "all":
+            render_all(merged, cost, svg)
+        else:
+            with open(svg, "w") as f:
+                subprocess.run(["flamegraph.pl", "--title", f"{kind}: {cost}", "--countname",
+                                COUNT_NAMES[cost], "--colors", "mem"],
+                               input=folded_text(merged), text=True, stdout=f)
         return svg.name
 
+    jobs = [(kind, cost) for kind in ["all", *kinds] for cost in COSTS]
     drawn = {job: name for job, name in zip(jobs, pool.map(draw, jobs)) if name}
+    every: dict[str, str] = {}
     for (kind, cost), name in drawn.items():
-        kinds[kind].setdefault("flamegraphs", {})[cost] = name
+        (every if kind == "all" else kinds[kind].setdefault("flamegraphs", {}))[cost] = name
 
     # The report of the busiest process of each kind, with the full stacks of its most temporary
     # allocations and of its peak.
@@ -301,10 +379,10 @@ def main() -> None:
     for kind, name in zip(list(kinds), pool.map(report, list(kinds))):
         kinds[kind]["report"] = name
 
-    result = {"kinds": kinds,
+    result = {"kinds": kinds, "flamegraphs": every,
               "processes": [{k: v for k, v in p.items() if k != "file"} for p in processes]}
     (args.out_dir / "heaptrack.json").write_text(json.dumps(result, indent=2) + "\n")
-    (args.out_dir / "heap.html").write_text(page(args.out_dir.resolve().name, kinds))
+    (args.out_dir / "heap.html").write_text(page(args.out_dir.resolve().name, kinds, every))
     if not args.keep_data:
         for p in trace_dir.glob("ht.*"):
             p.unlink()
