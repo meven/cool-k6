@@ -35,6 +35,7 @@ Run:
     python3 documents/gen-docs.py --mb 2     # smaller, for a quick check
 """
 import argparse
+import datetime
 import io
 import shutil
 import subprocess
@@ -59,9 +60,17 @@ from odf.text import (P, H, Span, Tab, TableOfContent, TableOfContentSource,
                       IndexTitle, IndexEntryLinkStart, IndexEntryChapter,
                       IndexEntryText, IndexEntryTabStop, IndexEntryPageNumber,
                       IndexEntryLinkEnd)
-from odf.table import Table, TableColumn, TableRow, TableCell
-from odf.draw import (Page, Frame, Image, Rect, Ellipse, Line, Polygon, TextBox,
-                      CustomShape, EnhancedGeometry)
+from odf.table import (Table, TableColumn, TableRow, TableCell, Shapes, DatabaseRanges,
+                       DatabaseRange, DataPilotTables, DataPilotTable, SourceCellRange,
+                       DataPilotField, DataPilotLevel, DataPilotSubtotals, DataPilotSubtotal)
+from odf.style import (TableColumnProperties, TableCellProperties, ChartProperties,
+                       GraphicProperties)
+from odf.number import (NumberStyle, Number, PercentageStyle, DateStyle, Year, Month, Day,
+                        Text as NumberText)
+from odf.opendocument import OpenDocumentChart
+from odf import chart
+from odf.draw import (Page, Frame, Image, Object as DrawObject, Rect, Ellipse, Line, Polygon,
+                      TextBox, CustomShape, EnhancedGeometry)
 
 OUT = Path(__file__).resolve().parent
 RNG = random.Random(20260813)
@@ -279,6 +288,376 @@ def build_calc(target: int, blank: bool, label: str) -> None:
         doc.spreadsheet.addElement(tbl)
         sheet += 1
     doc.save(str(OUT / f"calc-{label}.ods"))
+
+
+# calc-finance.ods: the sales ledger of a company over three years, the way a finance team keeps
+# one. The Sales sheet has one row per order line, with formulas for the year, the quarter, the
+# revenue, the cost and the margin. The Pivot sheet holds a pivot table of the revenue by region,
+# product line and year. The Charts sheet has four charts over SUMIFS tables of the ledger, so an
+# edit of the ledger recalculates the tables and redraws the charts. Every value is derived from a
+# fixed seed, so the document is the same on every machine.
+FINANCE_ROWS = 12000
+FINANCE_YEARS = (2023, 2024, 2025)
+FINANCE_REGIONS = {
+    "Europe": (0.38, ["France", "Germany", "Italy", "Spain", "United Kingdom", "Netherlands"]),
+    "North America": (0.34, ["United States", "Canada"]),
+    "Asia Pacific": (0.18, ["Japan", "Australia", "Singapore"]),
+    "Latin America": (0.10, ["Brazil", "Mexico"]),
+}
+# product line, product, list price and unit cost in the first year, units of one order line
+FINANCE_PRODUCTS = [
+    ("Hardware", "Laptop 14", 1150.0, 790.0, (1, 40)),
+    ("Hardware", "Laptop 16", 1590.0, 1080.0, (1, 25)),
+    ("Hardware", "Monitor 27", 380.0, 245.0, (2, 60)),
+    ("Hardware", "Docking station", 240.0, 130.0, (2, 60)),
+    ("Software", "Office suite licence", 180.0, 25.0, (5, 250)),
+    ("Software", "Security suite", 95.0, 12.0, (5, 300)),
+    ("Software", "Backup service", 60.0, 14.0, (5, 200)),
+    ("Services", "Installation", 450.0, 290.0, (1, 12)),
+    ("Services", "Training day", 900.0, 520.0, (1, 8)),
+    ("Services", "Support contract", 1200.0, 610.0, (1, 15)),
+    ("Accessories", "Headset", 85.0, 38.0, (5, 120)),
+    ("Accessories", "Keyboard", 55.0, 22.0, (5, 150)),
+    ("Accessories", "Mouse", 30.0, 11.0, (5, 200)),
+]
+# channel, share of the order lines, and the range of its discount
+FINANCE_CHANNELS = [("Direct", 0.45, (0.0, 0.10)), ("Partner", 0.35, (0.15, 0.25)),
+                    ("Online", 0.20, (0.0, 0.05))]
+# the orders of each month against an average month: a quiet August, a strong fourth quarter
+FINANCE_SEASON = [0.85, 0.9, 1.0, 0.95, 1.0, 1.0, 0.9, 0.7, 1.05, 1.05, 1.15, 1.4]
+FINANCE_COLOURS = ["#2a6fdb", "#e8833a", "#3aa76d", "#c43c5c"]
+FINANCE_HEADERS = ["Order date", "Order ID", "Year", "Quarter", "Region", "Country", "Channel",
+                   "Product line", "Product", "Units", "Unit price", "Discount", "Revenue",
+                   "Unit cost", "Cost", "Gross margin", "Margin %"]
+
+
+def finance_ledger() -> list[dict]:
+    """The order lines of the ledger, sorted by date, with the values that the formulas of the
+    Sales sheet compute."""
+    rng = random.Random(20261111)
+    months = [(y, m) for y in FINANCE_YEARS for m in range(1, 13)]
+    # 9% more orders each year
+    weights = [FINANCE_SEASON[m - 1] * 1.09 ** (y - FINANCE_YEARS[0]) for y, m in months]
+    total = sum(weights)
+    counts = [round(FINANCE_ROWS * w / total) for w in weights]
+    counts[-1] += FINANCE_ROWS - sum(counts)
+    regions = list(FINANCE_REGIONS)
+    region_weights = [FINANCE_REGIONS[r][0] for r in regions]
+    rows, serial = [], {}
+    for (y, m), count in zip(months, counts):
+        last = (datetime.date(y + (m == 12), m % 12 + 1, 1) - datetime.timedelta(days=1)).day
+        for day in sorted(rng.randint(1, last) for _ in range(count)):
+            region = rng.choices(regions, region_weights)[0]
+            line, product, price, cost, (low, high) = rng.choice(FINANCE_PRODUCTS)
+            channel, _, (dlow, dhigh) = rng.choices(
+                FINANCE_CHANNELS, [c[1] for c in FINANCE_CHANNELS])[0]
+            serial[y] = serial.get(y, 0) + 1
+            grow = y - FINANCE_YEARS[0]
+            units = rng.randint(low, high)
+            unit_price = round(price * 1.03 ** grow, 2)
+            discount = round(rng.uniform(dlow, dhigh) * 200) / 200
+            unit_cost = round(cost * 1.02 ** grow, 2)
+            revenue = units * unit_price * (1 - discount)
+            rows.append({
+                "date": datetime.date(y, m, day), "id": f"SO-{y}-{serial[y]:05d}", "year": y,
+                "quarter": f"Q{(m + 2) // 3}", "region": region,
+                "country": rng.choice(FINANCE_REGIONS[region][1]), "channel": channel,
+                "line": line, "product": product, "units": units, "price": unit_price,
+                "discount": discount, "revenue": revenue, "unit_cost": unit_cost,
+                "cost": units * unit_cost,
+            })
+    return rows
+
+
+def _finance_styles(doc) -> dict[str, Style]:
+    """The cell and column styles of the finance workbook, by a short name."""
+    def data_style(style, *parts):
+        for part in parts:
+            style.addElement(part)
+        doc.automaticstyles.addElement(style)
+        return style
+
+    data_style(NumberStyle(name="NAmount"),
+               Number(decimalplaces=2, minintegerdigits=1, grouping="true"))
+    data_style(NumberStyle(name="NCount"), Number(decimalplaces=0, minintegerdigits=1))
+    data_style(PercentageStyle(name="NPercent"),
+               Number(decimalplaces=1, minintegerdigits=1), NumberText(text="%"))
+    data_style(DateStyle(name="NDate"), Year(style="long"), NumberText(text="-"),
+               Month(style="long"), NumberText(text="-"), Day(style="long"))
+    data_style(DateStyle(name="NMonth"), Month(textual="true"), NumberText(text=" "),
+               Year(style="long"))
+    styles = {}
+    for name, data in (("amount", "NAmount"), ("count", "NCount"), ("percent", "NPercent"),
+                       ("date", "NDate"), ("month", "NMonth")):
+        style = Style(name=f"c{name}", family="table-cell", datastylename=data)
+        doc.automaticstyles.addElement(style)
+        styles[name] = style
+    header = Style(name="cheader", family="table-cell")
+    header.addElement(TextProperties(fontweight="bold"))
+    header.addElement(TableCellProperties(backgroundcolor="#dde4ee"))
+    doc.automaticstyles.addElement(header)
+    styles["header"] = header
+    title = Style(name="ctitle", family="table-cell")
+    title.addElement(TextProperties(fontweight="bold", fontsize="14pt"))
+    doc.automaticstyles.addElement(title)
+    styles["title"] = title
+    for width in ("2.2cm", "2.6cm", "3.4cm"):
+        style = Style(name=f"col{width.replace('.', '')}", family="table-column")
+        style.addElement(TableColumnProperties(columnwidth=width))
+        doc.automaticstyles.addElement(style)
+        styles[width] = style
+    return styles
+
+
+def _cell(value=None, style=None, formula=None):
+    """A cell of @p value: a str, a float or int, or a datetime.date."""
+    kw = {"stylename": style} if style is not None else {}
+    if formula:
+        kw["formula"] = formula
+    if value is None:
+        return TableCell(**kw)
+    if isinstance(value, datetime.date):
+        cell = TableCell(valuetype="date", datevalue=value.isoformat(), **kw)
+        text = value.isoformat()
+    elif isinstance(value, str):
+        cell = TableCell(valuetype="string", **({"stringvalue": value} if formula else {}), **kw)
+        text = value
+    elif (isinstance(value, float) and style is not None
+          and style.getAttribute("name") == "cpercent"):
+        cell = TableCell(valuetype="percentage", value=value, **kw)
+        text = f"{100 * value:.1f}%"
+    else:
+        cell = TableCell(valuetype="float", value=value, **kw)
+        text = f"{value:.2f}" if isinstance(value, float) else str(value)
+    cell.addElement(P(text=text))
+    return cell
+
+
+def _columns(table, styles, widths):
+    for width in widths:
+        table.addElement(TableColumn(stylename=styles[width]))
+
+
+def _finance_chart(doc, shapes, title, kind, x, y, categories, series, labels_row):
+    """A chart over cells of the Charts sheet. @p categories is (first row, last row, column)
+    of the category names, @p series the columns of the values in those rows, and row
+    @p labels_row holds the name of each series."""
+    first, last, cat_col = categories
+    obj = OpenDocumentChart()
+    axis_style = Style(name="axis", family="chart")
+    axis_style.addElement(ChartProperties(displaylabel="true"))
+    axis_style.addElement(TextProperties(fontsize="8pt"))
+    obj.automaticstyles.addElement(axis_style)
+    series_styles = []
+    for n, colour in enumerate(FINANCE_COLOURS[:len(series)]):
+        style = Style(name=f"series{n}", family="chart")
+        style.addElement(GraphicProperties(stroke="solid", strokecolor=colour,
+                                           strokewidth="0.05cm", fillcolor=colour))
+        if kind == "line":
+            style.addElement(ChartProperties(symboltype="none"))
+        obj.automaticstyles.addElement(style)
+        series_styles.append(style)
+    root = chart.Chart(attributes={"class": f"chart:{kind}", "width": "15cm", "height": "9cm"})
+    t = chart.Title()
+    t.addElement(P(text=title))
+    root.addElement(t)
+    root.addElement(chart.Legend(attributes={"legendposition": "bottom"}))
+    ranges = [f"Charts.{cat_col}{labels_row}:Charts.{cat_col}{last}"]
+    ranges += [f"Charts.{c}{labels_row}:Charts.{c}{last}" for c in series]
+    area = chart.PlotArea(attributes={"cellrangeaddress": " ".join(ranges),
+                                      "datasourcehaslabels": "both"})
+    xaxis = chart.Axis(dimension="x", name="primary-x", stylename=axis_style)
+    xaxis.addElement(chart.Categories(
+        cellrangeaddress=f"Charts.{cat_col}{first}:Charts.{cat_col}{last}"))
+    area.addElement(xaxis)
+    yaxis = chart.Axis(dimension="y", name="primary-y", stylename=axis_style)
+    yaxis.addElement(chart.Grid(attributes={"class": "major"}))
+    area.addElement(yaxis)
+    for c, style in zip(series, series_styles):
+        attributes = {"valuescellrangeaddress": f"Charts.{c}{first}:Charts.{c}{last}",
+                      "labelcelladdress": f"Charts.{c}{labels_row}", "class": f"chart:{kind}"}
+        # A pie colours each slice on its own.
+        if kind != "circle":
+            attributes["stylename"] = style
+        area.addElement(chart.Series(attributes=attributes))
+    root.addElement(area)
+    obj.chart.addElement(root)
+    href = doc.addObject(obj)
+    f = Frame(width="15cm", height="9cm", x=x, y=y)
+    f.addElement(DrawObject(href=href, notifyonupdateofranges=" ".join(ranges)))
+    shapes.addElement(f)
+
+
+def build_calc_finance() -> None:
+    """documents/calc-finance.ods, see FINANCE_ROWS above."""
+    rows = finance_ledger()
+    last = len(rows) + 1
+    doc = OpenDocumentSpreadsheet()
+    st = _finance_styles(doc)
+
+    # The Sales sheet: the ledger.
+    sales = Table(name="Sales")
+    _columns(sales, st, ["2.6cm", "3.4cm", "2.2cm", "2.2cm", "3.4cm", "3.4cm", "2.2cm", "3.4cm",
+                         "3.4cm", "2.2cm", "2.6cm", "2.2cm", "2.6cm", "2.6cm", "2.6cm", "2.6cm",
+                         "2.2cm"])
+    head = TableRow()
+    for name in FINANCE_HEADERS:
+        head.addElement(_cell(name, st["header"]))
+    sales.addElement(head)
+    for i, r in enumerate(rows, start=2):
+        row = TableRow()
+        margin = r["revenue"] - r["cost"]
+        for value, style, formula in (
+                (r["date"], st["date"], None),
+                (r["id"], None, None),
+                (r["year"], None, f"of:=YEAR([.A{i}])"),
+                (r["quarter"], None, f'of:="Q"&ROUNDUP(MONTH([.A{i}])/3;0)'),
+                (r["region"], None, None), (r["country"], None, None),
+                (r["channel"], None, None), (r["line"], None, None),
+                (r["product"], None, None),
+                (r["units"], st["count"], None),
+                (r["price"], st["amount"], None),
+                (r["discount"], st["percent"], None),
+                (r["revenue"], st["amount"], f"of:=[.J{i}]*[.K{i}]*(1-[.L{i}])"),
+                (r["unit_cost"], st["amount"], None),
+                (r["cost"], st["amount"], f"of:=[.J{i}]*[.N{i}]"),
+                (margin, st["amount"], f"of:=[.M{i}]-[.O{i}]"),
+                (margin / r["revenue"] if r["revenue"] else 0.0, st["percent"],
+                 f"of:=IF([.M{i}]=0;0;[.P{i}]/[.M{i}])")):
+            row.addElement(_cell(value, style, formula))
+        sales.addElement(row)
+    doc.spreadsheet.addElement(sales)
+
+    # The Pivot sheet: the revenue by region and product line, one column per year. The cells
+    # hold the output that the pivot table computes, as an office suite saves it.
+    regions = sorted(FINANCE_REGIONS)
+    lines = sorted({p[0] for p in FINANCE_PRODUCTS})
+    sums: dict[tuple, float] = {}
+    for r in rows:
+        sums[(r["region"], r["line"], r["year"])] = (
+            sums.get((r["region"], r["line"], r["year"]), 0.0) + r["revenue"])
+    pivot = Table(name="Pivot")
+    _columns(pivot, st, ["3.4cm", "3.4cm", "2.6cm", "2.6cm", "2.6cm", "2.6cm"])
+
+    def pivot_row(*cells):
+        row = TableRow()
+        for c in cells:
+            row.addElement(c)
+        pivot.addElement(row)
+
+    pivot_row(_cell("Sum - Revenue"), _cell(), _cell("Year"))
+    pivot_row(_cell("Region"), _cell("Product line"),
+              *[_cell(y) for y in FINANCE_YEARS], _cell("Total Result"))
+    for region in regions:
+        for n, line in enumerate(lines):
+            values = [sums.get((region, line, y), 0.0) for y in FINANCE_YEARS]
+            pivot_row(_cell(region) if n == 0 else _cell(), _cell(line),
+                      *[_cell(v, st["amount"]) for v in values + [sum(values)]])
+        values = [sum(sums.get((region, line, y), 0.0) for line in lines) for y in FINANCE_YEARS]
+        pivot_row(_cell(f"{region} Result"), _cell(),
+                  *[_cell(v, st["amount"]) for v in values + [sum(values)]])
+    values = [sum(v for (_, _, y), v in sums.items() if y == year) for year in FINANCE_YEARS]
+    pivot_row(_cell("Total Result"), _cell(),
+              *[_cell(v, st["amount"]) for v in values + [sum(values)]])
+    pivot_last = 2 + len(regions) * (len(lines) + 1) + 1
+    doc.spreadsheet.addElement(pivot)
+
+    # The Charts sheet: four charts on the left, over SUMIFS tables of the ledger on the right.
+    charts = Table(name="Charts")
+    shapes = Shapes()
+    charts.addElement(shapes)
+    _columns(charts, st, ["2.6cm"] * 13 + ["2.6cm", "3.4cm", "3.4cm", "3.4cm", "2.2cm", "2.2cm",
+                                            "3.4cm", "3.4cm", "3.4cm", "3.4cm"])
+    def rng(col: str) -> str:
+        """The cells of column @p col of the ledger, below its header."""
+        return f"[$Sales.${col}$2:.${col}${last}]"
+
+    months = [datetime.date(y, m, 1) for y in FINANCE_YEARS for m in range(1, 13)]
+    monthly = {}
+    for r in rows:
+        key = r["date"].replace(day=1)
+        rev, cost = monthly.get(key, (0.0, 0.0))
+        monthly[key] = (rev + r["revenue"], cost + r["cost"])
+    by_region = {(r_, y): 0.0 for r_ in regions for y in FINANCE_YEARS}
+    by_channel = {c[0]: 0.0 for c in FINANCE_CHANNELS}
+    for r in rows:
+        by_region[(r["region"], r["year"])] += r["revenue"]
+        by_channel[r["channel"]] += r["revenue"]
+
+    # row 1 the title, row 3 the headers, rows 4 to 39 the months
+    title_row = [_cell("Sales summary", st["title"])]
+    header = [_cell(h, st["header"]) for h in ("Month", "Revenue", "Cost", "Gross margin",
+                                               "Margin %")]
+    header += [_cell(), _cell("Region", st["header"])]
+    header += [_cell(y, st["header"]) for y in FINANCE_YEARS]
+    body = []
+    for n, month in enumerate(months):
+        i = 4 + n
+        rev, cost = monthly.get(month, (0.0, 0.0))
+        when = (f'{rng("A")};">="&[.N{i}];{rng("A")};"<"&EDATE([.N{i}];1)')
+        cells = [_cell(month, st["month"]),
+                 _cell(rev, st["amount"], f"of:=SUMIFS({rng('M')};{when})"),
+                 _cell(cost, st["amount"], f"of:=SUMIFS({rng('O')};{when})"),
+                 _cell(rev - cost, st["amount"], f"of:=[.O{i}]-[.P{i}]"),
+                 _cell((rev - cost) / rev if rev else 0.0, st["percent"],
+                       f"of:=IF([.O{i}]=0;0;[.Q{i}]/[.O{i}])"),
+                 _cell()]
+        if n < len(regions):
+            region = regions[n]
+            cells.append(_cell(region))
+            for col, y in zip("UVW", FINANCE_YEARS):
+                cells.append(_cell(by_region[(region, y)], st["amount"],
+                                   f"of:=SUMIFS({rng('M')};{rng('E')};[.$T{i}];"
+                                   f"{rng('C')};[.{col}$3])"))
+        elif n == 6:
+            cells += [_cell("Channel", st["header"]), _cell("Revenue", st["header"])]
+        elif 7 <= n < 7 + len(FINANCE_CHANNELS):
+            channel = FINANCE_CHANNELS[n - 7][0]
+            cells += [_cell(channel), _cell(by_channel[channel], st["amount"],
+                                            f"of:=SUMIFS({rng('M')};{rng('G')};[.$T{i}])")]
+        body.append(cells)
+    # The tables start in column N, right of the charts.
+    for n, cells in enumerate([title_row, [], header] + body):
+        row = TableRow()
+        for c in cells if n == 0 else [_cell() for _ in range(13)] + cells:
+            row.addElement(c)
+        charts.addElement(row)
+    end = 3 + len(months)
+    _finance_chart(doc, shapes, "Monthly revenue and gross margin", "line", "0.3cm", "1.2cm",
+                   (4, end, "N"), ["O", "Q"], 3)
+    _finance_chart(doc, shapes, "Revenue by region", "bar", "15.8cm", "1.2cm",
+                   (4, 3 + len(regions), "T"), ["U", "V", "W"], 3)
+    _finance_chart(doc, shapes, "Revenue by channel", "circle", "0.3cm", "10.7cm",
+                   (11, 10 + len(FINANCE_CHANNELS), "T"), ["U"], 10)
+    _finance_chart(doc, shapes, "Gross margin %", "line", "15.8cm", "10.7cm",
+                   (4, end, "N"), ["R"], 3)
+    doc.spreadsheet.addElement(charts)
+
+    ranges = DatabaseRanges()
+    ranges.addElement(DatabaseRange(name="__Anonymous_Sheet_DB__0",
+                                    targetrangeaddress=f"Sales.A1:Sales.Q{last}",
+                                    displayfilterbuttons="true"))
+    doc.spreadsheet.addElement(ranges)
+    pilots = DataPilotTables()
+    table = DataPilotTable(name="Revenue by region",
+                           targetrangeaddress=f"Pivot.A1:Pivot.F{pivot_last}",
+                           buttons="Pivot.A2 Pivot.B2 Pivot.C1", showfilterbutton="false")
+    table.addElement(SourceCellRange(cellrangeaddress=f"Sales.A1:Sales.Q{last}"))
+    for name, orientation in (("Region", "row"), ("Product line", "row"), ("Year", "column")):
+        field = DataPilotField(sourcefieldname=name, orientation=orientation, usedhierarchy="-1")
+        level = DataPilotLevel(showempty="false")
+        subtotals = DataPilotSubtotals()
+        subtotals.addElement(DataPilotSubtotal(function="auto"))
+        level.addElement(subtotals)
+        field.addElement(level)
+        table.addElement(field)
+    table.addElement(DataPilotField(sourcefieldname="Revenue", orientation="data", function="sum",
+                                    usedhierarchy="-1"))
+    table.addElement(DataPilotField(sourcefieldname="", isdatalayoutfield="true",
+                                    orientation="column", usedhierarchy="-1"))
+    pilots.addElement(table)
+    doc.spreadsheet.addElement(pilots)
+    doc.save(str(OUT / "calc-finance.ods"))
 
 
 def _draw_master(doc):
@@ -598,6 +977,9 @@ def main() -> None:
             print(f"impress: {DUPLICATE_SLIDES}-slide impress-duplicate.odp written to {OUT}")
             build_slide_deck(target, label)
             print(f"impress: {SHARED_SLIDES}-slide impress-slides-{label}.odp written to {OUT}")
+        if app == "calc":
+            build_calc_finance()
+            print(f"calc: calc-finance.ods written to {OUT}")
     if args.image:
         build_image(target, label)
 

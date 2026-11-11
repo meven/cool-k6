@@ -24,6 +24,7 @@ __pycache__/
 # enough to commit and are tracked.
 documents/*mb.*
 documents/impress-duplicate.odp
+documents/calc-finance.ods
 # the gen-docs.py that the corpus was generated with (deploy/common.sh)
 documents/.built-from
 
