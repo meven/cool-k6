@@ -100,6 +100,8 @@ def summary(d: Path, m: re.Match, newest: bool = True) -> dict:
         # whether heap-report.py has written its page yet
         "heap_profile": (d / "heap-profile").is_file(),
         "heap_page": (d / "heap.html").is_file(),
+        # a run with engine settings of its own, which ENGINE_CONFIG of capacity-profile gives
+        "engine_config": (d / "engine-config.xcd").is_file(),
     }
 
 

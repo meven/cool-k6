@@ -30,6 +30,9 @@
 #                    run on the other cores, so the server has its cores to itself.
 #   METRICS_INTERVAL - seconds between two samples of coolwsd's /cool/getMetrics (default 10)
 #   METRICS_AUTH   - admin console user:password for /cool/getMetrics (default admin:admin)
+#   ENGINE_CONFIG  - an .xcd file of engine settings, such as deploy/engine-config/*.xcd, which
+#                    the kits read: it goes into the share/registry of the engine of COOLWSD_DIR
+#                    while the run lasts, and a copy into the results as engine-config.xcd.
 #   HEAPTRACK      - a heaptrack with --follow-children, to record the allocations of coolwsd,
 #                    forkit, the kits and their background saves instead of a perf profile.
 #                    heap-report.py then writes heap.html, heaptrack.json, and per kind of
@@ -177,10 +180,13 @@ echo "server cgroup $SERVER_CG: cores $SERVER_CPUS, memory $SERVER_MEMORY; k6 an
 # Passed to k6, which writes them into capacity.json beside the capacity.
 export CAP_SERVER_CPUS=$SERVER_CPUS CAP_SERVER_MEMORY=$SERVER_MEMORY
 
+ENGINE_CONFIG_INSTALLED=
 stop_started() {
     local pid i
     for pid in "${STARTED_PIDS[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
     STARTED_PIDS=()
+    # The settings apply to this run only.
+    [ -z "$ENGINE_CONFIG_INSTALLED" ] || rm -f "$ENGINE_CONFIG_INSTALLED"
     if [ -n "$SERVER_CG" ] && [ -d "$SERVER_CG" ]; then
         # How close the server came to its limit, and how often the kernel killed in it.
         { echo "cpuset.cpus: $(cat "$SERVER_CG/cpuset.cpus")"
@@ -197,6 +203,19 @@ stop_started() {
     fi
 }
 trap stop_started EXIT
+
+if [ -n "${ENGINE_CONFIG:-}" ]; then
+    [ -f "$ENGINE_CONFIG" ] || die "ENGINE_CONFIG=$ENGINE_CONFIG is not a file"
+    [ -n "${COOLWSD_DIR:-}" ] || die "ENGINE_CONFIG needs the COOLWSD_DIR whose coolwsd this starts"
+    registry=$COOLWSD_DIR/engine/instdir/share/registry
+    [ -d "$registry" ] || die "$registry is missing, so the engine settings have nowhere to go"
+    # The engine reads every .xcd file of its share/registry, after main.xcd when the file
+    # depends on it.
+    ENGINE_CONFIG_INSTALLED=$registry/zz-capacity-profile.xcd
+    cp "$ENGINE_CONFIG" "$ENGINE_CONFIG_INSTALLED"
+    cp "$ENGINE_CONFIG" "$OUT_DIR/engine-config.xcd"
+    echo "engine settings: $ENGINE_CONFIG"
+fi
 
 if cool_up; then
     die "a coolwsd already answers at $WOPI_URL, outside the limits of SERVER_CPUS and SERVER_MEMORY"

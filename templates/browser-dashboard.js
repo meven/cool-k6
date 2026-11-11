@@ -1595,6 +1595,9 @@ function runBranch(r) {
             `<td><a href="capacity/${esc(r.run)}/">data</a>` +
             (r.flamegraph ? ` <a href="capacity/${esc(r.run)}/flamegraph.svg">flamegraph</a>` : "") +
             (r.heap_page ? ` <a href="capacity/${esc(r.run)}/heap.html">heap</a>` : "") +
+            (r.engine_config
+              ? ` <a href="capacity/${esc(r.run)}/engine-config.xcd" title="${esc("The engine settings of this run, which differ from the defaults.")}">settings</a>`
+              : "") +
             "</td></tr>"
           );
         })
