@@ -19,6 +19,26 @@ take_lock() {
     export COOL_PERF_LOCKED=1
 }
 
+# The ref of a patch set of a Gerrit change, "<number>" for its current patch set or
+# "<number>/<patch set>", from the Gerrit REST API, which prefixes its JSON with a line against
+# cross-site inclusion.
+GERRIT_URL=${COOL_GERRIT_URL:-https://gerrit.collaboraoffice.com}
+gerrit_ref() {
+    local number=${1%%/*} patchset= ref
+    [ "$number" != "$1" ] && patchset=${1#*/}
+    ref=$(curl -sf "$GERRIT_URL/changes/$number?o=ALL_REVISIONS" | python3 -c '
+import json, sys
+c = json.loads(sys.stdin.read().split("\n", 1)[1])
+want = sys.argv[1]
+for sha, rev in c["revisions"].items():
+    if (want and str(rev["_number"]) == want) or (not want and sha == c["current_revision"]):
+        print(rev["ref"])
+' "$patchset")
+    [ -n "$ref" ] || { echo "no patch set ${patchset:-current} of change $number on $GERRIT_URL" >&2
+                       return 1; }
+    echo "$ref"
+}
+
 # The test documents, generated again when documents/gen-docs.py changed, so that a run measures
 # the documents that the generator writes now. The generator draws from a fixed seed, so the
 # documents that its change leaves alone come out the same. It also rewrites the blank documents

@@ -6,6 +6,8 @@
 #
 #   deploy/run-capacity                   the default staircase: 10, 20, 30 ... 160 users
 #   deploy/run-capacity --wait            queue behind a run of the timer
+#   deploy/run-capacity --gerrit 19945    build the current patch set of a Gerrit change first,
+#                                         or 19945/2 for one patch set, under the same lock
 #   deploy/run-capacity writer calc       one run for each CAP_SCENARIO named, one after the other
 #   deploy/run-capacity all               every scenario of cool-capacity-test.js
 #   CAP_VUS=10,20 deploy/run-capacity     any CAP_* variable of cool-capacity-test.js, and
@@ -23,16 +25,20 @@ cd "$REPO"
 
 SCENARIOS="writer calc impress writer-pairs calc-pairs impress-pairs mixed"
 SCENARIOS+=" writer-shared calc-shared impress-shared finance-shared"
+. deploy/common.sh
+
 wait=
+change=
 scenarios=()
-for arg; do
-    case $arg in
-        --wait) wait=1 ;;
-        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        all) read -ra scenarios <<< "$SCENARIOS" ;;
-        -*) echo "unknown argument: $arg" >&2; exit 2 ;;
-        *) [[ " $SCENARIOS " == *" $arg "* ]] || { echo "unknown scenario: $arg" >&2; exit 2; }
-           scenarios+=("$arg") ;;
+while [ $# -gt 0 ]; do
+    case $1 in
+        --wait) wait=1; shift ;;
+        --gerrit) change=$2; shift 2 ;;
+        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        all) read -ra scenarios <<< "$SCENARIOS"; shift ;;
+        -*) echo "unknown argument: $1" >&2; exit 2 ;;
+        *) [[ " $SCENARIOS " == *" $1 "* ]] || { echo "unknown scenario: $1" >&2; exit 2; }
+           scenarios+=("$1"); shift ;;
     esac
 done
 # No scenario name runs the test once, with CAP_SCENARIO from the environment if set.
@@ -41,8 +47,16 @@ done
 set -a; . /etc/cool-perf.env; set +a
 : "${COOLWSD_DIR:?not set in /etc/cool-perf.env}"
 
-. deploy/common.sh
 take_lock "$wait"
+# The build is made under the same lock as the runs, so no other run can build another commit in
+# the tree between the two.
+if [ -n "$change" ]; then
+    ref=$(gerrit_ref "$change")
+    build_args=(--no-save --ref "$ref" --from "$GERRIT_URL/online")
+    [ "${COOL_PERF_ENGINE:-1}" = 1 ] && build_args+=(--engine)
+    echo "=== building $ref of change ${change%%/*}"
+    ./cool-build "${build_args[@]}"
+fi
 build_bundles
 build_documents
 ./cool-ci doctor

@@ -25,7 +25,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
-GERRIT_URL=${COOL_GERRIT_URL:-https://gerrit.collaboraoffice.com}
+. deploy/common.sh
 name= ref= from= change= runs=1 wait=
 refs=()
 while [ $# -gt 0 ]; do
@@ -42,20 +42,8 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$change" ]; then
-    # The ref of the patch set, from the Gerrit REST API, which prefixes its JSON with
-    # a line against cross-site inclusion.
     number=${change%%/*}
-    patchset=
-    [ "$number" != "$change" ] && patchset=${change#*/}
-    ref=$(curl -sf "$GERRIT_URL/changes/$number?o=ALL_REVISIONS" | python3 -c '
-import json, sys
-c = json.loads(sys.stdin.read().split("\n", 1)[1])
-want = sys.argv[1]
-for sha, rev in c["revisions"].items():
-    if (want and str(rev["_number"]) == want) or (not want and sha == c["current_revision"]):
-        print(rev["ref"])
-' "$patchset")
-    [ -n "$ref" ] || { echo "no patch set ${patchset:-current} of change $number on $GERRIT_URL" >&2; exit 1; }
+    ref=$(gerrit_ref "$change") || exit 1
     refs=("$ref")
     from=${from:-$GERRIT_URL/online}
     name=${name:-gerrit-$number}
@@ -65,8 +53,6 @@ fi
 
 set -a; . /etc/cool-perf.env; set +a
 : "${COOLWSD_DIR:?not set in /etc/cool-perf.env}"
-
-. deploy/common.sh
 
 # Build one ref, measure it and publish its runs, holding the lock throughout.
 measure_ref() {
