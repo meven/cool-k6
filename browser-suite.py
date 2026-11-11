@@ -63,7 +63,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 APPS = ("writer", "calc", "impress", "draw")
 DOCS = ("blank", "blank-vector", "5mb", "5mb-vector", "10mb", "duplicate", "duplicate-vector",
-        "ooxml", "ooxml-vector", "image5mb")
+        "ooxml", "ooxml-vector", "image5mb", "finance", "finance-ooxml")
 
 # What each application has to open. "ooxml" is the same content as "5mb" in the Microsoft
 # format, so the two read as a comparison of the formats; Draw has no such format of its own,
@@ -73,9 +73,11 @@ DOCS = ("blank", "blank-vector", "5mb", "5mb-vector", "10mb", "duplicate", "dupl
 # is the deck the slide-duplication requirement is measured on, so only Impress has that one.
 # A "-vector" document is the same test with vector rendering, which draws the slides from
 # the primitives the engine sends instead of from tiles, so it reads beside the tile one.
+# Calc opens a sales ledger with a pivot table, charts and conditional formats instead of a
+# 5 MB document, "finance", and "finance-ooxml" is the same workbook in the Microsoft format.
 DOCS_BY_APP = {
     "writer": ("blank", "5mb", "10mb", "ooxml", "image5mb"),
-    "calc": ("blank", "5mb", "ooxml"),
+    "calc": ("blank", "finance", "finance-ooxml"),
     "impress": ("blank", "blank-vector", "5mb", "5mb-vector", "duplicate", "duplicate-vector",
                 "ooxml", "ooxml-vector"),
     "draw": ("blank", "5mb"),
@@ -917,7 +919,8 @@ def demo_history() -> dict:
     for app, doc in documents():
             ai = APPS.index(app)
             base_doc = doc.removesuffix("-vector")
-            big = {"5mb": 2.3, "ooxml": 2.3, "10mb": 3.6}.get(base_doc, 1.0)
+            big = {"5mb": 2.3, "ooxml": 2.3, "10mb": 3.6, "finance": 1.6,
+                   "finance-ooxml": 1.6}.get(base_doc, 1.0)
             for users in (1, 3):
                 base_dl = (900 + ai * 350) * big * (1.6 if users == 3 else 1.0)
                 # the client shell, near enough the same whatever the document
