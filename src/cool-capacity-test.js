@@ -168,6 +168,10 @@ const LOAD_TIMEOUT_MS = 100000;
 const EDIT_TIMEOUT_MS = 10000;
 // The browser gives up on a document that is still unloading after this many retries.
 const MAX_UNLOADING_RETRIES = 10;
+// The wait of a user after a session that failed, before it opens the document again. A server
+// that refuses every connection fails a session at once, and without the wait each user would
+// fail and log hundreds of sessions a second.
+const FAILED_SESSION_PAUSE_MS = 5000;
 // How long a user of a presentation waits for another view to release the object it selected.
 const LOCK_WAIT_MS = 30000;
 const TILE_REQUEST_GAP_MS = 200;
@@ -313,10 +317,19 @@ export function setup() {
 }
 
 export default async function () {
-    const wopiClient = await getWopiClientUrl(wopiUrl);
+    let wopiClient;
+    try {
+        wopiClient = await getWopiClientUrl(wopiUrl);
+    } catch (e) {
+        console.warn(`FAIL reason=discovery error=${JSON.stringify(String(e))} `
+            + `vu=${exec.vu.idInTest}`);
+        sessionErrors.add(1, failureTag());
+        await new Promise((resolve) => setTimeout(resolve, FAILED_SESSION_PAUSE_MS));
+        return;
+    }
     const wopiSrc = groupWopiSrc();
 
-    await new Promise((resolve) => {
+    const failed = await new Promise((resolve) => {
         const s = {
             openedAt: 0, loaded: false, failed: false, closing: false, done: false,
             editSentAt: 0, word: '', charIndex: 0,
@@ -348,7 +361,7 @@ export default async function () {
             for (const id of s.timers) clearTimeout(id);
             // A session that ends well was counted at the end of each hold it lasted through.
             if (s.failed) sessionErrors.add(1, failureTag());
-            resolve();
+            resolve(s.failed);
         }
 
         // One FAIL line for each failed session, with what failed and where, since the summary
@@ -648,6 +661,7 @@ export default async function () {
         }
         connect();
     });
+    if (failed) await new Promise((resolve) => setTimeout(resolve, FAILED_SESSION_PAUSE_MS));
 }
 
 export function handleSummary(data) {
