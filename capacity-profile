@@ -217,8 +217,14 @@ if ! cool_up; then
     cool_cmd+=" --o:storage.ssl.ca_file_path=$TLS_DIR/ca-cert.pem"
     # Each process writes its raw trace while it runs, and heap-report.py interprets them in
     # parallel once coolwsd ends.
-    [ -z "${HEAPTRACK:-}" ] \
-        || cool_cmd="$HEAPTRACK --follow-children --raw -o $OUT_DIR/heaptrack/ht $cool_cmd"
+    # heaptrack runs a thread in every process that it traces, and unshare(CLONE_NEWUSER) fails
+    # with EINVAL in a process of several threads, so coolwsd cannot build its jails in a user
+    # namespace and falls back to coolforkit-caps, which holds no capabilities here. Landlock
+    # isolates the kits without either.
+    if [ -n "${HEAPTRACK:-}" ]; then
+        cool_cmd="$HEAPTRACK --follow-children --raw -o $OUT_DIR/heaptrack/ht $cool_cmd"
+        cool_cmd+=" --o:security.capabilities=false --o:mount_namespaces=false"
+    fi
     echo "starting coolwsd: $cool_cmd"
     # shellcheck disable=SC2086 # the command line is split into its words on purpose
     (echo "$BASHPID" > "$SERVER_CG/cgroup.procs"

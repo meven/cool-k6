@@ -1534,7 +1534,8 @@ function runBranch(r) {
     !p.reached ? "not reached" : !p.measured ? "not measured" : !p.ok ? "FAILED" :
       p.oom_kills ? "OOM kill" : "passed";
   const capText = (r) =>
-    r.heap_profile ? (r.done ? "heap profile" : "heap profile, running")
+    r.heap_profile
+      ? `heap profile${r.done ? "" : r.state === "stopped" ? ", stopped" : ", running"}`
       : !r.done ? (r.state === "stopped" ? "stopped" : "running")
       : r.capacity == null && r.oom_kills ? "unknown"
       : !r.capacity ? "none"
