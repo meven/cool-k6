@@ -505,6 +505,14 @@ other, and `all` runs every one, about four hours:
   `impress-shared` opens `documents/impress-slides-5mb.odp`, 40 slides, which
   `python3 documents/gen-docs.py --slide-deck-only` writes on a VM set up
   before it.
+- `finance-shared`: every user on `documents/calc-finance.ods`, the sales
+  ledger of a company over three years (12000 order lines with formulas), a
+  pivot table of its revenue, and four charts over SUMIFS tables of it. One
+  user in 10 types numbers in the Units column of the ledger, each in a block
+  of rows of its own, which recalculates the tables and redraws the charts.
+  The 9 users after it view the ledger where it types, the pivot table or the
+  charts, a third of them each. Users take zoom levels from 75% to 200%
+  (CAP_ZOOMS).
 
 The Capacity tab names the scenario of each run.
 

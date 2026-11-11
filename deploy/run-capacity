@@ -22,7 +22,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
 SCENARIOS="writer calc impress writer-pairs calc-pairs impress-pairs mixed"
-SCENARIOS+=" writer-shared calc-shared impress-shared"
+SCENARIOS+=" writer-shared calc-shared impress-shared finance-shared"
 wait=
 scenarios=()
 for arg; do

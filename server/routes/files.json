@@ -23,6 +23,7 @@
     "22": { "path": "documents/writer-10mb.odt", "readonly": false },
     "23": { "path": "documents/impress-duplicate.odp", "readonly": false },
     "24": { "path": "documents/impress-slides-5mb.odp", "readonly": false },
+    "25": { "path": "documents/calc-finance.ods", "readonly": false },
 
     "19": { "path": "documents/writer-5mb.docx", "readonly": false },
     "20": { "path": "documents/calc-5mb.xlsx", "readonly": false },

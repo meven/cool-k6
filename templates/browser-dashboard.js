@@ -1493,6 +1493,10 @@ function runBranch(r) {
     "writer-shared": `one 5 MB Writer document for every user, ${shared("paragraph")}`,
     "calc-shared": `one 5 MB Calc document for every user, ${shared("column")}`,
     "impress-shared": `one 5 MB Impress deck of 40 slides for every user, ${shared("slide")}`,
+    "finance-shared":
+      "one sales ledger with a pivot table and charts for every user, where one user in 10 " +
+      "edits units in a block of rows of its own, and the others view the ledger, the pivot " +
+      "table or the charts, at zoom levels from 75% to 200%",
   };
   const describe = (r) =>
     r.scenario

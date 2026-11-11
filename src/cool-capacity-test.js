@@ -43,6 +43,13 @@
  *                           the one of the editor before, the next column of the empty row below the
  *                           data, or the next slide of impress-slides-5mb.odp. The other users view
  *                           the part of the editor before them, without typing.
+ *   finance-shared          every user on calc-finance.ods, the sales ledger of a company with
+ *                           a pivot table and charts over it. One user in CAP_EDITOR_EVERY edits
+ *                           the Units column of the Sales sheet, each in a block of rows of its
+ *                           own, which recalculates the revenue, the SUMIFS tables of the Charts
+ *                           sheet and their charts. The other users view the Sales sheet where the
+ *                           editor before them types, the Pivot sheet or the Charts sheet, a third
+ *                           of them each.
  *
  * The user types where the application takes text: at the end of a Writer document, in the empty
  * cell below the last one of a Calc sheet (each word goes in a cell of its own, committed with
@@ -67,7 +74,8 @@
  *                       list repeats for as many users as there are
  *   CAP_EDITOR_EVERY  - in a shared scenario, one user in this many edits  (default 10)
  *   CAP_ZOOMS         - zoom levels of the users, each user taking one of the list; a level
- *                       listed twice is twice as common               (default 1)
+ *                       listed twice is twice as common  (default 1, and for finance-shared
+ *                       0.75,1,1,1.25,1.5,2)
  *   CAP_THINK_MIN_MS, CAP_THINK_MAX_MS - pause between two words      (default 2000, 8000)
  *   CAP_TYPE_STEP_MS  - pause between two characters of a word       (default 150)
  *   CAP_EDIT_P95_MS   - edit latency target, 95th percentile         (default 300)
@@ -99,6 +107,11 @@ const FILE_ID = __ENV['CAP_FILE_ID'] || 11;  // documents/blank.odt
 const ODT = 12, DOCX = 19, ODS = 14, XLSX = 20, ODP = 16, PPTX = 21;
 // impress-slides-5mb.odp: 40 slides in about 5 MB, one for each editor of impress-shared
 const SLIDES = 24;
+// calc-finance.ods: the sheets Sales, Pivot and Charts, and 12000 order lines from row 2 of Sales
+const FINANCE = 25;
+const FINANCE_SHEETS = 3;
+// the rows of Sales between two editors: 160 users have 16 editors
+const FINANCE_ROW_STEP = 700;
 // One user on each document of the first list, and half of the users two by two in the second.
 const alone = (a, b) => [[a, 1], [b, 1]];
 const pairs = (a, b) => [[a, 1], [b, 1], [a, 2], [a, 1], [b, 1], [b, 2]];
@@ -120,7 +133,9 @@ const SCENARIOS = {
 };
 // Every user on one document. One user in CAP_EDITOR_EVERY edits, each in a part of its own, and
 // the users after it, up to the next editor, view the part where it types.
-const SHARED = { 'writer-shared': ODT, 'calc-shared': ODS, 'impress-shared': SLIDES };
+const SHARED = {
+    'writer-shared': ODT, 'calc-shared': ODS, 'impress-shared': SLIDES, 'finance-shared': FINANCE,
+};
 const EDITOR_EVERY = Math.max(1, num('CAP_EDITOR_EVERY', 10));
 // The paragraphs between two editors of a shared Writer document: writer-5mb.odt has 136, and
 // 160 users have 16 editors.
@@ -140,7 +155,7 @@ const SEATS = DOCS.flatMap(([, users], doc) => Array.from({ length: users }, (_,
 const THINK_MIN_MS = num('CAP_THINK_MIN_MS', 2000);
 const THINK_MAX_MS = num('CAP_THINK_MAX_MS', 8000);
 const TYPE_STEP_MS = num('CAP_TYPE_STEP_MS', 150);
-const ZOOMS = (__ENV['CAP_ZOOMS'] || '1')
+const ZOOMS = (__ENV['CAP_ZOOMS'] || (SHARED_FILE === FINANCE ? '0.75,1,1,1.25,1.5,2' : '1'))
     .split(',').map((z) => Number(z.trim())).filter((z) => z > 0);
 const EDIT_P95_MS = num('CAP_EDIT_P95_MS', 300);
 const LOAD_P95_MS = num('CAP_LOAD_P95_MS', 10000);
@@ -263,7 +278,8 @@ let fileId = null;
 // its seat, or in a shared document the one of its editor
 let editor = true;
 let place = 0;
-// the zoom level of the user
+// the sheet or slide that the user shows, and its zoom level
+let part = 0;
 let zoom = 1;
 function groupWopiSrc() {
     if (group === null) {
@@ -276,6 +292,9 @@ function groupWopiSrc() {
             fileId = SHARED_FILE;
             editor = user % EDITOR_EVERY === 0;
             place = Math.floor(user / EDITOR_EVERY);
+            // The editors type in the Sales sheet, and the users after each one take the three
+            // sheets in turn.
+            if (SHARED_FILE === FINANCE && !editor) part = (user % EDITOR_EVERY) % FINANCE_SHEETS;
         } else {
             const [doc, s] = SEATS[user % SEATS.length];
             group = Math.floor(user / SEATS.length) * DOCS.length + doc;
@@ -339,9 +358,9 @@ export default async function () {
             s.failed = true;
             const kept = s.openedAt ? Date.now() - s.openedAt : 0;
             console.warn(`FAIL reason=${reason} doc=${fileId}~${group} seat=${seat} `
-                + `role=${editor ? 'editor' : 'viewer'} zoom=${zoom} kind=${s.kind} `
-                + `loaded=${s.loaded} `
-                + `editing=${s.editing} edits=${s.edits} retries=${s.retries} after_ms=${kept} `
+                + `role=${editor ? 'editor' : 'viewer'} part=${part} zoom=${zoom} kind=${s.kind} `
+                + `loaded=${s.loaded} editing=${s.editing} edits=${s.edits} retries=${s.retries} `
+                + `after_ms=${kept} `
                 + `vu=${exec.vu.idInTest}`);
             close();
         }
@@ -366,7 +385,7 @@ export default async function () {
                     ys.push(s.viewTop + r * s.tileTwips);
                 }
             }
-            client.send(`tilecombine nviewid=0 part=0 width=${TILE_PX} height=${TILE_PX} `
+            client.send(`tilecombine nviewid=0 part=${part} width=${TILE_PX} height=${TILE_PX} `
                 + `tileposx=${xs.join(',')} tileposy=${ys.join(',')} `
                 + `tilewidth=${s.tileTwips} tileheight=${s.tileTwips}`);
         }
@@ -417,7 +436,9 @@ export default async function () {
             if (s.closing) return;
             if (Date.now() - s.openedAt >= SESSION_MS) { close(); return; }
             later(() => {
-                s.word = WORDS[Math.floor(Math.random() * WORDS.length)] + ' ';
+                // The ledger takes a number of units, the other documents a word.
+                s.word = SHARED_FILE === FINANCE ? `${1 + Math.floor(Math.random() * 60)} `
+                    : WORDS[Math.floor(Math.random() * WORDS.length)] + ' ';
                 s.charIndex = 0;
                 typeChar();
             }, randomBetween(THINK_MIN_MS, THINK_MAX_MS));
@@ -434,7 +455,14 @@ export default async function () {
         // takes a paragraph, a column or a slide of its own, and its viewers go to the same place
         // without typing, so that its edits change what they view.
         function placeCursor() {
-            if (s.kind === 'spreadsheet') {
+            if (SHARED_FILE === FINANCE) {
+                // The Units cell of the first row of the block of the editor, or the top of the
+                // Pivot and Charts sheets.
+                client.send(`setclientpart part=${part}`);
+                const cell = part === 0 ? `J${2 + place * FINANCE_ROW_STEP}` : 'A1';
+                client.send(`uno .uno:GoToCell ${JSON.stringify(
+                    { ToPoint: { type: 'string', value: cell } })}`);
+            } else if (s.kind === 'spreadsheet') {
                 // Ctrl+End: in a sheet .uno:GoToEndOfDoc does not move, and the end is the last
                 // used cell.
                 client.send('uno .uno:GoToEndOfData');
@@ -599,7 +627,13 @@ export default async function () {
                     s.edits++;
                     later(typeChar, TYPE_STEP_MS);
                 } else if (e.data.startsWith('invalidatetiles:')) {
-                    requestVisibleTiles();
+                    // "part=<n> ..." or "EMPTY, <n>, <mode>". A sheet that the user does not show
+                    // needs no tiles, as in the browser client.
+                    const m = /part=(-?\d+)|EMPTY,\s*(-?\d+)/.exec(e.data);
+                    const invalidated = m ? Number(m[1] ?? m[2]) : part;
+                    if (SHARED_FILE !== FINANCE || invalidated === part || invalidated < 0) {
+                        requestVisibleTiles();
+                    }
                 }
             };
             c.socket.onclose = (e) => {
