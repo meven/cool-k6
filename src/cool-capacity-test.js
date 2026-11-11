@@ -66,6 +66,8 @@
  *   CAP_DOCS          - the documents of a scenario of your own, as "<file id>:<users>,..."; the
  *                       list repeats for as many users as there are
  *   CAP_EDITOR_EVERY  - in a shared scenario, one user in this many edits  (default 10)
+ *   CAP_ZOOMS         - zoom levels of the users, each user taking one of the list; a level
+ *                       listed twice is twice as common               (default 1)
  *   CAP_THINK_MIN_MS, CAP_THINK_MAX_MS - pause between two words      (default 2000, 8000)
  *   CAP_TYPE_STEP_MS  - pause between two characters of a word       (default 150)
  *   CAP_EDIT_P95_MS   - edit latency target, 95th percentile         (default 300)
@@ -138,6 +140,8 @@ const SEATS = DOCS.flatMap(([, users], doc) => Array.from({ length: users }, (_,
 const THINK_MIN_MS = num('CAP_THINK_MIN_MS', 2000);
 const THINK_MAX_MS = num('CAP_THINK_MAX_MS', 8000);
 const TYPE_STEP_MS = num('CAP_TYPE_STEP_MS', 150);
+const ZOOMS = (__ENV['CAP_ZOOMS'] || '1')
+    .split(',').map((z) => Number(z.trim())).filter((z) => z > 0);
 const EDIT_P95_MS = num('CAP_EDIT_P95_MS', 300);
 const LOAD_P95_MS = num('CAP_LOAD_P95_MS', 10000);
 const MAX_ERRORS = num('CAP_MAX_ERRORS', 0.01);
@@ -259,6 +263,8 @@ let fileId = null;
 // its seat, or in a shared document the one of its editor
 let editor = true;
 let place = 0;
+// the zoom level of the user
+let zoom = 1;
 function groupWopiSrc() {
     if (group === null) {
         const base = String(wopiHost).replace(/\/?$/, '/');
@@ -277,6 +283,8 @@ function groupWopiSrc() {
             place = s;
             fileId = DOCS[doc][0];
         }
+        // Users next to each other take different levels, whatever their role.
+        zoom = ZOOMS[(Math.imul(user + 1, 2654435761) >>> 0) % ZOOMS.length] ?? 1;
     }
     return getWopiSrc(wopiHost, `${fileId}~${group}`).toString();
 }
@@ -294,6 +302,8 @@ export default async function () {
             openedAt: 0, loaded: false, failed: false, closing: false, done: false,
             editSentAt: 0, word: '', charIndex: 0,
             lastTileRequest: 0, viewLeft: 0, viewTop: 0, processedWids: [], timers: new Set(),
+            // the twips that a tile of TILE_PX pixels shows at the zoom level of the user
+            tileTwips: Math.round(TILE_TWIPS / zoom),
             // the document type of the status: message: text, spreadsheet or presentation
             kind: 'text',
             // this view, the objects that other views lock, the object selected to type in, and
@@ -329,7 +339,8 @@ export default async function () {
             s.failed = true;
             const kept = s.openedAt ? Date.now() - s.openedAt : 0;
             console.warn(`FAIL reason=${reason} doc=${fileId}~${group} seat=${seat} `
-                + `role=${editor ? 'editor' : 'viewer'} kind=${s.kind} loaded=${s.loaded} `
+                + `role=${editor ? 'editor' : 'viewer'} zoom=${zoom} kind=${s.kind} `
+                + `loaded=${s.loaded} `
                 + `editing=${s.editing} edits=${s.edits} retries=${s.retries} after_ms=${kept} `
                 + `vu=${exec.vu.idInTest}`);
             close();
@@ -351,13 +362,13 @@ export default async function () {
             const ys = [];
             for (let c = 0; c < COLS; c++) {
                 for (let r = 0; r < ROWS; r++) {
-                    xs.push(s.viewLeft + c * TILE_TWIPS);
-                    ys.push(s.viewTop + r * TILE_TWIPS);
+                    xs.push(s.viewLeft + c * s.tileTwips);
+                    ys.push(s.viewTop + r * s.tileTwips);
                 }
             }
             client.send(`tilecombine nviewid=0 part=0 width=${TILE_PX} height=${TILE_PX} `
                 + `tileposx=${xs.join(',')} tileposy=${ys.join(',')} `
-                + `tilewidth=${TILE_TWIPS} tileheight=${TILE_TWIPS}`);
+                + `tilewidth=${s.tileTwips} tileheight=${s.tileTwips}`);
         }
 
         // coolwsd stops sending tiles to a client that has about a screen of them unacknowledged,
@@ -382,8 +393,8 @@ export default async function () {
         }
 
         function sendVisibleArea() {
-            client.send(`clientvisiblearea x=${s.viewLeft} y=${s.viewTop} width=${COLS * TILE_TWIPS} `
-                + `height=${ROWS * TILE_TWIPS}`);
+            client.send(`clientvisiblearea x=${s.viewLeft} y=${s.viewTop} width=${COLS * s.tileTwips} `
+                + `height=${ROWS * s.tileTwips}`);
         }
 
         // Moves the visible area to a cursor outside it: one tile row of the area stays above the
@@ -392,10 +403,11 @@ export default async function () {
         function followCursor(rect) {
             const [x, y] = rect.split(',').map(Number);
             if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-            if (y >= s.viewTop && y < s.viewTop + ROWS * TILE_TWIPS
-                && x >= s.viewLeft && x < s.viewLeft + COLS * TILE_TWIPS) return;
-            s.viewTop = Math.max(0, Math.floor(y / TILE_TWIPS) - 1) * TILE_TWIPS;
-            s.viewLeft = x < COLS * TILE_TWIPS ? 0 : (Math.floor(x / TILE_TWIPS) - 1) * TILE_TWIPS;
+            const tile = s.tileTwips;
+            if (y >= s.viewTop && y < s.viewTop + ROWS * tile
+                && x >= s.viewLeft && x < s.viewLeft + COLS * tile) return;
+            s.viewTop = Math.max(0, Math.floor(y / tile) - 1) * tile;
+            s.viewLeft = x < COLS * tile ? 0 : (Math.floor(x / tile) - 1) * tile;
             sendVisibleArea();
             s.lastTileRequest = 0;
             requestVisibleTiles();
@@ -546,7 +558,7 @@ export default async function () {
                     s.loaded = true;
                     docLoadTime.add(Date.now() - s.openedAt, plateauTag());
                     client.send(`clientzoom tilepixelwidth=${TILE_PX} tilepixelheight=${TILE_PX} `
-                        + `tiletwipwidth=${TILE_TWIPS} tiletwipheight=${TILE_TWIPS}`);
+                        + `tiletwipwidth=${s.tileTwips} tiletwipheight=${s.tileTwips}`);
                     // The status is JSON, with "type" as in the older "type=" form of the message.
                     const type = /"type"\s*:\s*"(\w+)"|\btype=(\w+)/.exec(e.data);
                     s.kind = type?.[1] ?? type?.[2] ?? 'text';
@@ -656,6 +668,7 @@ export function handleSummary(data) {
         'capacity.json': JSON.stringify({
             capacity, server: SERVER, usersPerDocument: SCENARIO ? null : USERS_PER_DOC,
             scenario: SCENARIO,
+            zooms: ZOOMS,
             documents: SHARED_FILE ? [{ fileId: SHARED_FILE, users: 'all', editorEvery: EDITOR_EVERY }]
                 : DOCS.map(([id, users]) => ({ fileId: id, users })),
             plateaus: rows,
