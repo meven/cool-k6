@@ -1293,7 +1293,8 @@ function runBranch(r) {
         (u.scenarios ? `<div class="ref">${esc(scenariosText(u))}</div>` : "");
       const head = `<tr class="st-${running ? "running" : "queued"}"><td class="l">${running ? "running" : "scheduled"}</td>`;
       const end = `<td class="l">${esc(start)}</td><td></td></tr>`;
-      // A unit of deploy/run-branch reads like a job of the queue, with the unit below its subject.
+      // A unit of deploy/run-branch, or of deploy/run-capacity with --gerrit, reads like a job of
+      // the queue, with the unit below its subject.
       const g = u.gerrit;
       if (!g) return head + `<td class="l" colspan="4">${unit}</td>` + end;
       const ps = g.patchset ? String(g.patchset) : "current";

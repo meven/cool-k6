@@ -222,10 +222,12 @@ patchsets: dict[str, dict] = {}
 
 
 def branch_change(argv: list[str]) -> dict | None:
-    """The Gerrit patch set that a command of deploy/run-branch measures, with its subject and
-    uploader as the queue shows them, and the number of runs. Only the change and the patch set
-    that the command gives when Gerrit cannot be read. None for another command."""
-    if not argv or Path(argv[0]).name != "run-branch" or "--gerrit" not in argv[:-1]:
+    """The Gerrit patch set that a command of deploy/run-branch or deploy/run-capacity measures,
+    with its subject and uploader as the queue shows them, and the number of runs. Only the
+    change and the patch set that the command gives when Gerrit cannot be read. None for another
+    command, or one without --gerrit."""
+    if not argv or Path(argv[0]).name not in ("run-branch", "run-capacity") \
+            or "--gerrit" not in argv[:-1]:
         return None
     text = argv[argv.index("--gerrit") + 1]
     runs = argv[argv.index("--runs") + 1] if "--runs" in argv[:-1] else "1"
@@ -248,7 +250,15 @@ def capacity_scenarios(argv: list[str], environment: str) -> list[str] | None:
     that runs something else."""
     if not argv or Path(argv[0]).name != "run-capacity":
         return None
-    names = [a for a in argv[1:] if not a.startswith("-")]
+    # the arguments that are not options, nor the value of --gerrit
+    names, skip = [], False
+    for a in argv[1:]:
+        if skip:
+            skip = False
+        elif a == "--gerrit":
+            skip = True
+        elif not a.startswith("-"):
+            names.append(a)
     if names == ["all"]:
         try:
             text = (REPO / "deploy" / "run-capacity").read_text()
@@ -298,8 +308,13 @@ def units_by_hand(holder: tuple[str, str] | None = None) -> list[dict]:
         commands = commands_of(service)
         scenarios = capacity_scenarios(command_named(commands, "run-capacity"),
                                        service.get("Environment", ""))
-        # the change that a unit of deploy/run-branch measures, as a job of the queue shows it
+        # the change that a unit of deploy/run-branch or deploy/run-capacity measures, as a job
+        # of the queue shows it; a capacity unit makes one run for each scenario
         gerrit = branch_change(command_named(commands, "run-branch"))
+        if not gerrit:
+            gerrit = branch_change(command_named(commands, "run-capacity"))
+            if gerrit and scenarios:
+                gerrit = {**gerrit, "runs": len(scenarios)}
         # scheduled: a timer of systemd-run that has not fired; waiting: started, but waiting
         # for the lock
         if u.get("Id", "").endswith(".timer"):
