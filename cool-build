@@ -68,6 +68,22 @@ if [ ! -d "$TREE/.git" ]; then
         --branch "$BRANCH" "$URL" "$TREE"
 fi
 
+# The runs of the dashboard, the queue and the capacity runs build in the same
+# tree and hold a lock while they do. A build started by hand waits for that
+# lock, so that it does not check another commit out under a build that is
+# running. The scripts that hold the lock set COOL_PERF_LOCKED for the
+# cool-build they start. The lock exists only where the dashboard is deployed.
+LOCK_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
+if [ -z "${COOL_PERF_LOCKED:-}" ] && [ -z "$DRY" ] && [ -d "$LOCK_DIR" ] \
+        && command -v flock >/dev/null; then
+    exec 9>"$LOCK_DIR/lock"
+    if ! flock -n 9; then
+        echo "=== waiting for the run that holds the lock to end"
+        flock 9
+    fi
+    export COOL_PERF_LOCKED=1
+fi
+
 # A build that throws away someone's work in progress is not worth the commit
 # it claims to measure.
 if [ -n "$(git -C "$TREE" status --porcelain --untracked-files=no)" ]; then

@@ -25,6 +25,7 @@ STORE=${COOL_PERF_STORE:-/var/lib/cool-perf}
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
 exec 9>"$STATE/lock"
 flock -n 9 || { echo "a nightly run is running; stop cool-perf.timer and wait" >&2; exit 1; }
+export COOL_PERF_LOCKED=1
 
 # The test bundles, rebuilt when the checkout moved, as deploy/nightly does.
 head=$(git rev-parse HEAD)

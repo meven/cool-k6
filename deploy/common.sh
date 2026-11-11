@@ -15,6 +15,8 @@ take_lock() {
                         exit 1; }
     fi
     echo "$$ $(date +%s)" > "$state/lock-holder"
+    # cool-build then knows that its caller holds the lock already.
+    export COOL_PERF_LOCKED=1
 }
 
 # The test documents, generated again when documents/gen-docs.py changed, so that a run measures
