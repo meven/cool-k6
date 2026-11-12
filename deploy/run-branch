@@ -63,6 +63,7 @@ measure_ref() {
     [ "${COOL_PERF_ENGINE:-1}" = 1 ] && build_args+=(--engine)
     [ -n "$from" ] && build_args+=(--from "$from")
     echo "=== $name: building $ref${from:+ from $from}"
+    lock_step "building"
     ./cool-build "${build_args[@]}"
     pkill -u "$(id -u)" -x coolwsd || true
 
@@ -74,6 +75,7 @@ measure_ref() {
 
     for i in $(seq "$runs"); do
         echo "=== $name: measuring $ref, run $i of $runs"
+        lock_step "measuring, run $i of $runs"
         # Publish even a busy run: a retry would measure the same build again.
         COOL_PERF_BRANCH=$name COOL_PERF_REF=$ref COOL_PERF_BASE=$base COOL_PERF_BUSY_RETRIES=0 \
             ./cool-ci run || echo "cool-ci run $i failed" >&2

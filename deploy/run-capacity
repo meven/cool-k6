@@ -66,6 +66,7 @@ if [ -n "$change" ] || [ -n "$ref" ]; then
     fi
     [ "${COOL_PERF_ENGINE:-1}" = 1 ] && build_args+=(--engine)
     echo "=== building $ref${change:+ of change ${change%%/*}}"
+    lock_step "building"
     ./cool-build "${build_args[@]}"
 fi
 build_bundles
@@ -84,6 +85,7 @@ for scenario in "${scenarios[@]}"; do
     [ -z "$branch" ] || python3 -c 'import json, sys
 print(json.dumps({"branch": sys.argv[1], "ref": sys.argv[2]}))' "$branch" "$ref" > "$out/build.json"
     echo "=== capacity run of $commit${scenario:+, scenario $scenario}, into $out"
+    lock_step "measuring${scenario:+ $scenario}"
 
     # A coolwsd left by an earlier run would answer instead of the one that capacity-profile
     # starts.

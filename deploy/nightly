@@ -15,7 +15,7 @@ if [ -z "${COOLWSD_DIR:-}" ] && [ -r /etc/cool-perf.env ]; then
 fi
 : "${COOLWSD_DIR:?not set in /etc/cool-perf.env}"
 
-step() { echo "=== $*"; }
+step() { echo "=== $*"; lock_step "$*"; }
 
 # deploy/bootstrap writes the bootstrapped file when the first build is done,
 # and holds the same lock while it builds.

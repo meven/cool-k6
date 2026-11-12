@@ -174,6 +174,22 @@ def lock_holder() -> tuple[str, str] | None:
         return None
 
 
+def lock_step() -> dict | None:
+    """The step that the script holding the lock is at, from the lock-step file that lock_step of
+    deploy/common.sh writes: {"text": such as "building" or "measuring, run 2 of 3", "since": ISO
+    time}. None when lock-step was written by another script than the one of lock-holder."""
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "cool-perf"
+    try:
+        holder_pid = (state / "lock-holder").read_text().split()[0]
+        pid, at, text = (state / "lock-step").read_text().strip().split(" ", 2)
+        if pid != holder_pid:
+            return None
+        return {"text": text,
+                "since": runqueue.iso(datetime.fromtimestamp(int(at), timezone.utc))}
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def measuring_since(unit: dict, holder: tuple[str, str] | None) -> str | None:
     """When a unit that does not wait for the lock took it: the time of lock-holder, when the
     script that wrote it runs in the cgroup of the unit."""
@@ -337,6 +353,7 @@ def units_by_hand(holder: tuple[str, str] | None = None) -> list[dict]:
                           "state": "waiting" if waiting else "running",
                           "since": started(u),
                           "measuring_since": measuring,
+                          "step": lock_step() if measuring else None,
                           # the capacity scenarios it runs, and the one it measures now
                           "scenarios": scenarios,
                           "scenario": capacity_running() if scenarios and measuring else None,
@@ -377,14 +394,17 @@ def schedule():
                 j["waiting"] = True
             else:
                 j["measuring_since"] = measuring_since(queue, holder)
+                j["step"] = lock_step() if j["measuring_since"] else None
+    main_measuring = (measuring_since(service, holder)
+                      if running and not main_waiting else None)
     return jsonify(
         now=runqueue.iso(runqueue.now()),
         main={"next": when(timer.get("NextElapseUSecRealtime")),
               "last": when(timer.get("LastTriggerUSec")),
               "running": running, "waiting": main_waiting,
               "since": started(service),
-              "measuring_since": (measuring_since(service, holder)
-                                  if running and not main_waiting else None)},
+              "measuring_since": main_measuring,
+              "step": lock_step() if main_measuring else None},
         runner=queue.get("ActiveState"),
         jobs=jobs, by_hand=units_by_hand(holder),
         domains=runqueue.DOMAINS, max_runs=runqueue.MAX_RUNS)

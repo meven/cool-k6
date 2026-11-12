@@ -1158,6 +1158,8 @@ function runBranch(r) {
     failed: "failed",
     cancelled: "cancelled",
   };
+  // The step that a running job is at, such as " (building)", from the step of the schedule API.
+  const stepText = (step) => (step && step.text ? ` (${esc(step.text)})` : "");
 
   // One lane per kind of run, on a 24-hour axis centred on now.
   function drawTimeline() {
@@ -1340,7 +1342,7 @@ function runBranch(r) {
         `<code>${esc(u.unit)}</code>` +
         `<span class="ref">started by hand with systemd-run</span>` +
         (u.scenarios ? `<div class="ref">${esc(scenariosText(u))}</div>` : "");
-      const head = `<tr class="st-${running ? "running" : "queued"}"><td class="l">${running ? "running" : "scheduled"}</td>`;
+      const head = `<tr class="st-${running ? "running" : "queued"}"><td class="l">${running ? "running" + stepText(u.step) : "scheduled"}</td>`;
       const end = `<td class="l">${esc(start)}</td><td></td></tr>`;
       // A unit of deploy/run-branch, or of deploy/run-capacity with --gerrit, reads like a job of
       // the queue, with the unit below its subject.
@@ -1371,7 +1373,7 @@ function runBranch(r) {
         ? "next " + day(state.main.next)
         : "-";
     const main =
-      `<tr class="st-${mainRunning ? "running" : "queued"}"><td class="l">${mainRunning ? "running" : state.main.running ? "scheduled" : "timer"}</td>` +
+      `<tr class="st-${mainRunning ? "running" : "queued"}"><td class="l">${mainRunning ? "running" + stepText(state.main.step) : state.main.running ? "scheduled" : "timer"}</td>` +
       `<td class="l" colspan="4">main<span class="ref">every hour, when main has a new commit</span></td>` +
       `<td class="l">${esc(mainStart)}</td><td></td></tr>`;
     tab.innerHTML =
@@ -1406,7 +1408,7 @@ function runBranch(r) {
             );
           const what = cap ? `<div>${esc(capacityText(j))}</div>` : "";
           return (
-            `<tr class="st-${j.waiting ? "queued" : j.state}"><td class="l">${j.waiting ? "scheduled" : STATES[j.state] || esc(j.state)}${j.exit ? ` <span class="ref">exit ${esc(j.exit)}</span>` : ""}</td>` +
+            `<tr class="st-${j.waiting ? "queued" : j.state}"><td class="l">${j.waiting ? "scheduled" : (STATES[j.state] || esc(j.state)) + stepText(j.step)}${j.exit ? ` <span class="ref">exit ${esc(j.exit)}</span>` : ""}</td>` +
             (j.change
               ? `<td class="l">${gerritLink(j.branch, String(j.change))}</td>` +
                 `<td class="l">${gerritLink(String(j.patchset), j.change + "/" + j.patchset)}<span class="ref">${esc(j.revision.slice(0, 12))}</span></td>` +

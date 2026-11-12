@@ -17,6 +17,18 @@ take_lock() {
     echo "$$ $(date +%s)" > "$state/lock-holder"
     # cool-build then knows that its caller holds the lock already.
     export COOL_PERF_LOCKED=1
+    lock_held=1
+    lock_step "preparing"
+}
+
+# Record the step that the holder of the lock is at, such as "building" or "measuring, run 2 of
+# 3", in lock-step beside lock-holder: the pid of this script, the time the step started and its
+# text. The Schedule tab shows the step beside a running job. A script that does not hold the lock
+# records nothing.
+lock_step() {
+    [ -n "${lock_held:-}" ] || return 0
+    local state=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
+    echo "$$ $(date +%s) $*" > "$state/lock-step"
 }
 
 # The ref of a patch set of a Gerrit change, "<number>" for its current patch set or
