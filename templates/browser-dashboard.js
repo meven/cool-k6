@@ -510,8 +510,9 @@ function syncViews() {
     .querySelectorAll(".legend .key[data-g]")
     .forEach((k) => k.classList.toggle("off", !SHOW[k.dataset.g]));
 }
-document.querySelector(".views").addEventListener("click", (e) => {
-  const b = e.target.closest(".vt");
+// The same buttons in the Compare tab keep the metrics of the groups shown.
+document.addEventListener("click", (e) => {
+  const b = e.target.closest(".views .vt");
   if (!b) return;
   SHOW[b.dataset.v] = !SHOW[b.dataset.v];
   try {
@@ -522,6 +523,7 @@ document.querySelector(".views").addEventListener("click", (e) => {
     if (!fullChart || !fullChart.contains(svg)) render(svg, viewOf(svg.dataset.key));
   });
   if (fullChart) drawFull();
+  renderCompare();
 });
 syncViews();
 
@@ -675,9 +677,11 @@ const heapOf = (r) => {
   const x = r.metrics.browser_heap_mb;
   return x ? x.avg : null;
 };
+// g is the group of lines that the buttons of the charts show or hide.
 const CMP_METRICS = [
   {
     name: "instructions, document kit",
+    g: "instr",
     get: (r) => insOf(r, "kit"),
     fmt: (v) => (v / 1e9).toFixed(2) + " G",
     th: 0.01,
@@ -685,6 +689,7 @@ const CMP_METRICS = [
   },
   {
     name: "instructions, coolwsd",
+    g: "instr",
     get: (r) => insOf(r, "master"),
     fmt: (v) => (v / 1e9).toFixed(2) + " G",
     th: 0.01,
@@ -693,6 +698,7 @@ const CMP_METRICS = [
   // Chromium and the k6 process that drives it, in the k6 container
   {
     name: "instructions, browser",
+    g: "instr",
     get: (r) => insOf(r, "browser"),
     fmt: (v) => (v / 1e9).toFixed(2) + " G",
     th: 0.01,
@@ -700,6 +706,7 @@ const CMP_METRICS = [
   },
   ...MS.map((s) => ({
     name: NAMES[s.m] || s.m,
+    g: "times",
     get: (r) => {
       const x = r.metrics[s.m];
       return x ? x.avg : null;
@@ -708,9 +715,17 @@ const CMP_METRICS = [
     th: 0.05,
     abs: 50,
   })),
-  { name: "COOL doc memory", get: memOf, fmt: (v) => Math.round(v) + " MB", th: 0.03, abs: 10 },
+  {
+    name: "COOL doc memory",
+    g: "mem",
+    get: memOf,
+    fmt: (v) => Math.round(v) + " MB",
+    th: 0.03,
+    abs: 10,
+  },
   {
     name: "kit memory, resident",
+    g: "mem",
     get: (r) => {
       const s = stackOf(r);
       return s ? s.total : null;
@@ -719,11 +734,32 @@ const CMP_METRICS = [
     th: 0.03,
     abs: 10,
   },
-  { name: "coolwsd peak", get: masterOf, fmt: (v) => Math.round(v) + " MB", th: 0.03, abs: 10 },
+  {
+    name: "coolwsd peak",
+    g: "mem",
+    get: masterOf,
+    fmt: (v) => Math.round(v) + " MB",
+    th: 0.03,
+    abs: 10,
+  },
   // The JavaScript heap is 25 to 50 MB and moves by up to a third between runs with the
   // garbage collector, so it counts by its share alone.
-  { name: "browser heap", get: heapOf, fmt: (v) => Math.round(v) + " MB", th: 0.1, abs: 0 },
-  { name: "page process", get: tabOf, fmt: (v) => Math.round(v) + " MB", th: 0.03, abs: 10 },
+  {
+    name: "browser heap",
+    g: "mem",
+    get: heapOf,
+    fmt: (v) => Math.round(v) + " MB",
+    th: 0.1,
+    abs: 0,
+  },
+  {
+    name: "page process",
+    g: "mem",
+    get: tabOf,
+    fmt: (v) => Math.round(v) + " MB",
+    th: 0.03,
+    abs: 10,
+  },
 ];
 const median = (a) => {
   const s = a.slice().sort((x, y) => x - y),
@@ -832,7 +868,7 @@ function renderCompare() {
         return;
       }
       const lines = [];
-      CMP_METRICS.forEach((m) => {
+      CMP_METRICS.filter((m) => SHOW[m.g]).forEach((m) => {
         const va = median(A.map(m.get).filter((v) => v != null)),
           vb = median(B.map(m.get).filter((v) => v != null));
         if (va == null || vb == null || !va) return;
@@ -868,6 +904,12 @@ function renderCompare() {
     `${changes} change${changes === 1 ? "" : "s"} in ${docs} test${docs === 1 ? "" : "s"}, ${still} metric${still === 1 ? "" : "s"} within the noise: ` +
     `a change counts from 1% and 0.05 G for instructions, 3% and 10 MB for memory, 10% for the browser heap, 5% and 50 ms for times. ` +
     `Each value is the median over the runs of the side.` +
+    (["instr", "times", "mem"].some((g) => !SHOW[g])
+      ? ` The ${[["instr", "instructions"], ["times", "times"], ["mem", "memory"]]
+          .filter(([g]) => !SHOW[g])
+          .map(([, n]) => n)
+          .join(" and the ")} are hidden.`
+      : "") +
     (missing
       ? ` ${missing} test${missing === 1 ? " was" : "s were"} measured on one side only.`
       : "");
