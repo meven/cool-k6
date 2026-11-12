@@ -69,6 +69,7 @@ def summary(d: Path, m: re.Match, newest: bool = True) -> dict:
     cg = cgroup(d)
     kills = oom_kills(d, _first_t_ms(d / "timeline.csv"))
     steps = plateaus(cap, kills)
+    build = _json(d / "build.json") or {}
     # Only the newest run can still be running, and only while it writes its files.
     if cap is not None:
         state = "done"
@@ -80,6 +81,10 @@ def summary(d: Path, m: re.Match, newest: bool = True) -> dict:
         "run": d.name,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.strptime(m.group(1), "%Y%m%dT%H%M%SZ")),
         "commit": m.group(2),
+        # the branch and the ref that deploy/run-capacity built with --gerrit or --ref, or None
+        # for a run of the build that the tree held
+        "branch": build.get("branch"),
+        "ref": build.get("ref"),
         # a run without capacity.json is still running, or k6 did not finish
         "done": cap is not None,
         "state": state,

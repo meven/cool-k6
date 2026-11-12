@@ -1576,7 +1576,7 @@ function runBranch(r) {
     msg.textContent = "";
     const shownRuns = list.filter((r) => !filter || scenario(r) === filter);
     tab.innerHTML =
-      "<thead><tr><th>started</th><th>commit</th><th class='txt'>scenario</th><th>capacity</th><th class='txt'>first failed stage</th>" +
+      "<thead><tr><th>started</th><th class='txt'>commit</th><th class='txt'>scenario</th><th>capacity</th><th class='txt'>first failed stage</th>" +
       "<th>limits</th><th>peak memory</th><th>OOM kills</th><th></th></tr></thead><tbody>" +
       shownRuns
         .map((r) => {
@@ -1585,7 +1585,9 @@ function runBranch(r) {
             `<tr${r.run === run ? ' class="sel"' : ""}>` +
             `<td><button type="button" class="linkish" data-run="${esc(r.run)}">` +
             `${esc(when(r.ts))}</button></td>` +
-            `<td><code>${esc(r.commit)}</code></td>` +
+            `<td class="txt"><code>${esc(r.commit)}</code>` +
+            (r.branch ? `<span class="ref">${runBranch(r)}</span>` : "") +
+            "</td>" +
             `<td class="txt" title="${esc(describe(r))}">${esc(scenario(r))}</td>` +
             `<td${capTitle(r)}>${capText(r)}</td>` +
             `<td class="txt why">${esc(stoppedBy(r))}</td>` +
@@ -1650,7 +1652,8 @@ function runBranch(r) {
     const r = shown;
     det.hidden = false;
     document.getElementById("capdh").textContent =
-      `${scenario(r)}: run of ${when(r.ts)}, commit ${r.commit}`;
+      `${scenario(r)}: run of ${when(r.ts)}, commit ${r.commit}` +
+      (r.branch ? ` of ${r.branch}` + (r.ref && r.ref !== r.branch ? ` (${r.ref})` : "") : "");
     const n = cores(r.cpus);
     document.getElementById("capdnote").textContent =
       (r.heap_profile

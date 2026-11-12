@@ -31,6 +31,7 @@ SCENARIOS+=" writer-shared calc-shared impress-shared finance-shared"
 wait=
 change=
 ref=
+branch=
 scenarios=()
 while [ $# -gt 0 ]; do
     case $1 in
@@ -57,9 +58,11 @@ take_lock "$wait"
 if [ -n "$change" ] || [ -n "$ref" ]; then
     if [ -n "$change" ]; then
         ref=$(gerrit_ref "$change")
+        branch=gerrit-${change%%/*}
         build_args=(--no-save --ref "$ref" --from "$GERRIT_URL/online")
     else
         build_args=(--no-save --ref "$ref")
+        branch=${ref#origin/}
     fi
     [ "${COOL_PERF_ENGINE:-1}" = 1 ] && build_args+=(--engine)
     echo "=== building $ref${change:+ of change ${change%%/*}}"
@@ -77,6 +80,9 @@ for scenario in "${scenarios[@]}"; do
     mkdir -p "$out"
     # The dashboard names the scenario of a run before capacity.json exists.
     [ -z "$scenario" ] || echo "$scenario" > "$out/scenario"
+    # The Capacity tab shows the branch and the ref of a build made here beside the commit.
+    [ -z "$branch" ] || python3 -c 'import json, sys
+print(json.dumps({"branch": sys.argv[1], "ref": sys.argv[2]}))' "$branch" "$ref" > "$out/build.json"
     echo "=== capacity run of $commit${scenario:+, scenario $scenario}, into $out"
 
     # A coolwsd left by an earlier run would answer instead of the one that capacity-profile
