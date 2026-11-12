@@ -539,6 +539,11 @@ body.has-full::before {
 .sched-form #schchange {
   width: 22ch;
 }
+.cap-pager:not([hidden]) {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
 .sched-form button,
 .sched td.acts button {
   font: inherit;

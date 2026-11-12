@@ -1457,6 +1457,8 @@ function runBranch(r) {
 (function () {
   const tab = document.getElementById("captab"),
     scenSel = document.getElementById("capscen"),
+    kindSel = document.getElementById("capkind"),
+    pager = document.getElementById("cappager"),
     msg = document.getElementById("capmsg"),
     det = document.getElementById("capdet"),
     charts = document.getElementById("capcharts");
@@ -1507,26 +1509,56 @@ function runBranch(r) {
       : r.users_per_document > 1
         ? `copies of blank.odt, ${r.users_per_document} users on each`
         : "copies of blank.odt, one user each";
-  let filter = "";
-  // Only the scenarios that have a run are offered, each with its number of runs.
-  function drawFilter() {
-    const counts = new Map();
-    for (const r of list) counts.set(scenario(r), (counts.get(scenario(r)) || 0) + 1);
-    if (filter && !counts.has(filter)) filter = "";
-    scenSel.innerHTML =
-      `<option value="">all scenarios (${list.length})</option>` +
+  let filter = "",
+    kindFilter = "",
+    page = 0;
+  // The profile that a run recorded: a heap profile, a perf flamegraph, or neither.
+  const KINDS = { flamegraph: "flamegraph", heap: "heap profile", none: "no profile" };
+  const kind = (r) => (r.heap_profile ? "heap" : r.flamegraph ? "flamegraph" : "none");
+  const PAGE = 20;
+  const matches = (r) =>
+    (!filter || scenario(r) === filter) && (!kindFilter || kind(r) === kindFilter);
+  // Only the scenarios and the profiles that have a run are offered, each with its number of runs.
+  function options(sel, all, counts, value, name = (s) => s) {
+    sel.innerHTML =
+      `<option value="">${all} (${list.length})</option>` +
       [...counts]
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([s, n]) => `<option value="${esc(s)}">${esc(s)} (${n})</option>`)
+        .map(([s, n]) => `<option value="${esc(s)}">${esc(name(s))} (${n})</option>`)
         .join("");
-    scenSel.value = filter;
+    sel.value = value;
   }
-  scenSel.addEventListener("change", () => {
+  function drawFilter() {
+    const scens = new Map(),
+      kinds = new Map();
+    for (const r of list) {
+      scens.set(scenario(r), (scens.get(scenario(r)) || 0) + 1);
+      kinds.set(kind(r), (kinds.get(kind(r)) || 0) + 1);
+    }
+    if (filter && !scens.has(filter)) filter = "";
+    if (kindFilter && !kinds.has(kindFilter)) kindFilter = "";
+    options(scenSel, "all scenarios", scens, filter);
+    options(kindSel, "all profiles", kinds, kindFilter, (k) => KINDS[k] || k);
+  }
+  function refilter() {
     filter = scenSel.value;
-    // The run shown below the list is one of the scenario picked.
-    const first = list.find((r) => !filter || scenario(r) === filter);
-    if (first && filter && scenario(list.find((r) => r.run === run) || {}) !== filter) pick(first.run);
+    kindFilter = kindSel.value;
+    page = 0;
+    // The run shown below the list is one that the filters keep.
+    const first = list.find(matches),
+      cur = list.find((r) => r.run === run);
+    if (first && (!cur || !matches(cur))) pick(first.run);
     else drawList();
+  }
+  scenSel.addEventListener("change", refilter);
+  kindSel.addEventListener("change", refilter);
+  document.getElementById("capprev").addEventListener("click", () => {
+    page--;
+    drawList();
+  });
+  document.getElementById("capnext").addEventListener("click", () => {
+    page++;
+    drawList();
   });
   // A stage in which the kernel killed a process of the server for lack of memory ends the
   // capacity, even when every session of it passed.
@@ -1574,7 +1606,15 @@ function runBranch(r) {
       return;
     }
     msg.textContent = "";
-    const shownRuns = list.filter((r) => !filter || scenario(r) === filter);
+    const kept = list.filter(matches),
+      pages = Math.max(1, Math.ceil(kept.length / PAGE));
+    page = Math.min(Math.max(page, 0), pages - 1);
+    const shownRuns = kept.slice(page * PAGE, (page + 1) * PAGE);
+    pager.hidden = pages < 2;
+    document.getElementById("cappage").textContent =
+      `runs ${page * PAGE + 1} to ${page * PAGE + shownRuns.length} of ${kept.length}`;
+    document.getElementById("capprev").disabled = page === 0;
+    document.getElementById("capnext").disabled = page === pages - 1;
     tab.innerHTML =
       "<thead><tr><th>started</th><th class='txt'>commit</th><th class='txt'>scenario</th><th>capacity</th><th class='txt'>first failed stage</th>" +
       "<th>limits</th><th>peak memory</th><th>OOM kills</th><th></th></tr></thead><tbody>" +
@@ -1627,6 +1667,8 @@ function runBranch(r) {
       run = first ? first.run : null;
     }
     drawFilter();
+    const at = list.filter(matches).findIndex((r) => r.run === run);
+    if (at >= 0) page = Math.floor(at / PAGE);
     drawList();
     if (run) await pick(run);
     if (missing) msg.textContent = `There is no capacity run ${missing}, so the latest one is shown.`;

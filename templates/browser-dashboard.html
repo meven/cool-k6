@@ -340,8 +340,17 @@ $css</style>
               >scenario
               <select id="capscen"></select>
             </label>
+            <label
+              >profile
+              <select id="capkind"></select>
+            </label>
           </p>
           <div class="cmp-scroll"><table id="captab"></table></div>
+          <p class="cmp-note cap-pager" id="cappager" hidden>
+            <button type="button" id="capprev">Newer</button>
+            <span id="cappage"></span>
+            <button type="button" id="capnext">Older</button>
+          </p>
           <p class="cmp-note" id="capmsg" role="status"></p>
         </section>
         <section class="cmp runs" id="capdet" aria-labelledby="capdh" hidden>
