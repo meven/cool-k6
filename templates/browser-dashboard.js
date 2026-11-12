@@ -1028,6 +1028,9 @@ function runRange(r) {
       : `<code>${esc(text)}</code>`) + label
   );
 }
+// A ref of online as a job names it. Branches of the origin remote read without "origin/", as
+// main does.
+const refName = (ref) => (ref || "").replace(/^origin\//, "");
 // A run of a Gerrit change links its branch to the change and its ref to the patch set.
 const GERRIT = "https://gerrit.collaboraoffice.com/c/online/+/";
 function gerritLink(text, path) {
@@ -1036,10 +1039,11 @@ function gerritLink(text, path) {
 function runBranch(r) {
   const b = /^gerrit-(\d+)$/.exec(r.branch);
   const name = b ? gerritLink(r.branch, b[1]) : esc(r.branch);
-  if (!r.ref || r.ref === r.branch) return name;
+  if (!r.ref || refName(r.ref) === r.branch) return name;
   const ps = /^refs\/changes\/\d+\/(\d+)\/(\d+)$/.exec(r.ref);
   return (
-    name + `<span class="ref">${ps ? gerritLink(r.ref, ps[1] + "/" + ps[2]) : esc(r.ref)}</span>`
+    name +
+    `<span class="ref">${ps ? gerritLink(r.ref, ps[1] + "/" + ps[2]) : esc(refName(r.ref))}</span>`
   );
 }
 (function () {
@@ -1147,7 +1151,7 @@ function runBranch(r) {
   for (let n = 1; n <= 5; n++) runsSel.add(new Option(String(n), String(n), n === 3, n === 3));
 
   // A capacity job measures a change or a ref of online, with one scenario and one profile.
-  const jobName = (j) => (j.change ? `${j.change}/${j.patchset}` : j.ref);
+  const jobName = (j) => (j.change ? `${j.change}/${j.patchset}` : refName(j.ref));
   const PROFILES = { flamegraph: "flamegraph", heap: "heap profile" };
   const capacityText = (j) =>
     `capacity run of ${j.scenario || "blank.odt"}, ${PROFILES[j.profile] || j.profile}`;
@@ -1262,7 +1266,7 @@ function runBranch(r) {
     state.jobs.forEach((j) => {
       const label =
         j.kind === "capacity"
-          ? `${j.change ? j.branch + " patch set " + j.patchset : j.ref}, ${capacityText(j)}`
+          ? `${j.change ? j.branch + " patch set " + j.patchset : refName(j.ref)}, ${capacityText(j)}`
           : `${j.branch} patch set ${j.patchset}, ${j.runs} run${j.runs === 1 ? "" : "s"}`;
       if (j.state === "queued") {
         const t = j.not_before ? Date.parse(j.not_before) : now;
@@ -1413,7 +1417,7 @@ function runBranch(r) {
               ? `<td class="l">${gerritLink(j.branch, String(j.change))}</td>` +
                 `<td class="l">${gerritLink(String(j.patchset), j.change + "/" + j.patchset)}<span class="ref">${esc(j.revision.slice(0, 12))}</span></td>` +
                 `<td class="l subj">${esc(j.subject)}<span class="ref">${esc(j.uploader)}</span>${what}</td>`
-              : `<td class="l"><code>${esc(j.ref)}</code></td><td class="l">-</td>` +
+              : `<td class="l"><code>${esc(refName(j.ref))}</code></td><td class="l">-</td>` +
                 `<td class="l subj">${what}</td>`) +
             `<td>${j.runs}</td><td class="l">${esc(start)}</td><td class="l acts">${acts.join(" ")}</td></tr>`
           );
@@ -1744,7 +1748,7 @@ function runBranch(r) {
       if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
       const j = body.job;
       fsay(
-        `Queued ${j.change ? j.change + "/" + j.patchset : j.ref}, ` +
+        `Queued ${j.change ? j.change + "/" + j.patchset : refName(j.ref)}, ` +
           `${j.scenario || "blank.odt"}, ${j.profile === "heap" ? "heap profile" : "flamegraph"}.`,
       );
       document.getElementById("captarget").value = "";
@@ -2201,8 +2205,12 @@ function openDetail(runs, i) {
   mnext.disabled = i >= runs.length - 1;
   mpos.textContent = `${i + 1} of ${runs.length}`;
   let meta = `commit ${esc(r.commit || "(unknown)")}  ·  ${esc(day(r.ts))} ${esc(TZ)}`;
-  if (BRANCHES.length > 1)
-    meta += `  ·  branch ${esc(r.branch || "main")}` + (r.ref ? ` (${esc(r.ref)})` : "");
+  if (BRANCHES.length > 1) {
+    const branch = r.branch || "main";
+    meta +=
+      `  ·  branch ${esc(branch)}` +
+      (r.ref && refName(r.ref) !== branch ? ` (${esc(refName(r.ref))})` : "");
+  }
   if (r.file) meta += `  ·  ${esc(r.file)}`;
   if (r.runid) meta += `  ·  run ${esc(r.runid)}`;
   meta += commitRange(runs, i);
