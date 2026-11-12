@@ -572,6 +572,10 @@ sudo systemd-run --unit=cool-perf-heap \
   deploy/run-capacity --wait finance-shared
 ```
 
+A capacity run logs at warning level. To see why the server behaves
+differently under heaptrack, add `-p Environment=CAP_LOG_LEVEL=debug`, which
+keeps that level for coolwsd and the kits.
+
 Every process writes its raw trace into `heaptrack/` of the run while it
 runs, about 200 MB a minute for a kit that a user edits, and
 `heap-report.py` deletes them once it has drawn the flamegraphs. Interpreting

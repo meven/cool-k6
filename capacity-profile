@@ -28,6 +28,9 @@
 #                    required. They need a cgroup v2 that this script may write, as under
 #                    systemd-run with Delegate=yes. k6, perf, the samplers and the browser user
 #                    run on the other cores, so the server has its cores to itself.
+#   CAP_LOG_LEVEL  - logging.level of coolwsd and the kits (default warning). A level above
+#                    warning takes cpu from what is being measured, so it suits a run that
+#                    looks for a cause rather than a number, such as a heap run.
 #   METRICS_INTERVAL - seconds between two samples of coolwsd's /cool/getMetrics (default 10)
 #   METRICS_AUTH   - admin console user:password for /cool/getMetrics (default admin:admin)
 #   ENGINE_CONFIG  - an .xcd file of engine settings, such as deploy/engine-config/*.xcd, which
@@ -228,7 +231,12 @@ if ! cool_up; then
     # A fixed port for k6, and trace logging off: it takes cpu from what is being measured.
     # coolwsd logs to its standard error, so that its warnings, which name refused loads and
     # failed saves, land in coolwsd.log beside the output of the kits.
-    cool_cmd=$(sed -e 's/--find-free-port//' -e 's/logging\.level=[a-z]*/logging.level=warning/' \
+    log_level=${CAP_LOG_LEVEL:-warning}
+    case $log_level in
+        none|fatal|critical|error|warning|notice|information|debug|trace) ;;
+        *) die "CAP_LOG_LEVEL=$log_level is not a level of coolwsd" ;;
+    esac
+    cool_cmd=$(sed -e 's/--find-free-port//' -e "s/logging\.level=[a-z]*/logging.level=$log_level/" \
                    -e 's/logging\.file\[@enable\]=true/logging.file[@enable]=false/' \
                    -e 's/logging_ui_cmd\.file\[@enable\]=true/logging_ui_cmd.file[@enable]=false/' \
                    <<< "$cool_cmd")
