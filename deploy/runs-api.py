@@ -14,6 +14,9 @@ request, and nothing is deleted.
     GET  /api/schedule                  the queue, the next run of the timer, and the
                                         cool-perf units started by hand
     POST /api/schedule                  {"change": "18591/3", "runs": 3, "at": null or ISO time}
+                                        or a capacity run of a change or a ref of online:
+                                        {"kind": "capacity", "target": "18591" or "origin/main",
+                                         "scenario": "writer", "profile": "heap", "at": ...}
     POST /api/schedule/<job>/cancel     a queued job
     GET  /api/schedule/<job>/log        the end of the log of a job
     GET  /api/capacity                  a summary of each capacity run
@@ -244,6 +247,15 @@ def branch_change(argv: list[str]) -> dict | None:
     return {**patchsets[text], "runs": int(runs) if runs.isdigit() else 1}
 
 
+def all_scenarios() -> list[str]:
+    """The scenarios that deploy/run-capacity knows."""
+    try:
+        text = (REPO / "deploy" / "run-capacity").read_text()
+    except OSError:
+        return []
+    return " ".join(re.findall(r'^SCENARIOS\+?="([^"]*)"', text, re.M)).split()
+
+
 def capacity_scenarios(argv: list[str], environment: str) -> list[str] | None:
     """The scenarios that a unit of deploy/run-capacity runs, in order: its arguments, all of
     them for "all", else the CAP_SCENARIO of its environment, else blank.odt. None for a unit
@@ -260,11 +272,7 @@ def capacity_scenarios(argv: list[str], environment: str) -> list[str] | None:
         elif not a.startswith("-"):
             names.append(a)
     if names == ["all"]:
-        try:
-            text = (REPO / "deploy" / "run-capacity").read_text()
-            names = " ".join(re.findall(r'^SCENARIOS\+?="([^"]*)"', text, re.M)).split()
-        except OSError:
-            pass
+        names = all_scenarios() or names
     if names:
         return names
     m = re.search(r"(?:^|\s)CAP_SCENARIO=(\S+)", environment)
@@ -398,11 +406,21 @@ def schedule_add():
         if at.tzinfo is None:
             return fail(400, "at needs its time zone")
     try:
-        job = runqueue.add(str(body.get("change", "")), body.get("runs", 3), at)
+        if body.get("kind") == "capacity":
+            job = runqueue.add_capacity(str(body.get("target", "")),
+                                        str(body.get("scenario") or ""),
+                                        str(body.get("profile", "")), all_scenarios(), at)
+        else:
+            job = runqueue.add(str(body.get("change", "")), body.get("runs", 3), at)
     except runqueue.Refused as e:
         return fail(400, str(e))
-    app.logger.info("queued %s: change %s/%s, %s runs", job["id"], job["change"],
-                    job["patchset"], job["runs"])
+    if job.get("kind") == "capacity":
+        app.logger.info("queued %s: capacity run of %s, %s, %s", job["id"],
+                        job.get("ref") or f"{job['change']}/{job['patchset']}",
+                        job["scenario"] or "blank.odt", job["profile"])
+    else:
+        app.logger.info("queued %s: change %s/%s, %s runs", job["id"], job["change"],
+                        job["patchset"], job["runs"])
     return jsonify(job=job)
 
 

@@ -6,10 +6,12 @@ measures as a run of the timer does:
     sudo systemctl status cool-perf-queue.service
     journalctl -u cool-perf-queue.service -f
 
-Each job is deploy/run-branch --gerrit <change>/<patch set> --runs <n> --wait, which takes the
-lock of deploy/nightly, so a job and a run of the timer never measure at the same time. The
-output of a job goes to its log in the queue directory, which the Schedule tab shows.
+Each job is deploy/run-branch --gerrit <change>/<patch set> --runs <n> --wait, or for a capacity
+job deploy/run-capacity --wait with the change or the ref and the scenario. Both take the lock of
+deploy/nightly, so a job and a run of the timer never measure at the same time. The output of a
+job goes to its log in the queue directory, which the Schedule tab shows.
 """
+import os
 import subprocess
 import sys
 import time
@@ -20,15 +22,50 @@ sys.path.insert(0, str(REPO / "deploy"))
 import runqueue  # noqa: E402
 
 POLL_S = 15
+HEAPTRACK = os.environ.get("COOL_PERF_HEAPTRACK", "/opt/heaptrack/bin/heaptrack")
+
+
+def command(job: dict) -> tuple[list[str], dict]:
+    if job.get("kind") != "capacity":
+        return ([str(REPO / "deploy" / "run-branch"), "--gerrit",
+                 f"{job['change']}/{job['patchset']}", "--runs", str(job["runs"]), "--wait"], {})
+    cmd = [str(REPO / "deploy" / "run-capacity"), "--wait"]
+    cmd += (["--gerrit", f"{job['change']}/{job['patchset']}"] if job.get("change")
+            else ["--ref", job["ref"]])
+    if job["scenario"]:
+        cmd.append(job["scenario"])
+    # heaptrack slows the server down several times, so a heap run has one short stage, as
+    # DEPLOY-VM.md gives it.
+    env = ({"HEAPTRACK": HEAPTRACK, "CAP_VUS": "10", "CAP_HOLD": "180s"}
+           if job["profile"] == "heap" else {})
+    return cmd, env
+
+
+def free_cores() -> None:
+    """capacity-profile moves the processes of the service, this one too, into a runner cgroup
+    pinned to the cores that it leaves to k6. An empty cpuset.cpus gives the next jobs every core
+    of the service again."""
+    try:
+        own = Path("/sys/fs/cgroup" + Path("/proc/self/cgroup").read_text()
+                   .split("0::", 1)[1].strip())
+        if own.name == "runner":
+            (own / "cpuset.cpus").write_text("\n")
+    except (OSError, IndexError) as e:
+        print(f"the cores of the runner cgroup could not be reset: {e}", flush=True)
 
 
 def run(job: dict) -> int:
-    cmd = [str(REPO / "deploy" / "run-branch"),
-           "--gerrit", f"{job['change']}/{job['patchset']}", "--runs", str(job["runs"]), "--wait"]
-    print(f"job {job['id']}: {' '.join(cmd)}", flush=True)
-    with open(runqueue.log_path(job["id"]), "ab") as log:
-        return subprocess.run(cmd, cwd=REPO, stdin=subprocess.DEVNULL,
-                              stdout=log, stderr=subprocess.STDOUT).returncode
+    cmd, env = command(job)
+    shown = " ".join(f"{k}={v}" for k, v in env.items())
+    print(f"job {job['id']}: {shown + ' ' if shown else ''}{' '.join(cmd)}", flush=True)
+    try:
+        with open(runqueue.log_path(job["id"]), "ab") as log:
+            return subprocess.run(cmd, cwd=REPO, env={**os.environ, **env},
+                                  stdin=subprocess.DEVNULL, stdout=log,
+                                  stderr=subprocess.STDOUT).returncode
+    finally:
+        if job.get("kind") == "capacity":
+            free_cores()
 
 
 def main() -> int:

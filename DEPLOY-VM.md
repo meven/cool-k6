@@ -302,6 +302,7 @@ as a copy of `deploy/cool-perf.env`, which explains each one:
 | `COOL_PERF_STORE` | `/var/lib/cool-perf` | the published runs and the dashboard |
 | `COOL_PERF_KEEP` | `240` | how many runs the store keeps, about 2 GB |
 | `COOL_PERF_SCHEDULE_DOMAINS` | `collabora.com,collabora.co.uk` | whose patch sets the Schedule tab accepts |
+| `COOL_PERF_HEAPTRACK` | `/opt/heaptrack/bin/heaptrack` | the heaptrack of a heap profile queued from the Capacity tab |
 | `COOL_PERF_PROBE_MAX` | `1.12` | a run is busy when the machine probe is slower than usual by this factor |
 | `COOL_PERF_STEAL_MAX` | `2` | a run is busy when the hypervisor took more than this percentage of the CPU time |
 | `COOL_PERF_BUSY_RETRIES` | `3` | busy runs of a commit after which the commit is not measured again; each is published with a busy mark |
@@ -449,6 +450,17 @@ job's coolwsd with it and marks the job failed:
 ```
 sudo systemctl restart cool-perf-queue.service
 ```
+
+**Queuing a capacity run from the dashboard.** The form of the Capacity tab
+queues one capacity run of a scenario, with a flamegraph or a heap profile, of
+a Gerrit change or of a branch, tag or commit of online, such as
+`origin/main`. The same rules apply to a change. `deploy/run-queue` runs
+`deploy/run-capacity --wait` with `--gerrit` or `--ref` for it, and a heap
+profile with `HEAPTRACK=$COOL_PERF_HEAPTRACK`, `CAP_VUS=10` and
+`CAP_HOLD=180s`. capacity-profile moves the processes of the service into a
+cgroup of its own on the cores that it leaves to k6, so after a capacity job
+the runner gives that cgroup every core again, and the next jobs measure as
+before.
 
 To run it later from the command line, schedule it with systemd-run, with the settings of
 cool-perf.service. `--wait` has it start once a run of the timer has ended, rather

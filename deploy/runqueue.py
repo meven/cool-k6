@@ -28,6 +28,11 @@ MAX_RUNS = 5
 # How many finished jobs the queue keeps, with their logs.
 KEEP_DONE = 30
 
+# The kinds of profile of a capacity job: a perf flamegraph, or a heaptrack record of the server.
+PROFILES = ("flamegraph", "heap")
+# A branch, tag or commit of the online repository, which cool-build fetches from origin.
+REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
+
 JOBID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}")
 # 18591, 18591/3, or the address of the change on Gerrit, with or without a patch set.
 CHANGE = re.compile(r"(?:.*/\+/)?(\d{1,7})(?:/(\d{1,4}))?/?")
@@ -134,18 +139,41 @@ def resolve(text: str) -> dict:
             "uploader": rev["uploader"].get("name") or email}
 
 
-def add(text: str, runs: int, at: datetime | None) -> dict:
-    if not isinstance(runs, int) or not 1 <= runs <= MAX_RUNS:
-        raise Refused(f"runs is a number from 1 to {MAX_RUNS}")
-    patchset = resolve(text)
+def _queue(fields: dict, at: datetime | None) -> dict:
     t = now()
-    job = {"id": t.strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3),
-           "branch": f"gerrit-{patchset['change']}", **patchset, "runs": runs,
+    job = {"id": t.strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3), **fields,
            "created": iso(t), "not_before": iso(at) if at else None,
            "state": "queued", "started": None, "ended": None, "exit": None}
     with locked():
         write(job)
     return job
+
+
+def add(text: str, runs: int, at: datetime | None) -> dict:
+    if not isinstance(runs, int) or not 1 <= runs <= MAX_RUNS:
+        raise Refused(f"runs is a number from 1 to {MAX_RUNS}")
+    patchset = resolve(text)
+    return _queue({"branch": f"gerrit-{patchset['change']}", **patchset, "runs": runs}, at)
+
+
+def add_capacity(target: str, scenario: str, profile: str, scenarios: list[str],
+                 at: datetime | None) -> dict:
+    """A capacity run of one scenario, "" for copies of blank.odt, of a Gerrit change or of a
+    ref of the online repository."""
+    if scenario and scenario not in scenarios:
+        raise Refused(f"there is no scenario {scenario}")
+    if profile not in PROFILES:
+        raise Refused("the profile is " + " or ".join(PROFILES))
+    target = target.strip()
+    fields = {"kind": "capacity", "scenario": scenario, "profile": profile, "runs": 1}
+    if CHANGE.fullmatch(target):
+        patchset = resolve(target)
+        fields.update(branch=f"gerrit-{patchset['change']}", **patchset)
+    else:
+        if not REF.fullmatch(target) or ".." in target or target.endswith((".lock", "/")):
+            raise Refused("give a Gerrit change, or a branch, tag or commit of online")
+        fields.update(branch=target.removeprefix("origin/"), ref=target)
+    return _queue(fields, at)
 
 
 def cancel(jobid: str) -> dict:

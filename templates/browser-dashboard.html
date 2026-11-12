@@ -352,6 +352,38 @@ $css</style>
             <button type="button" id="capnext">Older</button>
           </p>
           <p class="cmp-note" id="capmsg" role="status"></p>
+          <form id="capform" class="sched-form">
+            <label
+              >Gerrit change or ref
+              <input
+                id="captarget"
+                type="text"
+                required
+                placeholder="18591/3, its address, or origin/main"
+                autocomplete="off"
+            /></label>
+            <label
+              >scenario
+              <select id="capfscen"></select>
+            </label>
+            <label
+              >profile
+              <select id="capfprof">
+                <option value="flamegraph">flamegraph</option>
+                <option value="heap">heap profile</option>
+              </select>
+            </label>
+            <label
+              >start
+              <input id="capat" type="datetime-local" />
+            </label>
+            <button type="submit" id="capgo">Queue the run</button>
+            <span id="capfmsg" role="status"></span>
+          </form>
+          <p class="cmp-note">
+            A queued run builds the change or the ref first and waits for the other runs, as the
+            Schedule tab lists them. A heap profile has one stage of 10 users for 3 minutes.
+          </p>
         </section>
         <section class="cmp runs" id="capdet" aria-labelledby="capdh" hidden>
           <h2 id="capdh">Run</h2>

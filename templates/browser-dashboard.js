@@ -1104,7 +1104,11 @@ function runBranch(r) {
     timer = null;
   for (let n = 1; n <= 5; n++) runsSel.add(new Option(String(n), String(n), n === 3, n === 3));
 
-  const jobName = (j) => `${j.change}/${j.patchset}`;
+  // A capacity job measures a change or a ref of online, with one scenario and one profile.
+  const jobName = (j) => (j.change ? `${j.change}/${j.patchset}` : j.ref);
+  const PROFILES = { flamegraph: "flamegraph", heap: "heap profile" };
+  const capacityText = (j) =>
+    `capacity run of ${j.scenario || "blank.odt"}, ${PROFILES[j.profile] || j.profile}`;
   const STATES = {
     queued: "queued",
     running: "running",
@@ -1212,7 +1216,10 @@ function runBranch(r) {
           `timer at ${day(new Date(t).toISOString())}, a run if main has moved`,
         );
     state.jobs.forEach((j) => {
-      const label = `${j.branch} patch set ${j.patchset}, ${j.runs} run${j.runs === 1 ? "" : "s"}`;
+      const label =
+        j.kind === "capacity"
+          ? `${j.change ? j.branch + " patch set " + j.patchset : j.ref}, ${capacityText(j)}`
+          : `${j.branch} patch set ${j.patchset}, ${j.runs} run${j.runs === 1 ? "" : "s"}`;
       if (j.state === "queued") {
         const t = j.not_before ? Date.parse(j.not_before) : now;
         mark(
@@ -1348,15 +1355,22 @@ function runBranch(r) {
             acts.push(
               `<a href="api/schedule/${encodeURIComponent(j.id)}/log" target="_blank" rel="noopener">log</a>`,
             );
+          const cap = j.kind === "capacity";
           if (j.state === "done")
             acts.push(
-              `<a href="#view=charts&branch=${encodeURIComponent(j.branch)}" data-reload>charts</a>`,
+              cap
+                ? `<a href="#view=capacity" data-reload>capacity</a>`
+                : `<a href="#view=charts&branch=${encodeURIComponent(j.branch)}" data-reload>charts</a>`,
             );
+          const what = cap ? `<div>${esc(capacityText(j))}</div>` : "";
           return (
             `<tr class="st-${j.waiting ? "queued" : j.state}"><td class="l">${j.waiting ? "scheduled" : STATES[j.state] || esc(j.state)}${j.exit ? ` <span class="ref">exit ${esc(j.exit)}</span>` : ""}</td>` +
-            `<td class="l">${gerritLink(j.branch, String(j.change))}</td>` +
-            `<td class="l">${gerritLink(String(j.patchset), j.change + "/" + j.patchset)}<span class="ref">${esc(j.revision.slice(0, 12))}</span></td>` +
-            `<td class="l subj">${esc(j.subject)}<span class="ref">${esc(j.uploader)}</span></td>` +
+            (j.change
+              ? `<td class="l">${gerritLink(j.branch, String(j.change))}</td>` +
+                `<td class="l">${gerritLink(String(j.patchset), j.change + "/" + j.patchset)}<span class="ref">${esc(j.revision.slice(0, 12))}</span></td>` +
+                `<td class="l subj">${esc(j.subject)}<span class="ref">${esc(j.uploader)}</span>${what}</td>`
+              : `<td class="l"><code>${esc(j.ref)}</code></td><td class="l">-</td>` +
+                `<td class="l subj">${what}</td>`) +
             `<td>${j.runs}</td><td class="l">${esc(start)}</td><td class="l acts">${acts.join(" ")}</td></tr>`
           );
         })
@@ -1646,6 +1660,55 @@ function runBranch(r) {
         .join("") +
       "</tbody>";
   }
+  // A capacity run of one scenario and one profile, queued for the runner of the Schedule tab.
+  const form = document.getElementById("capform"),
+    fscen = document.getElementById("capfscen"),
+    fmsg = document.getElementById("capfmsg"),
+    fgo = document.getElementById("capgo");
+  const fsay = (text, err) => {
+    fmsg.textContent = text;
+    fmsg.classList.toggle("err", !!err);
+  };
+  fscen.innerHTML =
+    Object.keys(SCENARIOS)
+      .map((s) => `<option value="${esc(s)}" title="${esc(SCENARIOS[s])}">${esc(s)}</option>`)
+      .join("") + `<option value="">blank.odt</option>`;
+  if (!(location.protocol === "http:" || location.protocol === "https:")) {
+    fgo.disabled = true;
+    fsay("Open the dashboard from its web server to queue a run.");
+  }
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    fgo.disabled = true;
+    fsay("Checking the run...");
+    try {
+      const at = document.getElementById("capat").value,
+        when = at ? new Date(at) : null;
+      if (when && isNaN(when)) throw new Error("the start is not a date and time");
+      const res = await fetch("api/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "capacity",
+          target: document.getElementById("captarget").value,
+          scenario: fscen.value,
+          profile: document.getElementById("capfprof").value,
+          at: when ? when.toISOString() : null,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
+      const j = body.job;
+      fsay(
+        `Queued ${j.change ? j.change + "/" + j.patchset : j.ref}, ` +
+          `${j.scenario || "blank.odt"}, ${j.profile === "heap" ? "heap profile" : "flamegraph"}.`,
+      );
+      document.getElementById("captarget").value = "";
+    } catch (err) {
+      fsay("Not queued: " + err.message, true);
+    }
+    fgo.disabled = false;
+  });
   tab.addEventListener("click", (e) => {
     const b = e.target.closest("button[data-run]");
     if (b) pick(b.dataset.run);

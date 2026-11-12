@@ -539,6 +539,9 @@ body.has-full::before {
 .sched-form #schchange {
   width: 22ch;
 }
+.sched-form #captarget {
+  width: 32ch;
+}
 .cap-pager:not([hidden]) {
   display: flex;
   gap: 10px;
