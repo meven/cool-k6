@@ -81,20 +81,21 @@ class Sampler(threading.Thread):
 
 
 def baseline_ms(results: Path, runs: int = 20) -> float | None:
-    """Median probe time of the newest published runs that were not busy, or None when fewer than
-    3 of them have one."""
-    meds = []
+    """Median of the p90 probe times of the newest published runs that were not busy, or None
+    when fewer than 3 of them have one. judge() compares the p90 of a run with it: the median of
+    a run varies by 15% from run to run on an idle machine, the p90 by 3%."""
+    p90s = []
     for run in sorted((p for p in results.iterdir() if p.is_dir()), reverse=True):
         try:
             m = json.loads((run / "machine.json").read_text())
         except (OSError, ValueError):
             continue
-        med = (m.get("probe_ms") or {}).get("med")
-        if med and not m.get("busy"):
-            meds.append(med)
-        if len(meds) == runs:
+        p90 = (m.get("probe_ms") or {}).get("p90")
+        if p90 and not m.get("busy"):
+            p90s.append(p90)
+        if len(p90s) == runs:
             break
-    return statistics.median(meds) if len(meds) >= 3 else None
+    return statistics.median(p90s) if len(p90s) >= 3 else None
 
 
 def judge(machine: dict, baseline: float | None, probe_max: float,
