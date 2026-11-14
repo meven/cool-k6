@@ -68,6 +68,45 @@ a table of contents that lists all 46. That is the document the requirement
 below is written about, and it puts the load time where a real document puts
 it, in the layout rather than in seven bitmaps.
 
+### Reference documents
+
+The generated documents have a known shape and grow by images. Real documents
+are hard on the applications in other ways: the layout of hundreds of pages,
+millions of cells and formulas, dense tables over many sheets, animated
+images. `documents/reference-docs.json` lists ten of them, with their source
+and checksum, and `documents/fetch-reference-docs.py` downloads them into
+`documents/ref/`:
+
+| Test | Document |
+| --- | --- |
+| `writer-rtl-book` | a commentary in Persian: 960 pages of right-to-left text in 910000 runs |
+| `writer-odf-spec` | OpenDocument 1.2 Part 1: 846 pages of cross-references |
+| `writer-guide` | LibreOffice Getting Started Guide: 531 pages, 659 images, tracked changes |
+| `writer-long-table` | one table over 268 pages with 118 images |
+| `calc-formulas` | 6 million cells, 500000 of them formulas |
+| `calc-matrix` | 31 sheets of dense tables, slow to open |
+| `calc-countifs` | 1.9 million cells under COUNTIFS |
+| `impress-gifs` | 18 slides with 19 MB of animated GIFs |
+| `impress-yottadb` | 29 slides with 15 MB of images |
+| `impress-candy` | 104 slides and 5969 shapes |
+
+The OpenDocument standard comes from OASIS. The others are attachments of
+open performance bugs of LibreOffice, which their reporters left as examples
+of what was slow for them; they carry no license of their own, so they are
+downloaded rather than committed. A file whose checksum changed fails the
+download, so that a test never measures another document under the same name.
+
+```shell
+./documents/fetch-reference-docs.py --list
+./documents/fetch-reference-docs.py
+./browser-suite.py --run --documents reference --users 1,3
+```
+
+`--documents reference` runs them alone and `--documents all` after the
+generated ones. They take up to a minute to load, so the default run leaves
+them out. With 3 users, each user types a word and Enter at the cursor in the
+Writer and Calc documents, rather than making the whole document bold.
+
 ## The service-level requirements
 
 Three tests assert a service level rather than only recording numbers.

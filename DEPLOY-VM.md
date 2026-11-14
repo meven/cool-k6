@@ -482,6 +482,27 @@ incremental and goes through ccache, so a change to a few engine files costs
 their compilation and the link of `libmergedlo.so`. The tree keeps the build
 until main next moves, and the next run of main builds main again the same way.
 
+**Measuring the real documents.** The browser tests of the documents of
+`documents/reference-docs.json` run outside the timer, as one run of
+`deploy/nightly` with `COOL_PERF_DOCUMENTS=reference`. Such a run is published
+like the others but does not count as the run of its commit, so the next run
+of the timer still measures the commit on the generated documents:
+
+```
+sudo systemd-run --unit=cool-perf-reference \
+  -p User=collabora -p Group=collabora \
+  -p EnvironmentFile=/etc/cool-perf.env \
+  -p WorkingDirectory=/home/collabora/perf-dashboard \
+  -p TimeoutStartSec=12h -p KillMode=control-group -p Delegate=yes \
+  -p Environment=COOL_PERF_DOCUMENTS=reference \
+  -p Environment=COOL_PERF_SKIP_UNCHANGED=0 \
+  /home/collabora/perf-dashboard/deploy/nightly
+```
+
+The documents are downloaded with the generated ones, from OASIS and the
+Bugzilla of LibreOffice, so the first run after an update of their list
+needs the network.
+
 **Measuring capacity.** `deploy/run-capacity` runs the staircase test of
 `src/cool-capacity-test.js` through `capacity-profile` against the build in the
 tree: steps of 10 users from 10 to 160, each typing in the documents of the

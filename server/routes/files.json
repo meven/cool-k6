@@ -28,5 +28,16 @@
 
     "19": { "path": "documents/writer-5mb.docx", "readonly": false },
     "20": { "path": "documents/calc-5mb.xlsx", "readonly": false },
-    "21": { "path": "documents/impress-5mb.pptx", "readonly": false }
+    "21": { "path": "documents/impress-5mb.pptx", "readonly": false },
+
+    "30": { "path": "documents/ref/writer-rtl-book.docx", "readonly": false },
+    "31": { "path": "documents/ref/writer-odf-spec.odt", "readonly": false },
+    "32": { "path": "documents/ref/writer-guide.odt", "readonly": false },
+    "33": { "path": "documents/ref/writer-long-table.odt", "readonly": false },
+    "34": { "path": "documents/ref/calc-formulas.ods", "readonly": false },
+    "35": { "path": "documents/ref/calc-matrix.xlsx", "readonly": false },
+    "36": { "path": "documents/ref/calc-countifs.ods", "readonly": false },
+    "37": { "path": "documents/ref/impress-gifs.pptx", "readonly": false },
+    "38": { "path": "documents/ref/impress-yottadb.odp", "readonly": false },
+    "39": { "path": "documents/ref/impress-candy.odp", "readonly": false }
 }

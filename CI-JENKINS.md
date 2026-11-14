@@ -269,6 +269,7 @@ All environment, so the Jenkins job needs no arguments.
 | `COOL_PERF_KEEP` | `20` | runs to keep in the store, oldest pruned |
 | `COOL_PERF_LABEL` | (unset) | label runs with this instead of the built commit |
 | `COOL_PERF_USERS` | `1,3` | user counts for the timing suite |
+| `COOL_PERF_DOCUMENTS` | `generated` | `reference` runs the real documents of `documents/reference-docs.json` instead, `all` both; a `reference` run does not count as the run of its commit |
 | `COOL_PERF_MIN_SAMPLES` | `30` | a capture with fewer perf samples counts as failed |
 | `COOL_BUILDS_DIR` | `cool-builds` beside the tree | where snapshots live |
 | `COOL_SRC_REF` | `origin/main` | what `cool-build` builds |

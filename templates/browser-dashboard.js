@@ -39,6 +39,17 @@ const APP_ORDER = ["writer", "calc", "impress", "draw"],
     "image5mb",
     "finance",
     "finance-ooxml",
+    // the real documents of documents/reference-docs.json
+    "rtl-book",
+    "odf-spec",
+    "guide",
+    "long-table",
+    "formulas",
+    "matrix",
+    "countifs",
+    "gifs",
+    "yottadb",
+    "candy",
   ];
 // Instructions count the same work whatever the load of the machine, while
 // the times follow it, so either group can be hidden to read the other.

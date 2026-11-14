@@ -496,7 +496,7 @@ def cmd_run(args) -> int:
                "--junit", str(junit), "--prune-perf-data",
                "--min-samples", str(args.min_samples),
                "-o", "browser-dashboard.html"]
-        cmd += ["--users", args.users]
+        cmd += ["--users", args.users, "--documents", args.documents]
         if args.suite:
             cmd += ["--run"]
         if args.flamegraphs:
@@ -545,8 +545,10 @@ def cmd_run(args) -> int:
     # its commit while retries are left, so the next run measures the commit again for timings.
     again = bool(reasons) and busy_retry(store, label or runid,
                                          int(env("COOL_PERF_BUSY_RETRIES", "3")))
+    # A run of the reference documents alone measured none of the generated ones, so it does
+    # not count as the run of its commit either, or the next run of the timer would skip it.
     pub_rc = publish(runid, store, int(env("COOL_PERF_KEEP", "20")), junit=junit,
-                     remember=not again)
+                     remember=not again and args.documents != "reference")
     if again:
         print(f"published {runid} with its busy mark: the next run measures {label} again")
     return suite_rc or pub_rc
@@ -688,6 +690,12 @@ def main() -> int:
     r.add_argument("--users", default=env("COOL_PERF_USERS", "1,3"),
                    help="user counts for the timing suite and the flamegraphs "
                         "(env COOL_PERF_USERS)")
+    r.add_argument("--documents", choices=("generated", "reference", "all"),
+                   default=env("COOL_PERF_DOCUMENTS", "generated"),
+                   help="the documents of browser-suite.py --documents: those that "
+                        "documents/gen-docs.py writes, the real ones that "
+                        "documents/fetch-reference-docs.py downloads, or both "
+                        "(env COOL_PERF_DOCUMENTS)")
     r.add_argument("--publish", action=argparse.BooleanOptionalAction, default=True,
                    help="copy the run into COOL_PERF_STORE and rebuild its dashboard. "
                         "--no-publish leaves it in results/ and needs no store")

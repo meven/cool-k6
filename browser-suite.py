@@ -84,9 +84,24 @@ DOCS_BY_APP = {
 }
 
 
-def documents() -> list[tuple[str, str]]:
-    """Every (application, document) there is to run, in reading order."""
-    return [(app, doc) for app in APPS for doc in DOCS_BY_APP[app]]
+# Real documents that are hard on the application, which documents/fetch-reference-docs.py
+# downloads into documents/ref/ (see documents/reference-docs.json for their sources). They load
+# in up to a minute where the generated ones take one or two, so they are a set of their own,
+# which --documents picks, rather than part of every run.
+REFERENCE_DOCS_BY_APP = {
+    "writer": ("rtl-book", "odf-spec", "guide", "long-table"),
+    "calc": ("formulas", "matrix", "countifs"),
+    "impress": ("gifs", "yottadb", "candy"),
+    "draw": (),
+}
+DOCUMENT_SETS = ("generated", "reference", "all")
+
+
+def documents(which: str = "generated") -> list[tuple[str, str]]:
+    """Every (application, document) of the set @p which, in reading order."""
+    sets = {"generated": [DOCS_BY_APP], "reference": [REFERENCE_DOCS_BY_APP],
+            "all": [DOCS_BY_APP, REFERENCE_DOCS_BY_APP]}[which]
+    return [(app, doc) for app in APPS for by_app in sets for doc in by_app[app]]
 
 _SSL = ssl.create_default_context()
 _SSL.check_hostname = False
@@ -359,7 +374,8 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
                         commit: str | None = None,
                         prune_perf_data: bool = False,
                         min_samples: int = 0,
-                        users_list: list[int] = (1,)) -> list[dict]:
+                        users_list: list[int] = (1,),
+                        which: str = "generated") -> list[dict]:
     """Capture one document-process flamegraph per test document and user count via
     k6-flamegraph.py. For each document it launches its own single-kit coolwsd
     (make run-one, on its own free port via --new-instance, so it coexists with
@@ -388,7 +404,7 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
               "before trusting these flamegraphs.", file=sys.stderr)
     failed = []
     outcomes = []
-    captures = [(app, doc, users) for app, doc in documents() for users in users_list]
+    captures = [(app, doc, users) for app, doc in documents(which) for users in users_list]
     ran = []
     for app, doc, users in captures:
             name = f"{app}-{doc}" + (f"-{users}u" if users > 1 else "")
@@ -482,11 +498,11 @@ def new_runid(commit: str | None) -> str:
 
 
 def run_suite(results_dir: Path, runid: str, users_list: list[int],
-              commit: str | None) -> list[dict]:
+              commit: str | None, which: str = "generated") -> list[dict]:
     """Run every document at every user count. Returns one {name, ok, out_rel}
     record per run, a run counting as ok when it measured the document opening."""
     outcomes = []
-    for app, doc in documents():
+    for app, doc in documents(which):
             for users in users_list:
                 rel = (results_dir / runid / f"{app}-{doc}-{users}u").as_posix()
                 run_one(app, doc, users, rel, commit)
@@ -608,7 +624,7 @@ def document_files() -> dict:
     except Exception:
         return {}
     out = {}
-    for app, doc in documents():
+    for app, doc in documents("all"):
             try:
                 text = (ROOT / "src" / f"cool-browser-{app}-{doc}-test.js").read_text()
             except OSError:
@@ -1048,6 +1064,10 @@ def main() -> int:
     ap.add_argument("--results", default="results", help="history directory (default results/)")
     ap.add_argument("--run", action="store_true", help="run the suite first (needs docker/k6)")
     ap.add_argument("--users", default="1,3", help="comma-separated user counts to run and to capture")
+    ap.add_argument("--documents", choices=DOCUMENT_SETS, default="generated",
+                    help="the documents to run and to capture: those of documents/gen-docs.py "
+                         "(default), the real documents of documents/fetch-reference-docs.py, "
+                         "or both")
     ap.add_argument("--commit", help="commit label for this run (default: git HEAD of --coolwsd-dir)")
     ap.add_argument("--coolwsd-dir", default=os.environ.get("COOLWSD_DIR"),
                     help="online checkout, to read the commit under test "
@@ -1092,7 +1112,7 @@ def main() -> int:
                             "(see the commands above), then re-run")
                 cases += run_suite(results, runid,
                                    [int(u) for u in args.users.split(",") if u.strip()],
-                                   commit)
+                                   commit, args.documents)
             if args.flamegraphs:
                 # The pass launches its own single-kit coolwsd per document (on
                 # its own free port), so it needs no pre-running COOL; it just
@@ -1101,7 +1121,7 @@ def main() -> int:
                                              commit, args.prune_perf_data,
                                              args.min_samples,
                                              [int(u) for u in args.users.split(",")
-                                              if u.strip()])
+                                              if u.strip()], args.documents)
             if args.junit:
                 write_junit(Path(args.junit), f"cool-perf.{runid}", cases)
         with dashboard_lock(Path(args.out)):
