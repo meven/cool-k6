@@ -619,6 +619,23 @@ const day = (ts) => {
         .replace("T", " ")
     : `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
 };
+// The same time in UTC, such as "2026-11-14 12:00 UTC", or "" for a value that is not a date.
+const utcDay = (ts) => {
+  const d = new Date(ts);
+  return isNaN(d) ? "" : d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+};
+// A time as HTML: in the time zone of the browser, with the time in UTC on hover.
+const dayHtml = (ts) => {
+  const u = utcDay(ts);
+  return u
+    ? `<time datetime="${esc(new Date(ts).toISOString())}" title="${u}">${esc(day(ts))}</time>`
+    : esc(day(ts));
+};
+// A time for a tooltip, which cannot show a hover of its own: local time, then UTC.
+const dayTip = (ts) => {
+  const u = utcDay(ts);
+  return u ? `${day(ts)} (${u.slice(11)})` : day(ts);
+};
 const pointName = (p) =>
   `${p.branch} · ${shortLabel(p.commit || "?")} · ${day(p.ts)}` +
   (p.runids.length > 1 ? ` · ${p.runids.length} runs` : "");
@@ -1080,7 +1097,7 @@ function runBranch(r) {
     RUNS.map(
       (r) =>
         `<tr data-run="${esc(r.runid)}"><td><input type="checkbox" aria-label="select ${esc(r.runid)}"></td>` +
-        `<td class="l">${esc(day(r.ts))}${r.busy ? ` <span class="ref">busy machine</span>` : ""}</td>` +
+        `<td class="l">${dayHtml(r.ts)}${r.busy ? ` <span class="ref">busy machine</span>` : ""}</td>` +
         `<td class="l">${runBranch(r)}</td>` +
         `<td class="l">${runRange(r)}</td><td>${r.tests}</td><td>${r.flames || ""}</td>` +
         `<td class="l"><a href="${esc(RESULTS + encodeURIComponent(r.runid) + "/")}">${esc(r.runid)}</a></td></tr>`,
@@ -1201,13 +1218,17 @@ function runBranch(r) {
           `<line x1="${left}" x2="${W - 8}" y1="${y(l)}" y2="${y(l)}" class="track"/>`,
       );
     });
-    // a label every 3 hours, or every 6 on a narrow screen
+    // a label every 3 hours, or every 6 on a narrow screen, on the hours of the time zone of
+    // the browser, with the hour in UTC on hover
     const step = (W < 600 ? 6 : 3) * HOUR;
-    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+    const offset = new Date(t0).getTimezoneOffset() * 60000;
+    for (let t = Math.ceil((t0 - offset) / step) * step + offset; t <= t1; t += step) {
       const d = new Date(t);
       add(
         `<line x1="${x(t)}" x2="${x(t)}" y1="${top}" y2="${H - 20}" class="grid"/>` +
-          `<text x="${x(t)}" y="${H - 6}" class="tick">${two(d.getHours())}:${two(d.getMinutes())}</text>`,
+          `<text x="${x(t)}" y="${H - 6}" class="tick">` +
+          `<title>${two(d.getUTCHours())}:${two(d.getUTCMinutes())} UTC</title>` +
+          `${two(d.getHours())}:${two(d.getMinutes())}</text>`,
       );
     }
     const bar = (lane, a, b, cls, tip) =>
@@ -1227,20 +1248,20 @@ function runBranch(r) {
           Date.parse(since),
           Date.parse(measuring),
           "queued",
-          `${label}: waited for the lock from ${day(since)}`,
+          `${label}: waited for the lock from ${dayTip(since)}`,
         );
         bar(
           lane,
           Date.parse(measuring),
           end,
           "running",
-          `${label}: measuring since ${day(measuring)}`,
+          `${label}: measuring since ${dayTip(measuring)}`,
         );
-      } else bar(lane, Date.parse(since), end, "running", `${label}: running since ${day(since)}`);
+      } else bar(lane, Date.parse(since), end, "running", `${label}: running since ${dayTip(since)}`);
     };
     // main: the published runs, then the timer's next starts, each a run only if main moved
     RUNS.filter((r) => r.branch === "main" && Date.parse(r.ts) >= t0).forEach((r) =>
-      mark("main", Date.parse(r.ts), "done", `main ${shortLabel(r.commit || "?")}, ${day(r.ts)}`),
+      mark("main", Date.parse(r.ts), "done", `main ${shortLabel(r.commit || "?")}, ${dayTip(r.ts)}`),
     );
     // the start of the running unit, or the last start of the timer on an older API
     const mainSince = state.main.since || state.main.last;
@@ -1251,7 +1272,7 @@ function runBranch(r) {
           Date.parse(mainSince),
           now,
           "queued",
-          `main, waiting for the lock since ${day(mainSince)}`,
+          `main, waiting for the lock since ${dayTip(mainSince)}`,
         );
       else span("main", mainSince, state.main.measuring_since, now, "main");
     }
@@ -1261,7 +1282,7 @@ function runBranch(r) {
           "main",
           t,
           "planned",
-          `timer at ${day(new Date(t).toISOString())}, a run if main has moved`,
+          `timer at ${dayTip(new Date(t).toISOString())}, a run if main has moved`,
         );
     state.jobs.forEach((j) => {
       const label =
@@ -1274,7 +1295,7 @@ function runBranch(r) {
           "queue",
           Math.max(t, now),
           "queued",
-          `${label}: queued, ${j.not_before ? "from " + day(j.not_before) : "as soon as possible"}`,
+          `${label}: queued, ${j.not_before ? "from " + dayTip(j.not_before) : "as soon as possible"}`,
         );
       } else if (j.waiting) {
         bar(
@@ -1282,7 +1303,7 @@ function runBranch(r) {
           Date.parse(j.started),
           now,
           "queued",
-          `${label}: waiting for the lock since ${day(j.started)}`,
+          `${label}: waiting for the lock since ${dayTip(j.started)}`,
         );
       } else if (j.state === "running" && j.started) {
         span("queue", j.started, j.measuring_since, now, label);
@@ -1293,13 +1314,13 @@ function runBranch(r) {
           Date.parse(j.started),
           end,
           j.state,
-          `${label}: ${j.state}, ${day(j.started)}${j.ended ? " to " + day(j.ended) : ""}`,
+          `${label}: ${j.state}, ${dayTip(j.started)}${j.ended ? " to " + dayTip(j.ended) : ""}`,
         );
       }
     });
     state.by_hand.forEach((u) => {
       if (u.at)
-        mark(unitLane(u), Date.parse(u.at), "queued", unitTip(u, `${u.unit}, starts ${day(u.at)}`));
+        mark(unitLane(u), Date.parse(u.at), "queued", unitTip(u, `${u.unit}, starts ${dayTip(u.at)}`));
       else if (u.since && u.state === "running")
         span(unitLane(u), u.since, u.measuring_since, now, unitTip(u, u.unit));
       else if (u.since)
@@ -1308,7 +1329,7 @@ function runBranch(r) {
           Date.parse(u.since),
           now,
           "queued",
-          unitTip(u, `${u.unit}, waiting for the lock since ${day(u.since)}`),
+          unitTip(u, `${u.unit}, waiting for the lock since ${dayTip(u.since)}`),
         );
     });
     // after the bars, so that a running unit does not hide the runs it already published
@@ -1317,7 +1338,7 @@ function runBranch(r) {
         r.branch,
         Date.parse(r.ts),
         "done",
-        `${r.branch} ${shortLabel(r.commit || "?")}, ${day(r.ts)}`,
+        `${r.branch} ${shortLabel(r.commit || "?")}, ${dayTip(r.ts)}`,
       ),
     );
     add(`<line x1="${x(now)}" x2="${x(now)}" y1="${top - 4}" y2="${H - 20}" class="now"/>`);
@@ -1338,16 +1359,16 @@ function runBranch(r) {
     const by = state.by_hand.map((u) => {
       const running = u.state === "running";
       const start = u.at
-        ? "at " + day(u.at)
+        ? "at " + dayHtml(u.at)
         : running
-          ? "since " + day(u.measuring_since || u.since)
-          : "waiting for the lock since " + day(u.since);
+          ? "since " + dayHtml(u.measuring_since || u.since)
+          : "waiting for the lock since " + dayHtml(u.since);
       const unit =
         `<code>${esc(u.unit)}</code>` +
         `<span class="ref">started by hand with systemd-run</span>` +
         (u.scenarios ? `<div class="ref">${esc(scenariosText(u))}</div>` : "");
       const head = `<tr class="st-${running ? "running" : "queued"}"><td class="l">${running ? "running" + stepText(u.step) : "scheduled"}</td>`;
-      const end = `<td class="l">${esc(start)}</td><td></td></tr>`;
+      const end = `<td class="l">${start}</td><td></td></tr>`;
       // A unit of deploy/run-branch, or of deploy/run-capacity with --gerrit, reads like a job of
       // the queue, with the unit below its subject.
       const g = u.gerrit;
@@ -1370,16 +1391,16 @@ function runBranch(r) {
     const mainStart = state.main.running
       ? mainSince
         ? state.main.waiting
-          ? "waiting for the lock since " + day(mainSince)
-          : "since " + day(state.main.measuring_since || mainSince)
+          ? "waiting for the lock since " + dayHtml(mainSince)
+          : "since " + dayHtml(state.main.measuring_since || mainSince)
         : "-"
       : state.main.next
-        ? "next " + day(state.main.next)
+        ? "next " + dayHtml(state.main.next)
         : "-";
     const main =
       `<tr class="st-${mainRunning ? "running" : "queued"}"><td class="l">${mainRunning ? "running" + stepText(state.main.step) : state.main.running ? "scheduled" : "timer"}</td>` +
       `<td class="l" colspan="4">main<span class="ref">every hour, when main has a new commit</span></td>` +
-      `<td class="l">${esc(mainStart)}</td><td></td></tr>`;
+      `<td class="l">${mainStart}</td><td></td></tr>`;
     tab.innerHTML =
       `<thead><tr><th class="l">state</th><th class="l">change</th><th class="l">patch set</th>` +
       `<th class="l">subject</th><th>runs</th><th class="l">start</th><th class="l"></th></tr></thead><tbody>` +
@@ -1388,14 +1409,14 @@ function runBranch(r) {
       rows
         .map((j) => {
           const start = j.waiting
-            ? "waiting for the lock since " + day(j.started)
+            ? "waiting for the lock since " + dayHtml(j.started)
             : j.state === "queued"
               ? j.not_before
-                ? "from " + day(j.not_before)
+                ? "from " + dayHtml(j.not_before)
                 : "as soon as possible"
               : j.started
-                ? day(j.started) + (j.ended ? " to " + day(j.ended) : "")
-                : day(j.ended || j.created);
+                ? dayHtml(j.started) + (j.ended ? " to " + dayHtml(j.ended) : "")
+                : dayHtml(j.ended || j.created);
           const acts = [];
           if (j.state === "queued")
             acts.push(`<button type="button" data-cancel="${esc(j.id)}">Cancel</button>`);
@@ -1419,7 +1440,7 @@ function runBranch(r) {
                 `<td class="l subj">${esc(j.subject)}<span class="ref">${esc(j.uploader)}</span>${what}</td>`
               : `<td class="l"><code>${esc(refName(j.ref))}</code></td><td class="l">-</td>` +
                 `<td class="l subj">${what}</td>`) +
-            `<td>${j.runs}</td><td class="l">${esc(start)}</td><td class="l acts">${acts.join(" ")}</td></tr>`
+            `<td>${j.runs}</td><td class="l">${start}</td><td class="l acts">${acts.join(" ")}</td></tr>`
           );
         })
         .join("") +
@@ -1686,7 +1707,7 @@ function runBranch(r) {
           return (
             `<tr${r.run === run ? ' class="sel"' : ""}>` +
             `<td><button type="button" class="linkish" data-run="${esc(r.run)}">` +
-            `${esc(when(r.ts))}</button></td>` +
+            `${dayHtml(r.ts)}</button></td>` +
             `<td class="txt"><code>${esc(r.commit)}</code>` +
             (r.branch ? `<span class="ref">${runBranch(r)}</span>` : "") +
             "</td>" +
@@ -1804,9 +1825,11 @@ function runBranch(r) {
   function drawDetail() {
     const r = shown;
     det.hidden = false;
-    document.getElementById("capdh").textContent =
+    const capdh = document.getElementById("capdh");
+    capdh.textContent =
       `${scenario(r)}: run of ${when(r.ts)}, commit ${r.commit}` +
       (r.branch ? ` of ${r.branch}` + (r.ref && r.ref !== r.branch ? ` (${r.ref})` : "") : "");
+    capdh.title = utcDay(r.ts);
     const n = cores(r.cpus);
     document.getElementById("capdnote").textContent =
       (r.heap_profile
@@ -2204,7 +2227,7 @@ function openDetail(runs, i) {
   mprev.disabled = i <= 0;
   mnext.disabled = i >= runs.length - 1;
   mpos.textContent = `${i + 1} of ${runs.length}`;
-  let meta = `commit ${esc(r.commit || "(unknown)")}  ·  ${esc(day(r.ts))} ${esc(TZ)}`;
+  let meta = `commit ${esc(r.commit || "(unknown)")}  ·  ${dayHtml(r.ts)} ${esc(TZ)}`;
   if (BRANCHES.length > 1) {
     const branch = r.branch || "main";
     meta +=
