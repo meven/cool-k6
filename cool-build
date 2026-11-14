@@ -131,6 +131,26 @@ $DRY make -C "$TREE/browser" -j"$JOBS"
 $DRY make -C "$TREE" -j"$JOBS" build-nocheck
 $DRY make -C "$TREE" systemplate
 
+# The make install of a tree that defines BROTLI_FILES in browser/Makefile.am writes a brotli copy
+# of the text files of browser/dist, which coolwsd sends to the browsers that accept br. cool-ci
+# runs coolwsd from the tree, so the copies are written here instead, again on every build so that
+# none is older than its source. The copies of the previous build go first, as they may come
+# from another ref.
+if [ -z "$DRY" ]; then
+    find "$TREE/browser/dist" -type f -name '*.br' -delete
+fi
+if grep -q BROTLI_FILES "$TREE/browser/Makefile.am"; then
+    if command -v brotli >/dev/null 2>&1; then
+        echo "=== brotli copies of browser/dist"
+        if [ -z "$DRY" ]; then
+            find "$TREE/browser/dist" -type f \( -name '*.js' -o -name '*.css' -o -name '*.svg' \
+                -o -name '*.json' \) -print0 | xargs -0 -r -n 64 -P "$JOBS" brotli --force
+        fi
+    else
+        echo "=== no brotli: browser/dist is served with gzip only"
+    fi
+fi
+
 if [ -n "$SAVE" ]; then
     echo "=== snapshotting $SHA"
     $DRY env COOLWSD_DIR="$TREE" "$HERE/cool-use-build" save "$SHA"
