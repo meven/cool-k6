@@ -61,7 +61,7 @@ const insOf = (r, k) => {
   const n = r.instructions;
   return n && n[k] != null ? n[k] : null;
 };
-const SHOW = { instr: true, times: true, mem: true };
+const SHOW = { instr: true, times: true, mem: true, net: true };
 try {
   Object.assign(SHOW, JSON.parse(localStorage.getItem("cool-perf-show") || "{}"));
 } catch (e) {}
@@ -788,6 +788,22 @@ const CMP_METRICS = [
     th: 0.03,
     abs: 10,
   },
+  // The bytes of the COOL frame until the document is loaded, which the Compare tab alone shows.
+  ...[
+    ["net_http_kb", "network, HTTP received"],
+    ["net_ws_recv_kb", "network, WebSocket received"],
+    ["net_ws_sent_kb", "network, WebSocket sent"],
+  ].map(([m, name]) => ({
+    name,
+    g: "net",
+    get: (r) => {
+      const x = r.metrics[m];
+      return x ? x.avg : null;
+    },
+    fmt: (v) => (v >= 1024 ? (v / 1024).toFixed(2) + " MB" : Math.round(v) + " KB"),
+    th: 0.02,
+    abs: 10,
+  })),
 ];
 const median = (a) => {
   const s = a.slice().sort((x, y) => x - y),
@@ -930,10 +946,15 @@ function renderCompare() {
     `<b>A</b> ${esc(sideName(CMP.a))}<br><b>B</b> ${esc(sideName(CMP.b))}<br>` +
     (CMP_NOTE ? esc(CMP_NOTE) + "<br>" : "") +
     `${changes} change${changes === 1 ? "" : "s"} in ${docs} test${docs === 1 ? "" : "s"}, ${still} metric${still === 1 ? "" : "s"} within the noise: ` +
-    `a change counts from 1% and 0.05 G for instructions, 3% and 10 MB for memory, 10% for the browser heap, 5% and 50 ms for times. ` +
+    `a change counts from 1% and 0.05 G for instructions, 3% and 10 MB for memory, 10% for the browser heap, 5% and 50 ms for times, 2% and 10 KB for network. ` +
     `Each value is the median over the runs of the side.` +
-    (["instr", "times", "mem"].some((g) => !SHOW[g])
-      ? ` The ${[["instr", "instructions"], ["times", "times"], ["mem", "memory"]]
+    (["instr", "times", "mem", "net"].some((g) => !SHOW[g])
+      ? ` The ${[
+          ["instr", "instructions"],
+          ["times", "times"],
+          ["mem", "memory"],
+          ["net", "network"],
+        ]
           .filter(([g]) => !SHOW[g])
           .map(([, n]) => n)
           .join(" and the ")} are hidden.`
@@ -2256,13 +2277,16 @@ function openDetail(runs, i) {
     "<table><thead><tr><th>metric</th>" +
     cols.map((c) => `<th>${c}</th>`).join("") +
     "</tr></thead><tbody>";
-  // a metric name ends in its unit: _ms for times, _mb for the browser heap, _n for a count
+  // a metric name ends in its unit: _ms for times, _mb for the browser heap, _kb for bytes on
+  // the network, _n for a count
   const metricLabel = (name) =>
     /_mb$/.test(name)
       ? [name.replace(/_mb$/, ""), "MB"]
-      : /_n$/.test(name)
-        ? [name.replace(/_n$/, ""), "count"]
-        : [name.replace(/_ms$/, ""), "ms"];
+      : /_kb$/.test(name)
+        ? [name.replace(/_kb$/, ""), "KB"]
+        : /_n$/.test(name)
+          ? [name.replace(/_n$/, ""), "count"]
+          : [name.replace(/_ms$/, ""), "ms"];
   Object.keys(r.metrics).forEach((name) => {
     const s = r.metrics[name] || {};
     const [label, unit] = metricLabel(name);
