@@ -42,7 +42,8 @@
 #                    process flamegraphs of the peak, the allocations, the temporary allocations
 #                    and the leaks. heaptrack slows the server down several times, so the
 #                    capacity of such a run says nothing: use a few users, and the default
-#                    SERVER_MEMORY leaves room for what heaptrack adds to each process.
+#                    SERVER_MEMORY leaves room for what heaptrack adds to each process. The edit
+#                    and load targets are 4 times their default (CAP_TARGET_FACTOR).
 #
 # Outputs in OUT_DIR: coolwsd.log and wopi.log when started here, k6.log, capacity.json, perf.data
 # (coolwsd, forkit and kits), perf.log, flamegraph.svg, and with a server cgroup perf-stat.csv
@@ -108,6 +109,9 @@ if [ -n "${HEAPTRACK:-}" ]; then
         || die "heap-report.py needs zstd and flamegraph.pl on PATH"
     # perf and heaptrack would each slow down what the other measures.
     NO_PERF=1
+    # The targets stretch with the slowdown, so that a stage fails for the server and not for
+    # heaptrack.
+    export CAP_TARGET_FACTOR=${CAP_TARGET_FACTOR:-4}
     echo "heaptrack: $HEAPTRACK" > "$OUT_DIR/heap-profile"
     mkdir -p "$OUT_DIR/heaptrack"
 fi

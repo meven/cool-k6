@@ -558,7 +558,8 @@ allocations, the temporary allocations, the peak and the leaks of each kind
 of process, a flamegraph of each, and the full stacks of the busiest process
 of each kind. The Capacity tab marks the run as a heap profile and links its
 page. heaptrack slows the server down several times, so give such a run one
-short step:
+short step. Its edit and load targets are 4 times their default, which
+`CAP_TARGET_FACTOR` changes:
 
 ```
 sudo systemd-run --unit=cool-perf-heap \

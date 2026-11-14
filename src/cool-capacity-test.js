@@ -80,6 +80,8 @@
  *   CAP_TYPE_STEP_MS  - pause between two characters of a word       (default 150)
  *   CAP_EDIT_P95_MS   - edit latency target, 95th percentile         (default 300)
  *   CAP_LOAD_P95_MS   - document load target, 95th percentile        (default 10000)
+ *   CAP_TARGET_FACTOR - multiplies the default edit and load targets (default 1), for a server
+ *                       that a profiler slows down
  *   CAP_MAX_ERRORS    - share of failed sessions allowed             (default 0.01)
  */
 
@@ -157,8 +159,9 @@ const THINK_MAX_MS = num('CAP_THINK_MAX_MS', 8000);
 const TYPE_STEP_MS = num('CAP_TYPE_STEP_MS', 150);
 const ZOOMS = (__ENV['CAP_ZOOMS'] || (SHARED_FILE === FINANCE ? '0.75,1,1,1.25,1.5,2' : '1'))
     .split(',').map((z) => Number(z.trim())).filter((z) => z > 0);
-const EDIT_P95_MS = num('CAP_EDIT_P95_MS', 300);
-const LOAD_P95_MS = num('CAP_LOAD_P95_MS', 10000);
+const TARGET_FACTOR = num('CAP_TARGET_FACTOR', 1);
+const EDIT_P95_MS = num('CAP_EDIT_P95_MS', 300 * TARGET_FACTOR);
+const LOAD_P95_MS = num('CAP_LOAD_P95_MS', 10000 * TARGET_FACTOR);
 const MAX_ERRORS = num('CAP_MAX_ERRORS', 0.01);
 // The cores and memory of the server, which capacity-profile sets, for the summary.
 const SERVER = { cpus: __ENV['CAP_SERVER_CPUS'] || null, memory: __ENV['CAP_SERVER_MEMORY'] || null };
