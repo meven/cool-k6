@@ -43,6 +43,17 @@
  *                           the one of the editor before, the next column of the empty row below the
  *                           data, or the next slide of impress-slides-5mb.odp. The other users view
  *                           the part of the editor before them, without typing.
+ *   reference               the real documents of documents/reference-docs.json, which
+ *                           documents/fetch-reference-docs.py downloads: a 960-page book of
+ *                           right-to-left text, an 846-page standard, a guide of 659 images, a 500000-formula sheet, a
+ *                           workbook of 31 sheets of dense tables, a deck of 15 MB of images and
+ *                           a 104-slide deck, one user each
+ *   reference-pairs         the same documents, each opened by one user and then by two users
+ *                           who edit it together
+ *   rtl-book-shared, formulas-shared, yottadb-shared
+ *                           every user on one of the real documents, as in writer-shared: the
+ *                           960-page book, the 500000-formula sheet, or the 29-slide deck
+ *                           with 15 MB of images
  *   finance-shared          every user on calc-finance.ods, the sales ledger of a company with
  *                           a pivot table and charts over it. One user in CAP_EDITOR_EVERY edits
  *                           the Units column of the Sales sheet, each in a block of rows of its
@@ -79,7 +90,9 @@
  *   CAP_THINK_MIN_MS, CAP_THINK_MAX_MS - pause between two words      (default 2000, 8000)
  *   CAP_TYPE_STEP_MS  - pause between two characters of a word       (default 150)
  *   CAP_EDIT_P95_MS   - edit latency target, 95th percentile         (default 300)
- *   CAP_LOAD_P95_MS   - document load target, 95th percentile        (default 10000)
+ *   CAP_LOAD_P95_MS   - document load target, 95th percentile        (default 10000, and 60000
+ *                       when the documents include real ones, which take tens of seconds to
+ *                       load for one user)
  *   CAP_TARGET_FACTOR - multiplies the default edit and load targets (default 1), for a server
  *                       that a profiler slows down
  *   CAP_MAX_ERRORS    - share of failed sessions allowed             (default 0.01)
@@ -114,6 +127,12 @@ const FINANCE = 25;
 const FINANCE_SHEETS = 3;
 // the rows of Sales between two editors: 160 users have 16 editors
 const FINANCE_ROW_STEP = 700;
+// The real documents of documents/reference-docs.json, which documents/fetch-reference-docs.py
+// downloads into documents/ref/.
+// impress-gifs.pptx is left out: its last slide, where a user of a deck types, is empty.
+const RTL_BOOK = 30, ODF_SPEC = 31, GUIDE = 32, FORMULAS = 34, MATRIX = 35, GIFS = 37,
+    YOTTADB = 38, CANDY = 39;
+const REFERENCE = [RTL_BOOK, FORMULAS, YOTTADB, ODF_SPEC, MATRIX, CANDY, GUIDE];
 // One user on each document of the first list, and half of the users two by two in the second.
 const alone = (a, b) => [[a, 1], [b, 1]];
 const pairs = (a, b) => [[a, 1], [b, 1], [a, 2], [a, 1], [b, 1], [b, 2]];
@@ -132,11 +151,14 @@ const SCENARIOS = {
     'calc-pairs': pairs(ODS, XLSX),
     'impress-pairs': pairs(ODP, PPTX),
     'mixed': mixed,
+    'reference': REFERENCE.map((id) => [id, 1]),
+    'reference-pairs': REFERENCE.flatMap((id) => [[id, 1], [id, 2]]),
 };
 // Every user on one document. One user in CAP_EDITOR_EVERY edits, each in a part of its own, and
 // the users after it, up to the next editor, view the part where it types.
 const SHARED = {
     'writer-shared': ODT, 'calc-shared': ODS, 'impress-shared': SLIDES, 'finance-shared': FINANCE,
+    'rtl-book-shared': RTL_BOOK, 'formulas-shared': FORMULAS, 'yottadb-shared': YOTTADB,
 };
 const EDITOR_EVERY = Math.max(1, num('CAP_EDITOR_EVERY', 10));
 // The paragraphs between two editors of a shared Writer document: writer-5mb.odt has 136, and
@@ -161,7 +183,8 @@ const ZOOMS = (__ENV['CAP_ZOOMS'] || (SHARED_FILE === FINANCE ? '0.75,1,1,1.25,1
     .split(',').map((z) => Number(z.trim())).filter((z) => z > 0);
 const TARGET_FACTOR = num('CAP_TARGET_FACTOR', 1);
 const EDIT_P95_MS = num('CAP_EDIT_P95_MS', 300 * TARGET_FACTOR);
-const LOAD_P95_MS = num('CAP_LOAD_P95_MS', 10000 * TARGET_FACTOR);
+const REAL_DOCUMENTS = DOCS.some(([id]) => REFERENCE.includes(Number(id)) || Number(id) === GIFS);
+const LOAD_P95_MS = num('CAP_LOAD_P95_MS', (REAL_DOCUMENTS ? 60000 : 10000) * TARGET_FACTOR);
 const MAX_ERRORS = num('CAP_MAX_ERRORS', 0.01);
 // The cores and memory of the server, which capacity-profile sets, for the summary.
 const SERVER = { cpus: __ENV['CAP_SERVER_CPUS'] || null, memory: __ENV['CAP_SERVER_MEMORY'] || null };

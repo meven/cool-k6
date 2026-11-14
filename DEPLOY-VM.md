@@ -524,7 +524,7 @@ sudo systemd-run --unit=cool-perf-capacity --collect \
 ```
 
 Scenario names after `--wait` run the test once for each, one after the
-other, and `all` runs every one, about four hours:
+other, and `all` runs every one, about seven hours:
 
 - `writer`, `calc`, `impress`: the 5 MB ODF and OOXML documents of one
   application, one user each.
@@ -546,6 +546,15 @@ other, and `all` runs every one, about four hours:
   The 9 users after it view the ledger where it types, the pivot table or the
   charts, a third of them each. Users take zoom levels from 75% to 200%
   (CAP_ZOOMS).
+- `reference`: one user on each of seven real documents in turn, those of
+  `documents/reference-docs.json`: a 960-page book of right-to-left text,
+  the 846-page OpenDocument standard, a guide of 659 images, a sheet of 500000
+  formulas, a workbook of 31 sheets of dense tables, a deck of 15 MB of
+  images and a deck of 104 slides. `reference-pairs` opens each of them by
+  one user, then by two users who edit it together. Their load target is
+  60 s instead of 10 s, since one user alone waits tens of seconds.
+- `rtl-book-shared`, `formulas-shared`, `yottadb-shared`: every user on one
+  of the real documents, as in `writer-shared`, with the same load target.
 
 The Capacity tab names the scenario of each run.
 
