@@ -67,6 +67,18 @@ build_documents() {
         git checkout -- 'documents/blank.*'
         echo "$gen" > documents/.built-from
     fi
+    # The real documents, downloaded again when their list changed. Only the runs of
+    # --documents reference need them, so a failed download leaves the others to run.
+    local ref
+    ref=$(git rev-parse HEAD:documents/reference-docs.json)
+    if [ ! -f documents/ref/.fetched-from ] || [ "$(cat documents/ref/.fetched-from)" != "$ref" ]; then
+        echo "=== reference documents for reference-docs.json $ref"
+        if python3 documents/fetch-reference-docs.py; then
+            echo "$ref" > documents/ref/.fetched-from
+        else
+            echo "WARNING: some reference documents are missing; their tests will fail" >&2
+        fi
+    fi
 }
 
 # The test bundles, rebuilt when the checkout moved, as deploy/nightly does.

@@ -28,6 +28,9 @@ documents/calc-finance.ods
 documents/calc-finance.xlsx
 # the gen-docs.py that the corpus was generated with (deploy/common.sh)
 documents/.built-from
+# The real documents that documents/fetch-reference-docs.py downloads. They are large, and most
+# are attachments of bug reports, which carry no license of their own.
+documents/ref/
 
 # The WOPI host's TLS pair, generated per checkout (see the README). A browser
 # test needs the host on https, since the host page refuses to submit to a COOL

@@ -1,0 +1,62 @@
+{
+    "writer-rtl-book.docx": {
+        "about": "a commentary in Persian: 960 pages of right-to-left text in 910000 runs",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=100967",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=173961",
+        "sha256": "f4e2430087f03a526f4bf4edd0ffd6eb215441bc1ddbde2861fa287181a1611d"
+    },
+    "writer-odf-spec.odt": {
+        "about": "OASIS OpenDocument 1.2 Part 1: 846 pages, 19000 paragraphs, cross-references",
+        "source": "OASIS, https://docs.oasis-open.org/office/v1.2/os/",
+        "url": "https://docs.oasis-open.org/office/v1.2/os/OpenDocument-v1.2-os-part1.odt",
+        "sha256": "07c76a5ac11828005399dd4787244892ef6241211e467a61d5b409d0218488d1"
+    },
+    "writer-guide.odt": {
+        "about": "LibreOffice Getting Started Guide 5.0: 531 pages, 659 images, 270 tables, tracked changes",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=135116",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=163493",
+        "sha256": "2dae083a3e01686c13dc858f124974763740f3735a03dc7820d2bb898bbc1feb"
+    },
+    "writer-long-table.odt": {
+        "about": "one table over 268 pages with 118 images",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=103097",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=127935",
+        "sha256": "970daea412927bb966d3acd79fac52532c567e140ec8144838070124e64ad8e5"
+    },
+    "calc-formulas.ods": {
+        "about": "one sheet of 6 million cells, 500000 of them formulas",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=148010",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=178898",
+        "sha256": "ecf870e326d76d52a4ad66ad89e39f2550021fd3c893429a99747fc79fa0634f"
+    },
+    "calc-matrix.xlsx": {
+        "about": "the accessory compatibility matrix of Lenovo: 31 sheets of dense tables, slow to open",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=154525",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=193587",
+        "sha256": "2a1f9f4102a432e0e3b54942137d93a3461cc509364edfe8082a36dbab90a9ff"
+    },
+    "calc-countifs.ods": {
+        "about": "1.9 million cells and COUNTIFS formulas over them",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=169091",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=203566",
+        "sha256": "fcdc7cece8ccd8942f905305ee1faf383970ac5989832ddeb5f278da658d8561"
+    },
+    "impress-gifs.pptx": {
+        "about": "18 slides with 19 MB of animated GIFs",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=142957",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=173047",
+        "sha256": "452bf902d7c4a5a1fb754d48e8c43bb2e7bb4449f3025d61cb012575bea8bf69"
+    },
+    "impress-yottadb.odp": {
+        "about": "29 slides with 15 MB of images, slower in 26.2 than in 25.8",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=171645",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=206552",
+        "sha256": "de457fc81f68f27c5fc9862440e3ce0c49556e3e2f465c3fcc5f11bc599d8950"
+    },
+    "impress-candy.odp": {
+        "about": "104 slides and 5969 shapes",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=159199",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=191955",
+        "sha256": "8eb49fa4b7fae1d0ed896e7176e03a4e820c00fd722dc932d4c03dd615b23a3d"
+    }
+}
