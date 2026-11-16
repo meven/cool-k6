@@ -998,10 +998,13 @@ def main() -> int:
                 pass
             print(f"starting perf stat ({label}: {desc}) ...")
             slog = (out_dir / f"perf-stat-{label}.log").open("w")
+            # The kit counts in intervals of 200 ms, which show when in the test its instructions
+            # ran. The intervals add up to the same total.
+            interval = ["-I", "200"] if label == "kit" else []
             # LC_ALL=C forces a period decimal separator so the -x , CSV holds.
             return subprocess.Popen(
                 [*sudo_perf, "perf", "stat", "-e", "instructions,cycles,task-clock",
-                 *target, "-x", ",", "-o", str(csv_out)],
+                 *target, *interval, "-x", ",", "-o", str(csv_out)],
                 env={**os.environ, "LC_ALL": "C", "LANG": "C"},
                 stdout=slog, stderr=subprocess.STDOUT)
 

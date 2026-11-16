@@ -170,34 +170,66 @@ def _normalize_event_name(event: str) -> str:
     return event.split(":", 1)[0]
 
 
-def parse_perf_stat(csv_path: Path) -> dict[str, float]:
-    """Parse a perf stat CSV output (-x ,) into {event_name: count}.
+_NOT_COUNTED = ("<not counted>", "<not supported>", "")
 
-    Sums all PMUs that map to the same logical event (e.g. atom + core
-    on Intel hybrid). Skips '#' comments and <not counted> rows.
+
+def _is_number(s: str) -> bool:
+    try:
+        float(s)
+    except ValueError:
+        return False
+    return True
+
+
+def _perf_stat_rows(csv_path: Path):
+    """The rows of a perf stat CSV output (-x ,) as (time, event, count). time is the end of the
+    interval in seconds for a file written with -I, and None for a file written without it.
+
+    perf stat -x , emits value,unit,event,run-time,pct,... so the event is the third field whether
+    a unit is present or not. With -I each row starts with the time of its interval, and the second
+    field is then the value, a number where a file without -I has a unit.
     """
     if not csv_path.exists():
-        return {}
-    out: dict[str, float] = {}
+        return
     for raw in csv_path.read_text(errors="replace").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         parts = line.split(",")
+        time = None
+        if (len(parts) >= 4 and _is_number(parts[0])
+                and (_is_number(parts[1]) or parts[1] in _NOT_COUNTED[:2])):
+            time = float(parts[0])
+            parts = parts[1:]
         if len(parts) < 3:
             continue
-        # perf stat -x , always emits: value,unit,event,run-time,pct,...
-        # so the event is parts[2] regardless of whether a unit is present.
         count_s, event = parts[0], parts[2]
-        if count_s in ("<not counted>", "<not supported>", ""):
+        if count_s in _NOT_COUNTED or not _is_number(count_s):
             continue
-        name = _normalize_event_name(event)
-        try:
-            value = float(count_s)
-        except ValueError:
-            continue
+        yield time, _normalize_event_name(event), float(count_s)
+
+
+def parse_perf_stat(csv_path: Path) -> dict[str, float]:
+    """Parse a perf stat CSV output (-x ,) into {event_name: count}.
+
+    Sums all PMUs that map to the same logical event (e.g. atom + core
+    on Intel hybrid), and all the intervals of a file written with -I.
+    Skips '#' comments and <not counted> rows.
+    """
+    out: dict[str, float] = {}
+    for _time, name, value in _perf_stat_rows(csv_path):
         out[name] = out.get(name, 0.0) + value
     return out
+
+
+def perf_stat_timeline(csv_path: Path, event: str = "instructions") -> list[list[float]]:
+    """The count of @p event in each interval of a perf stat CSV written with -I, as
+    [seconds since the start, count] pairs, or an empty list for a file written without -I."""
+    by_time: dict[float, float] = {}
+    for time, name, value in _perf_stat_rows(csv_path):
+        if time is not None and name == event:
+            by_time[time] = by_time.get(time, 0.0) + value
+    return [[round(t, 2), int(c)] for t, c in sorted(by_time.items())]
 
 
 def fmt_count(n: float) -> str:
@@ -665,6 +697,9 @@ def collect_perf(out_dir: Path) -> dict:
         if tcl is not None:
             # task-clock is reported in milliseconds
             entry["cpu_time_s"] = round(tcl / 1000, 3)
+        timeline = perf_stat_timeline(out_dir / f"perf-stat-{label}.csv")
+        if timeline:
+            entry["instructions_timeline"] = timeline
         perf_by_label[label] = entry
     if set(perf_by_label) - {"browser"}:
         ti, tc, tt = totals["instructions"], totals["cycles"], totals["task-clock"]
@@ -692,6 +727,10 @@ def print_perf(perf_by_label: dict) -> None:
             print(f"    IPC          : {entry['ipc']:.2f}")
         if "cpu_time_s" in entry:
             print(f"    CPU time     : {entry['cpu_time_s']:.2f} s")
+        if entry.get("instructions_timeline"):
+            # M instructions in each interval, from the start of the counter
+            print("    instructions by interval (s: M): " + " ".join(
+                f"{t:g}:{c / 1e6:.0f}" for t, c in entry["instructions_timeline"]))
 
 
 def print_memory(mem_by_label: dict) -> None:
