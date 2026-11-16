@@ -23,6 +23,24 @@
         "url": "https://bugs.documentfoundation.org/attachment.cgi?id=127935",
         "sha256": "970daea412927bb966d3acd79fac52532c567e140ec8144838070124e64ad8e5"
     },
+    "writer-fonts.docx": {
+        "about": "a trade agreement in Georgian and English: 236 pages, 36000 paragraphs, in Sylfaen and MS Mincho",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=100139",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=125390",
+        "sha256": "6c8d034c7a99f220fa3a7acea6f5390c23764ee7c0d1162dcf1819c6e6da6bf6"
+    },
+    "writer-big-table.docx": {
+        "about": "a library catalogue in Arabic: one right-to-left table over 409 pages",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=151718",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=183222",
+        "sha256": "8e22ed1307df769e78641b323a657b87cc3394053333efac9c1d4f96a27dc015"
+    },
+    "writer-long-book.docx": {
+        "about": "an English translation of the Kitab al-Aghani: 2850 pages of text",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=171431",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=206334",
+        "sha256": "4dc6e0a1abf7e67f61ccb266d2c154ba3aa5c1c40cfd41ce312e19abc21fa18b"
+    },
     "calc-formulas.ods": {
         "about": "one sheet of 6 million cells, 500000 of them formulas",
         "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=148010",
@@ -41,6 +59,18 @@
         "url": "https://bugs.documentfoundation.org/attachment.cgi?id=203566",
         "sha256": "fcdc7cece8ccd8942f905305ee1faf383970ac5989832ddeb5f278da658d8561"
     },
+    "calc-sheets.xlsx": {
+        "about": "50 sheets of 26000 RAND() formulas each, which every change recalculates",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=116206",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=140357",
+        "sha256": "889c7287c6d65ac829e716b01466d8680393e554a1aa839d95df34eb1cd4745a"
+    },
+    "calc-multiline.xlsx": {
+        "about": "56000 cells of text over several lines, slow to open",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=166568",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=200786",
+        "sha256": "5eaeb7b7fd4ce06d23f6481ed2d24ab7212e5f1d1f049071ef79a41952c3ecc5"
+    },
     "impress-gifs.pptx": {
         "about": "18 slides with 19 MB of animated GIFs",
         "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=142957",
@@ -58,5 +88,17 @@
         "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=159199",
         "url": "https://bugs.documentfoundation.org/attachment.cgi?id=191955",
         "sha256": "8eb49fa4b7fae1d0ed896e7176e03a4e820c00fd722dc932d4c03dd615b23a3d"
+    },
+    "impress-slide-fill.pptx": {
+        "about": "2 slides on a master filled with a bitmap; moving to the second one took a minute",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=132955",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=181337",
+        "sha256": "4c837af50e772c6563e4cac1bf6038dea9784d5f75def8c2ba612b566f5f9618"
+    },
+    "impress-gead.pptx": {
+        "about": "40 slides of a course, which take minutes to render",
+        "source": "https://bugs.documentfoundation.org/show_bug.cgi?id=173277",
+        "url": "https://bugs.documentfoundation.org/attachment.cgi?id=208253",
+        "sha256": "21809cbd5eb991903f20a012ad9983d45f4be54bf6a66123a01be44d33c37b08"
     }
 }

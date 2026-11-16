@@ -89,9 +89,9 @@ DOCS_BY_APP = {
 # in up to a minute where the generated ones take one or two, so they are a set of their own,
 # which --documents picks, rather than part of every run.
 REFERENCE_DOCS_BY_APP = {
-    "writer": ("rtl-book", "odf-spec", "guide", "long-table"),
-    "calc": ("formulas", "matrix", "countifs"),
-    "impress": ("gifs", "yottadb", "candy"),
+    "writer": ("rtl-book", "odf-spec", "guide", "long-table", "fonts", "big-table", "long-book"),
+    "calc": ("formulas", "matrix", "countifs", "sheets", "multiline"),
+    "impress": ("gifs", "yottadb", "candy", "slide-fill", "gead"),
     "draw": (),
 }
 DOCUMENT_SETS = ("generated", "reference", "all")

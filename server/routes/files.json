@@ -39,5 +39,12 @@
     "36": { "path": "documents/ref/calc-countifs.ods", "readonly": false },
     "37": { "path": "documents/ref/impress-gifs.pptx", "readonly": false },
     "38": { "path": "documents/ref/impress-yottadb.odp", "readonly": false },
-    "39": { "path": "documents/ref/impress-candy.odp", "readonly": false }
+    "39": { "path": "documents/ref/impress-candy.odp", "readonly": false },
+    "40": { "path": "documents/ref/writer-fonts.docx", "readonly": false },
+    "41": { "path": "documents/ref/writer-big-table.docx", "readonly": false },
+    "42": { "path": "documents/ref/writer-long-book.docx", "readonly": false },
+    "43": { "path": "documents/ref/calc-sheets.xlsx", "readonly": false },
+    "44": { "path": "documents/ref/calc-multiline.xlsx", "readonly": false },
+    "45": { "path": "documents/ref/impress-slide-fill.pptx", "readonly": false },
+    "46": { "path": "documents/ref/impress-gead.pptx", "readonly": false }
 }

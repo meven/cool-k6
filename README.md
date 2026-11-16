@@ -73,7 +73,7 @@ it, in the layout rather than in seven bitmaps.
 The generated documents have a known shape and grow by images. Real documents
 are hard on the applications in other ways: the layout of hundreds of pages,
 millions of cells and formulas, dense tables over many sheets, animated
-images. `documents/reference-docs.json` lists ten of them, with their source
+images. `documents/reference-docs.json` lists 17 of them, with their source
 and checksum, and `documents/fetch-reference-docs.py` downloads them into
 `documents/ref/`:
 
@@ -83,12 +83,19 @@ and checksum, and `documents/fetch-reference-docs.py` downloads them into
 | `writer-odf-spec` | OpenDocument 1.2 Part 1: 846 pages of cross-references |
 | `writer-guide` | LibreOffice Getting Started Guide: 531 pages, 659 images, tracked changes |
 | `writer-long-table` | one table over 268 pages with 118 images |
+| `writer-fonts` | 236 pages of Georgian and English in fonts that a Linux server lacks |
+| `writer-big-table` | an Arabic library catalogue: one right-to-left table over 409 pages |
+| `writer-long-book` | 2850 pages of English text |
 | `calc-formulas` | 6 million cells, 500000 of them formulas |
 | `calc-matrix` | 31 sheets of dense tables, slow to open |
 | `calc-countifs` | 1.9 million cells under COUNTIFS |
+| `calc-sheets` | 50 sheets of RAND() formulas, which every change recalculates |
+| `calc-multiline` | 56000 cells of text over several lines |
 | `impress-gifs` | 18 slides with 19 MB of animated GIFs |
 | `impress-yottadb` | 29 slides with 15 MB of images |
 | `impress-candy` | 104 slides and 5969 shapes |
+| `impress-slide-fill` | 2 slides on a master filled with a bitmap |
+| `impress-gead` | 40 slides that take minutes to render |
 
 The OpenDocument standard comes from OASIS. The others are attachments of
 open performance bugs of LibreOffice, which their reporters left as examples
