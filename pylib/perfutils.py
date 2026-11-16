@@ -4,6 +4,7 @@ builders. Kept separate so the orchestration script stays readable and so
 the pure, data-in/data-out functions can be imported and unit-tested.
 """
 
+import os
 import re
 import subprocess
 import time
@@ -34,6 +35,8 @@ __all__ = [
     "print_perf",
     "print_memory",
     "flamegraph_sample_count",
+    "kit_cpu_usec",
+    "wait_until_idle",
 ]
 
 
@@ -602,6 +605,50 @@ def move_kit_processes(base: Path, timeout_s: float = 15.0,
             break
         time.sleep(0.2)
     return moved, forkit_seen
+
+
+def kit_cpu_usec(capture_cg: Path | None, kit_pids: list[str]) -> int:
+    """The CPU time in microseconds that the kit side has used so far: the usage of the kit
+    cgroup in cgroup mode, else the user and system time of @p kit_pids. An exited pid adds
+    nothing."""
+    if capture_cg is not None:
+        try:
+            for line in (capture_cg / "kit" / "cpu.stat").read_text().splitlines():
+                key, _, value = line.partition(" ")
+                if key == "usage_usec":
+                    return int(value)
+        except (OSError, ValueError):
+            pass
+        return 0
+    tick = os.sysconf("SC_CLK_TCK")
+    total = 0
+    for pid in kit_pids:
+        try:
+            # the fields after the command name, which can hold spaces, closed by ")"
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            total += (int(fields[11]) + int(fields[12])) * 1_000_000 // tick
+        except (OSError, ValueError, IndexError):
+            continue
+    return total
+
+
+def wait_until_idle(used_usec, quiet_s: float = 1.0, timeout_s: float = 30.0,
+                    busy_usec: int = 10_000, step_s: float = 0.25) -> tuple[float, bool]:
+    """Wait until @p used_usec, a function that returns the CPU time used so far, grows by less
+    than @p busy_usec over @p quiet_s, or until @p timeout_s. Returns the seconds waited and
+    whether the work went quiet."""
+    start = time.monotonic()
+    samples = [(start, used_usec())]
+    while True:
+        time.sleep(step_s)
+        now = time.monotonic()
+        samples.append((now, used_usec()))
+        # the oldest sample that is still at least quiet_s old
+        old = [s for s in samples if now - s[0] >= quiet_s]
+        if old and samples[-1][1] - old[-1][1] < busy_usec:
+            return now - start, True
+        if now - start >= timeout_s:
+            return now - start, False
 
 
 def remove_capture_cgroup(base: Path, timeout_s: float = 10.0) -> bool:

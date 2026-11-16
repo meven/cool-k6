@@ -40,6 +40,7 @@ from pylib.perfutils import (
     collect_workload,
     document_kit_pids,
     flamegraph_sample_count,
+    kit_cpu_usec,
     CGROUP_ROOT,
     make_capture_cgroup,
     move_kit_processes,
@@ -48,6 +49,7 @@ from pylib.perfutils import (
     print_perf,
     print_workload,
     remove_capture_cgroup,
+    wait_until_idle,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1212,8 +1214,15 @@ def main() -> int:
         runner_elapsed = int(time.monotonic() - runner_start)
         print(f"{runner} elapsed: {runner_elapsed}s")
 
-        # let perf capture a tail then stop it gracefully
-        time.sleep(2)
+        # The kit goes on working once the page has closed, saving a modified document among
+        # others, and that work is part of the test. The counters stop once the kit has used no
+        # CPU for a second, and never sooner than 2 s after k6, so they count all of it.
+        waited, idle = wait_until_idle(lambda: kit_cpu_usec(capture_cg, kit_pids))
+        if waited < 2:
+            time.sleep(2 - waited)
+        print(f"the kit was {'idle' if idle else 'still busy'} {max(waited, 2):.1f} s after "
+              f"{runner} exited")
+        phases.end("the kit finishing its work after the test")
         print("stopping perf ...")
         print("perf report: writing and finalizing the capture on shutdown "
               "(this can take a while for a large perf.data) ...")
