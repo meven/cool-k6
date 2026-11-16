@@ -1296,6 +1296,10 @@ function runBranch(r) {
     const min = Math.max(0, Math.round((Date.parse(to) - Date.parse(from)) / 60e3));
     return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, "0")} min`;
   };
+  // How long a run has waited for the lock of another run, with the time it began on hover.
+  const waitingFor = (since) =>
+    `<span title="waiting for the lock since ${esc(dayTip(since))}">` +
+    `waiting for ${duration(since, state.now)}</span>`;
   // The step that a running job is at, such as " (building)", from the step of the schedule API.
   const stepText = (step) => (step && step.text ? ` (${esc(step.text)})` : "");
 
@@ -1479,7 +1483,7 @@ function runBranch(r) {
         ? "at " + dayHtml(u.at)
         : running
           ? "since " + dayHtml(u.measuring_since || u.since)
-          : "waiting for the lock since " + dayHtml(u.since);
+          : waitingFor(u.since);
       const unit =
         `<code>${esc(u.unit)}</code>` +
         `<span class="ref">started by hand with systemd-run</span>` +
@@ -1508,7 +1512,7 @@ function runBranch(r) {
     const mainStart = state.main.running
       ? mainSince
         ? state.main.waiting
-          ? "waiting for the lock since " + dayHtml(mainSince)
+          ? waitingFor(mainSince)
           : "since " + dayHtml(state.main.measuring_since || mainSince)
         : "-"
       : state.main.paused
@@ -1533,7 +1537,7 @@ function runBranch(r) {
       rows
         .map((j) => {
           const start = j.waiting
-            ? "waiting for the lock since " + dayHtml(j.started)
+            ? waitingFor(j.started)
             : j.state === "queued"
               ? j.not_before
                 ? "from " + dayHtml(j.not_before)
