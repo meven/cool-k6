@@ -342,23 +342,6 @@ $css</style>
             every stage passed only gives a lower bound. Runs from before 9 November 2026 did not
             record when the OOM kills happened, so one with any OOM kill has no capacity.
           </p>
-          <p class="cmp-note">
-            <label
-              >scenario
-              <select id="capscen"></select>
-            </label>
-            <label
-              >profile
-              <select id="capkind"></select>
-            </label>
-          </p>
-          <div class="cmp-scroll"><table id="captab"></table></div>
-          <p class="cmp-note cap-pager" id="cappager" hidden>
-            <button type="button" id="capprev">Newer</button>
-            <span id="cappage"></span>
-            <button type="button" id="capnext">Older</button>
-          </p>
-          <p class="cmp-note" id="capmsg" role="status"></p>
           <form id="capform" class="sched-form">
             <label
               >Gerrit change or ref
@@ -391,6 +374,23 @@ $css</style>
             A queued run builds the change or the ref first and waits for the other runs, as the
             Schedule tab lists them. A heap profile has one stage of 10 users for 3 minutes.
           </p>
+          <p class="cmp-note">
+            <label
+              >scenario
+              <select id="capscen"></select>
+            </label>
+            <label
+              >profile
+              <select id="capkind"></select>
+            </label>
+          </p>
+          <div class="cmp-scroll"><table id="captab"></table></div>
+          <p class="cmp-note cap-pager" id="cappager" hidden>
+            <button type="button" id="capprev">Newer</button>
+            <span id="cappage"></span>
+            <button type="button" id="capnext">Older</button>
+          </p>
+          <p class="cmp-note" id="capmsg" role="status"></p>
         </section>
         <section class="cmp runs" id="capdet" aria-labelledby="capdh" hidden>
           <h2 id="capdh">Run</h2>
