@@ -1029,7 +1029,40 @@ def dashboard_lock(out: Path):
         yield
 
 
+def add_main_parents(scen: dict, coolwsd_dir: str | None) -> None:
+    """Give each run of a branch other than main the label of the newest commit of main that was
+    measured and that its base descends from, as "parent". The base itself is often a commit of
+    main that no run measured. The history comes from the online tree of $COOLWSD_DIR, and a
+    base that tree does not hold gets no parent."""
+    if not coolwsd_dir:
+        return
+    sha = re.compile(r"[0-9a-f]{12}")
+    main = {m.group(0): p["commit"] for pts in scen.values() for p in pts
+            if p.get("branch", "main") == "main" and (m := sha.match(p.get("commit") or ""))}
+    parents: dict[str, str | None] = {}
+    for pts in scen.values():
+        for p in pts:
+            base = p.get("base") or ""
+            if p.get("branch", "main") == "main" or not sha.match(base):
+                continue
+            if base not in parents:
+                parents[base] = None
+                try:
+                    out = subprocess.run(["git", "-C", coolwsd_dir, "rev-list",
+                                          "--max-count=5000", base],
+                                         capture_output=True, text=True, timeout=20).stdout
+                except (OSError, subprocess.SubprocessError):
+                    out = ""
+                for line in out.split():
+                    if line[:12] in main:
+                        parents[base] = main[line[:12]]
+                        break
+            if parents[base]:
+                p["parent"] = parents[base]
+
+
 def write_dashboard(scen: dict, out: str, results_dir: Path | None = None) -> None:
+    add_main_parents(scen, os.environ.get("COOLWSD_DIR"))
     # Flamegraph paths are stored absolute; rewrite them relative to the html
     # file's directory so the links work from wherever the dashboard is opened.
     out_dir = Path(out).resolve().parent

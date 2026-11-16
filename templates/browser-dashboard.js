@@ -587,6 +587,7 @@ const POINTS = (() => {
           branch: r.branch || "main",
           commit: r.commit,
           base: r.base,
+          parent: r.parent,
         });
     }),
   );
@@ -606,6 +607,7 @@ const POINTS = (() => {
         branch: r.branch,
         commit: r.commit,
         base: r.base,
+        parent: r.parent,
         ts: r.ts,
         ts2: r.ts,
         runids: [r.runid],
@@ -670,8 +672,26 @@ function prevPoint(p) {
   const list = POINTS[p.branch],
     i = list.indexOf(p);
   if (i > 0) return list[i - 1];
-  const base = p.branch !== "main" && shaOf(p.base);
-  return (base && (POINTS.main || []).filter((q) => shaOf(q.commit) === base).pop()) || null;
+  return mainParentPoint(p);
+}
+// The run of main that a point of another branch reads against: the run at its base, or else the
+// run of the newest measured commit of main that its base descends from, its parent.
+function mainParentPoint(p) {
+  if (p.branch === "main") return null;
+  const main = POINTS.main || [],
+    base = shaOf(p.base);
+  return (
+    (base && main.filter((q) => shaOf(q.commit) === base).pop()) ||
+    (p.parent && main.filter((q) => q.commit === p.parent).pop()) ||
+    null
+  );
+}
+// A link to the Compare tab with a point of a change against its run of main.
+function mainCompareLink(b, text) {
+  const a = b && mainParentPoint(b);
+  if (!a) return "";
+  const h = new URLSearchParams({ view: "compare", a: a.id, b: b.id });
+  return `<a class="cmplink" href="#${esc(h.toString())}" data-a="${esc(a.id)}" data-b="${esc(b.id)}" title="${esc(pointName(a))} against ${esc(pointName(b))}">${esc(text)}</a>`;
 }
 // A link to the Compare tab with the commit of a run against the commit measured before it.
 function compareLink(runid, text) {
@@ -835,7 +855,9 @@ let CMP = { a: null, b: null },
   let a = null;
   if (b.branch !== "main") {
     const base = shaOf(b.base);
-    a = base ? main.filter((p) => shaOf(p.commit) === base).pop() : null;
+    a = mainParentPoint(b);
+    if (a && base && shaOf(a.commit) !== base)
+      CMP_NOTE = `The base of ${b.branch}, ${base}, was never measured on main, so A is the newest measured commit of main that it descends from.`;
     if (!a) {
       a = main.filter((p) => p.ts < b.ts).pop() || main[main.length - 1];
       if (a)
@@ -1477,6 +1499,14 @@ function runBranch(r) {
                 ? `<a href="#view=capacity" data-reload>capacity</a>`
                 : `<a href="#view=charts&branch=${encodeURIComponent(j.branch)}" data-reload>charts</a>`,
             );
+          // The runs of a change, against the run of main that its base descends from.
+          if (!cap && j.state === "done" && j.change && j.revision) {
+            const p = (POINTS[j.branch] || [])
+              .filter((q) => shaOf(q.commit) && j.revision.startsWith(shaOf(q.commit)))
+              .pop();
+            const link = mainCompareLink(p, "compare with main");
+            if (link) acts.push(link);
+          }
           const what = cap ? `<div>${esc(capacityText(j))}</div>` : "";
           return (
             `<tr class="st-${j.waiting ? "queued" : j.state}"><td class="l">${j.waiting ? "scheduled" : (STATES[j.state] || esc(j.state)) + stepText(j.step)}${j.exit ? ` <span class="ref">exit ${esc(j.exit)}</span>` : ""}</td>` +
