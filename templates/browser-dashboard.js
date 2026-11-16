@@ -1211,6 +1211,11 @@ function runBranch(r) {
     failed: "failed",
     cancelled: "cancelled",
   };
+  // A duration between two ISO times, such as "1 h 05 min" or "12 min".
+  const duration = (from, to) => {
+    const min = Math.max(0, Math.round((Date.parse(to) - Date.parse(from)) / 60e3));
+    return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, "0")} min`;
+  };
   // The step that a running job is at, such as " (building)", from the step of the schedule API.
   const stepText = (step) => (step && step.text ? ` (${esc(step.text)})` : "");
 
@@ -1453,7 +1458,10 @@ function runBranch(r) {
                 ? "from " + dayHtml(j.not_before)
                 : "as soon as possible"
               : j.started
-                ? dayHtml(j.started) + (j.ended ? " to " + dayHtml(j.ended) : "")
+                ? dayHtml(j.started) +
+                  (j.ended
+                    ? ` (${duration(j.started, j.ended)})`
+                    : ` (${duration(j.started, state.now)} so far)`)
                 : dayHtml(j.ended || j.created);
           const acts = [];
           if (j.state === "queued")
