@@ -1308,7 +1308,7 @@ function runBranch(r) {
         );
       else span("main", mainSince, state.main.measuring_since, now, "main");
     }
-    if (state.main.next)
+    if (state.main.next && !state.main.paused)
       for (let t = Date.parse(state.main.next); t <= t1; t += HOUR)
         mark(
           "main",
@@ -1426,13 +1426,19 @@ function runBranch(r) {
           ? "waiting for the lock since " + dayHtml(mainSince)
           : "since " + dayHtml(state.main.measuring_since || mainSince)
         : "-"
-      : state.main.next
-        ? "next " + dayHtml(state.main.next)
-        : "-";
+      : state.main.paused
+        ? "paused"
+        : state.main.next
+          ? "next " + dayHtml(state.main.next)
+          : "the timer is off on the VM";
+    // A pause stops the runs that the timer starts from then on, and leaves a running one be.
+    const toggle = state.main.paused
+      ? `<button type="button" data-main-paused="false">Resume</button>`
+      : `<button type="button" data-main-paused="true">Pause</button>`;
     const main =
-      `<tr class="st-${mainRunning ? "running" : "queued"}"><td class="l">${mainRunning ? "running" + stepText(state.main.step) : state.main.running ? "scheduled" : "timer"}</td>` +
+      `<tr class="st-${mainRunning ? "running" : "queued"}"><td class="l">${mainRunning ? "running" + stepText(state.main.step) : state.main.running ? "scheduled" : state.main.paused ? "paused" : "timer"}</td>` +
       `<td class="l" colspan="4">main<span class="ref">every hour, when main has a new commit</span></td>` +
-      `<td class="l">${mainStart}</td><td></td></tr>`;
+      `<td class="l">${mainStart}</td><td class="l acts">${toggle}</td></tr>`;
     tab.innerHTML =
       `<thead><tr><th class="l">state</th><th class="l">change</th><th class="l">patch set</th>` +
       `<th class="l">subject</th><th>runs</th><th class="l">start</th><th class="l"></th></tr></thead><tbody>` +
@@ -1505,6 +1511,28 @@ function runBranch(r) {
     if (e.target.hasAttribute && e.target.hasAttribute("data-reload")) {
       // the charts of a branch that has new runs since this page was built
       setTimeout(() => location.reload(), 0);
+      return;
+    }
+    const paused = e.target.dataset && e.target.dataset.mainPaused;
+    if (paused) {
+      e.target.disabled = true;
+      try {
+        const res = await fetch("api/schedule/main", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paused: paused === "true" }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
+        say(
+          body.paused
+            ? "The runs of main are paused. A run that has started goes on to its end."
+            : "The runs of main are resumed.",
+        );
+      } catch (err) {
+        say("Not changed: " + err.message, true);
+      }
+      load();
       return;
     }
     if (!id) return;

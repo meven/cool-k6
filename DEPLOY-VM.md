@@ -403,8 +403,10 @@ was measured.
 | follow a run | `journalctl -u cool-perf.service -f` |
 | the last runs | `journalctl -u cool-perf.service --since -3d` |
 | when it runs next | `systemctl list-timers cool-perf.timer` |
-| pause the runs | `sudo systemctl disable --now cool-perf.timer` |
-| resume them | `sudo systemctl enable --now cool-perf.timer` |
+| pause the runs | Pause on the main row of the Schedule tab, which creates `/var/lib/cool-perf/main-paused` |
+| resume them | Resume on the same row, which deletes that file |
+| stop the timer itself | `sudo systemctl disable --now cool-perf.timer` |
+| start it again | `sudo systemctl enable --now cool-perf.timer` |
 | check the machine | `sudo -iu collabora sh -c 'set -a; . /etc/cool-perf.env; ~/perf-dashboard/cool-ci doctor'` |
 | the last published run | `cat /var/lib/cool-perf/last-run.json` |
 

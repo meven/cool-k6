@@ -24,10 +24,20 @@ if [ ! -f "$STATE/bootstrapped" ]; then
     echo "the first build is not done: run deploy/bootstrap first" >&2
     exit 1
 fi
+# The Schedule tab of the dashboard pauses the runs of the timer with this file. A run checks it
+# again once it has the lock, since a pause can come while it waits.
+end_if_paused() {
+    if [ -f "${COOL_PERF_STORE:-/var/lib/cool-perf}/main-paused" ]; then
+        echo "the runs of main are paused from the Schedule tab of the dashboard"
+        exit 0
+    fi
+}
+end_if_paused
 # A branch or capacity run holds the lock for an hour or more, so the run of the timer waits for
 # it to end rather than give up. systemd starts no second run while this one waits.
 . deploy/common.sh
 take_lock 1
+end_if_paused
 
 if [ "${COOL_PERF_SELF_UPDATE:-0}" = 1 ]; then
     step "updating perf-dashboard"

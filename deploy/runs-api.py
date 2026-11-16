@@ -17,6 +17,8 @@ request, and nothing is deleted.
                                         or a capacity run of a change or a ref of online:
                                         {"kind": "capacity", "target": "18591" or "origin/main",
                                          "scenario": "writer", "profile": "heap", "at": ...}
+    POST /api/schedule/main             {"paused": true or false}: pause or resume the runs that
+                                        the timer starts on main
     POST /api/schedule/<job>/cancel     a queued job
     GET  /api/schedule/<job>/log        the end of the log of a job
     GET  /api/capacity                  a summary of each capacity run
@@ -43,6 +45,9 @@ import runqueue  # noqa: E402
 REPO = Path(__file__).resolve().parent.parent
 STORE = Path(os.environ.get("COOL_PERF_STORE", "/var/lib/cool-perf"))
 PORT = int(os.environ.get("COOL_PERF_API_PORT", "8090"))
+# While this file exists, deploy/nightly ends at once, so the timer measures nothing. The service
+# user owns the store, and may not enable or disable the timer itself.
+MAIN_PAUSED = STORE / "main-paused"
 # A run id is a folder name in results/, never a path.
 RUNID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
@@ -402,6 +407,7 @@ def schedule():
         main={"next": when(timer.get("NextElapseUSecRealtime")),
               "last": when(timer.get("LastTriggerUSec")),
               "running": running, "waiting": main_waiting,
+              "paused": MAIN_PAUSED.exists(),
               "since": started(service),
               "measuring_since": main_measuring,
               "step": lock_step() if main_measuring else None},
@@ -442,6 +448,22 @@ def schedule_add():
         app.logger.info("queued %s: change %s/%s, %s runs", job["id"], job["change"],
                         job["patchset"], job["runs"])
     return jsonify(job=job)
+
+
+@app.post("/api/schedule/main")
+def schedule_main():
+    if refused := foreign():
+        return refused
+    body = request.get_json(silent=True)
+    paused = body.get("paused") if isinstance(body, dict) else None
+    if not isinstance(paused, bool):
+        return fail(400, "give paused as true or false")
+    if paused:
+        MAIN_PAUSED.touch()
+    else:
+        MAIN_PAUSED.unlink(missing_ok=True)
+    app.logger.info("%s the runs of main", "paused" if paused else "resumed")
+    return jsonify(paused=paused)
 
 
 @app.post("/api/schedule/<jobid>/cancel")
