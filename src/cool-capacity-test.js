@@ -15,7 +15,9 @@
  * hold. Every measurement taken during a hold is tagged with that plateau, and each plateau has its
  * own thresholds:
  *
- *   edit_latency    a typed character -> the server moving that user's cursor (invalidatecursor:)
+ *   edit_latency    a typed character -> the server moving that user's cursor (invalidatecursor:),
+ *                   or for a space that leaves the cursor in place and so gets no cursor message,
+ *                   the server invalidating the tiles under that cursor (invalidatetiles:)
  *   doc_load_time   the load message -> the document status (status:), from the first attempt
  *   load_retries    loads asked for again because the server was still unloading the document
  *   session_errors  sessions that failed to load, lost their socket, or had a keystroke time out,
@@ -205,6 +207,11 @@ const SERVER = { cpus: __ENV['CAP_SERVER_CPUS'] || null, memory: __ENV['CAP_SERV
 // The server answers a load with status: well within limit_load_secs, 100 s by default.
 const LOAD_TIMEOUT_MS = 100000;
 const EDIT_TIMEOUT_MS = 10000;
+// How long a space waits for its cursor message after the tiles under the cursor were invalidated,
+// before that invalidation counts as its answer.
+const CURSOR_GRACE_MS = 1000;
+// the rectangle of an invalidatetiles: message, in twips
+const TILES_RECT = /\bx=(-?\d+) y=(-?\d+) width=(-?\d+) height=(-?\d+)/;
 // The browser gives up on a document that is still unloading after this many retries.
 const MAX_UNLOADING_RETRIES = 10;
 // The wait of a user after a session that failed, before it opens the document again. A server
@@ -371,7 +378,11 @@ export default async function () {
     const failed = await new Promise((resolve) => {
         const s = {
             openedAt: 0, loaded: false, failed: false, closing: false, done: false,
-            editSentAt: 0, word: '', charIndex: 0,
+            editSentAt: 0, editChar: '', word: '', charIndex: 0,
+            // when the tiles under the cursor were invalidated while a space waited, or 0
+            spaceTilesAt: 0,
+            // the last cursor rectangle of this view, [x, y, width, height] in twips
+            cursor: null,
             lastTileRequest: 0, viewLeft: 0, viewTop: 0, processedWids: [], timers: new Set(),
             // the twips that a tile of TILE_PX pixels shows at the zoom level of the user
             tileTwips: Math.round(TILE_TWIPS / zoom),
@@ -554,6 +565,27 @@ export default async function () {
             nextWord();
         }
 
+        // The keystroke in flight has its answer: record it and type the next character.
+        function editAnswered(now = Date.now()) {
+            if (!s.editSentAt) return;
+            editLatency.add(now - s.editSentAt, plateauTag());
+            // One line per edit, for lining slow edits up with what the server did then.
+            console.log(`EDIT t_ms=${now} ms=${now - s.editSentAt} doc=${fileId}~${group} `
+                + `vu=${exec.vu.idInTest}`);
+            s.editSentAt = 0;
+            s.edits++;
+            later(typeChar, TYPE_STEP_MS);
+        }
+
+        // Whether the rectangle of an invalidatetiles: message overlaps this view's cursor.
+        function coversCursor(message) {
+            const m = TILES_RECT.exec(message);
+            if (!s.cursor || !m) return false;
+            const [x, y, w, h] = m.slice(1).map(Number);
+            const [cx, cy, cw, ch] = s.cursor;
+            return x < cx + cw && cx < x + w && y < cy + ch && cy < y + h;
+        }
+
         function lockedByOther(object) {
             for (const [view, locked] of s.locks) if (view !== s.viewId && locked === object) return true;
             return false;
@@ -566,6 +598,8 @@ export default async function () {
             if (s.charIndex >= s.word.length) { nextWord(); return; }
             const ch = s.word[s.charIndex++];
             s.editSentAt = Date.now();
+            s.editChar = ch;
+            s.spaceTilesAt = 0;
             if (ch === ' ' && s.kind === 'spreadsheet') {
                 pressKey(13, KEY_RETURN);
             } else if (ch === ' ') {
@@ -669,20 +703,27 @@ export default async function () {
                     let rect = payload;
                     try { rect = JSON.parse(payload).rectangle ?? ''; } catch (err) { /* plain rectangle */ }
                     followCursor(String(rect));
-                    if (!s.editSentAt) return;
-                    const now = Date.now();
-                    editLatency.add(now - s.editSentAt, plateauTag());
-                    // One line per edit, for lining slow edits up with what the server did then.
-                    console.log(`EDIT t_ms=${now} ms=${now - s.editSentAt} doc=${fileId}~${group} `
-                        + `vu=${exec.vu.idInTest}`);
-                    s.editSentAt = 0;
-                    s.edits++;
-                    later(typeChar, TYPE_STEP_MS);
+                    const box = String(rect).split(',').map(Number);
+                    s.cursor = box.length === 4 && box.every(Number.isFinite) ? box : null;
+                    editAnswered();
                 } else if (e.data.startsWith('invalidatetiles:')) {
                     // "part=<n> ..." or "EMPTY, <n>, <mode>". A sheet that the user does not show
                     // needs no tiles, as in the browser client.
                     const m = /part=(-?\d+)|EMPTY,\s*(-?\d+)/.exec(e.data);
                     const invalidated = m ? Number(m[1] ?? m[2]) : part;
+                    // The kit drops an invalidatecursor: that repeats the last one, so a space
+                    // that does not move the cursor, as at the end of a line, gets no cursor
+                    // message. When none follows the repaint under the cursor, that repaint
+                    // answers the space. A sheet gets Enter for a space, which moves the cell
+                    // cursor.
+                    if (s.editSentAt && s.editChar === ' ' && s.kind !== 'spreadsheet'
+                        && !s.spaceTilesAt && coversCursor(e.data)) {
+                        s.spaceTilesAt = Date.now();
+                        const sentAt = s.editSentAt;
+                        later(() => {
+                            if (s.editSentAt === sentAt) editAnswered(s.spaceTilesAt);
+                        }, CURSOR_GRACE_MS);
+                    }
                     if (SHARED_FILE !== FINANCE || invalidated === part || invalidated < 0) {
                         requestVisibleTiles();
                     }
