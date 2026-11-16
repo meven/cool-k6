@@ -1110,7 +1110,6 @@ button.linkish {
 .now[hidden] {
   display: none;
 }
-.now:hover,
 .now:focus-visible {
   border-color: var(--accent);
 }
