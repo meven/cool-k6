@@ -1107,6 +1107,12 @@ const GERRIT = "https://gerrit.collaboraoffice.com/c/online/+/";
 function gerritLink(text, path) {
   return `<a href="${esc(GERRIT + path)}" target="_blank" rel="noopener">${esc(text)}</a>`;
 }
+// A commit of online on the gitiles pages of Gerrit, as " (<short id>)", or "" without a commit.
+const GITILES = "https://gerrit.collaboraoffice.com/plugins/gitiles/online/+/";
+function commitLink(sha) {
+  if (!/^[0-9a-f]{7,40}$/.test(sha || "")) return "";
+  return ` (<a href="${esc(GITILES + sha)}" target="_blank" rel="noopener"><code>${esc(sha.slice(0, 12))}</code></a>)`;
+}
 function runBranch(r) {
   const b = /^gerrit-(\d+)$/.exec(r.branch);
   const name = b ? gerritLink(r.branch, b[1]) : esc(r.branch);
@@ -1251,7 +1257,7 @@ function runBranch(r) {
         `<td class="l subj">${esc(m.subject)}<span class="ref">${esc(m.owner)}</span>${what}</td>`
       );
     return (
-      `<td class="l"><code>${esc(refName(j.ref))}</code></td><td class="l">-</td>` +
+      `<td class="l"><code>${esc(refName(j.ref))}</code>${commitLink(j.commit)}</td><td class="l">-</td>` +
       `<td class="l subj">${what}</td>`
     );
   };
@@ -1486,7 +1492,7 @@ function runBranch(r) {
       : `<button type="button" data-main-paused="true">Pause</button>`;
     const main =
       `<tr class="st-${mainRunning ? "running" : "queued"}"><td class="l">${mainRunning ? "running" + stepText(state.main.step) : state.main.running ? "scheduled" : state.main.paused ? "paused" : "timer"}</td>` +
-      `<td class="l" colspan="4">main<span class="ref">every hour, when main has a new commit</span></td>` +
+      `<td class="l" colspan="4">main${commitLink(state.main.commit)}<span class="ref">every hour, when main has a new commit</span></td>` +
       `<td class="l">${mainStart}</td><td class="l acts">${toggle}</td></tr>`;
     tab.innerHTML =
       `<thead><tr><th class="l">state</th><th class="l">change</th><th class="l">patch set</th>` +

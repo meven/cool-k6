@@ -26,15 +26,18 @@ request, and nothing is deleted.
 
 deploy/runqueue.py checks a change before it is queued.
 """
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import threading
+import time
+import urllib.request
 from pathlib import Path
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from flask import Flask, Response, jsonify, request
 
@@ -395,6 +398,53 @@ def merged_of(job: dict) -> dict | None:
     return merged_by_commit[ref]
 
 
+# The newest commit of each branch of online on Gerrit, as (time read, sha), read again after a
+# minute.
+branch_tips: dict[str, tuple[float, str | None]] = {}
+
+
+def branch_tip(branch: str) -> str | None:
+    seen = branch_tips.get(branch)
+    if seen and time.monotonic() - seen[0] < 60:
+        return seen[1]
+    sha = None
+    url = f"{runqueue.GERRIT_URL}/projects/online/branches/{quote(branch, safe='')}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            sha = json.loads(r.read().decode().split("\n", 1)[1]).get("revision")
+    except (OSError, ValueError, IndexError):
+        pass
+    branch_tips[branch] = (time.monotonic(), sha)
+    return sha
+
+
+# The commit that a finished job of a ref built, from its log, kept once read.
+built_by_job: dict[str, str | None] = {}
+BUILT = re.compile(rb"^=== capacity run of ([0-9a-f]{12})", re.M)
+
+
+def commit_of(job: dict) -> str | None:
+    """The commit that a job of a branch or a tag built, from its log, or the newest commit of
+    the branch for a job that has not built yet."""
+    ref = job.get("ref") or ""
+    if job.get("change") or runqueue.SHA.fullmatch(ref):
+        return None
+    jid = job["id"]
+    if jid in built_by_job:
+        return built_by_job[jid]
+    sha = None
+    try:
+        m = BUILT.search(runqueue.log_path(jid).read_bytes())
+        sha = m.group(1).decode() if m else None
+    except OSError:
+        pass
+    if job["state"] in ("done", "failed", "cancelled"):
+        built_by_job[jid] = sha
+    elif not sha and job["state"] == "queued":
+        sha = branch_tip(ref.removeprefix("origin/"))
+    return sha
+
+
 @app.get("/api/schedule")
 def schedule():
     timer = (systemctl_show(["cool-perf.timer"], ["NextElapseUSecRealtime", "LastTriggerUSec"])
@@ -411,6 +461,8 @@ def schedule():
     for j in jobs:
         if merged := merged_of(j):
             j["merged"] = merged
+        if commit := commit_of(j):
+            j["commit"] = commit
     # The runner runs one job at a time, so a flock in its cgroup is the one of that job, and the
     # lock that its cgroup holds is the one of that job too.
     queue_waiting = waits_for_lock(queue)
@@ -429,6 +481,7 @@ def schedule():
               "last": when(timer.get("LastTriggerUSec")),
               "running": running, "waiting": main_waiting,
               "paused": MAIN_PAUSED.exists(),
+              "commit": branch_tip("main"),
               "since": started(service),
               "measuring_since": main_measuring,
               "step": lock_step() if main_measuring else None},
