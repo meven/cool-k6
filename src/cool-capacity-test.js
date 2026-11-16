@@ -50,6 +50,12 @@
  *                           a 104-slide deck, one user each
  *   reference-pairs         the same documents, each opened by one user and then by two users
  *                           who edit it together
+ *   reference-ooxml, reference-ooxml-pairs
+ *                           the same with the DOCX, XLSX and PPTX ones: the 960-page book, a
+ *                           trade agreement of 236 pages in fonts the server lacks, a 409-page
+ *                           table of right-to-left text, 50 sheets of RAND() formulas that every
+ *                           edit recalculates, the 31-sheet workbook, 56000 cells of multiline
+ *                           text, and 2 slides on a master filled with a bitmap
  *   rtl-book-shared, formulas-shared, yottadb-shared
  *                           every user on one of the real documents, as in writer-shared: the
  *                           960-page book, the 500000-formula sheet, or the 29-slide deck
@@ -129,10 +135,15 @@ const FINANCE_SHEETS = 3;
 const FINANCE_ROW_STEP = 700;
 // The real documents of documents/reference-docs.json, which documents/fetch-reference-docs.py
 // downloads into documents/ref/.
-// impress-gifs.pptx is left out: its last slide, where a user of a deck types, is empty.
-const RTL_BOOK = 30, ODF_SPEC = 31, GUIDE = 32, FORMULAS = 34, MATRIX = 35, GIFS = 37,
-    YOTTADB = 38, CANDY = 39;
+// impress-gifs.pptx and impress-gead.pptx are left out: their last slide, where a user of a deck
+// types, has no text.
+const RTL_BOOK = 30, ODF_SPEC = 31, GUIDE = 32, FORMULAS = 34, MATRIX = 35, YOTTADB = 38,
+    CANDY = 39, FONTS = 40, BIG_TABLE = 41, SHEETS = 43, MULTILINE = 44, SLIDE_FILL = 45;
+// The file ids of all the real documents, those of CAP_DOCS too.
+const FIRST_REAL = 30, LAST_REAL = 46;
 const REFERENCE = [RTL_BOOK, FORMULAS, YOTTADB, ODF_SPEC, MATRIX, CANDY, GUIDE];
+// The OOXML ones: three of each of Writer and Calc, and the one deck with text on its last slide.
+const REFERENCE_OOXML = [RTL_BOOK, SHEETS, SLIDE_FILL, FONTS, MATRIX, BIG_TABLE, MULTILINE];
 // One user on each document of the first list, and half of the users two by two in the second.
 const alone = (a, b) => [[a, 1], [b, 1]];
 const pairs = (a, b) => [[a, 1], [b, 1], [a, 2], [a, 1], [b, 1], [b, 2]];
@@ -153,6 +164,8 @@ const SCENARIOS = {
     'mixed': mixed,
     'reference': REFERENCE.map((id) => [id, 1]),
     'reference-pairs': REFERENCE.flatMap((id) => [[id, 1], [id, 2]]),
+    'reference-ooxml': REFERENCE_OOXML.map((id) => [id, 1]),
+    'reference-ooxml-pairs': REFERENCE_OOXML.flatMap((id) => [[id, 1], [id, 2]]),
 };
 // Every user on one document. One user in CAP_EDITOR_EVERY edits, each in a part of its own, and
 // the users after it, up to the next editor, view the part where it types.
@@ -183,7 +196,7 @@ const ZOOMS = (__ENV['CAP_ZOOMS'] || (SHARED_FILE === FINANCE ? '0.75,1,1,1.25,1
     .split(',').map((z) => Number(z.trim())).filter((z) => z > 0);
 const TARGET_FACTOR = num('CAP_TARGET_FACTOR', 1);
 const EDIT_P95_MS = num('CAP_EDIT_P95_MS', 300 * TARGET_FACTOR);
-const REAL_DOCUMENTS = DOCS.some(([id]) => REFERENCE.includes(Number(id)) || Number(id) === GIFS);
+const REAL_DOCUMENTS = DOCS.some(([id]) => Number(id) >= FIRST_REAL && Number(id) <= LAST_REAL);
 const LOAD_P95_MS = num('CAP_LOAD_P95_MS', (REAL_DOCUMENTS ? 60000 : 10000) * TARGET_FACTOR);
 const MAX_ERRORS = num('CAP_MAX_ERRORS', 0.01);
 // The cores and memory of the server, which capacity-profile sets, for the summary.

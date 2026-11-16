@@ -28,6 +28,7 @@ SCENARIOS="writer calc impress writer-pairs calc-pairs impress-pairs mixed"
 SCENARIOS+=" writer-shared calc-shared impress-shared finance-shared"
 # The real documents of documents/fetch-reference-docs.py.
 SCENARIOS+=" reference reference-pairs rtl-book-shared formulas-shared yottadb-shared"
+SCENARIOS+=" reference-ooxml reference-ooxml-pairs"
 . deploy/common.sh
 
 wait=

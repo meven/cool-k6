@@ -526,7 +526,7 @@ sudo systemd-run --unit=cool-perf-capacity --collect \
 ```
 
 Scenario names after `--wait` run the test once for each, one after the
-other, and `all` runs every one, about seven hours:
+other, and `all` runs every one, about eight hours:
 
 - `writer`, `calc`, `impress`: the 5 MB ODF and OOXML documents of one
   application, one user each.
@@ -555,6 +555,11 @@ other, and `all` runs every one, about seven hours:
   images and a deck of 104 slides. `reference-pairs` opens each of them by
   one user, then by two users who edit it together. Their load target is
   60 s instead of 10 s, since one user alone waits tens of seconds.
+- `reference-ooxml` and `reference-ooxml-pairs`: the same on seven DOCX,
+  XLSX and PPTX documents. They are the 960-page book, 236 pages in fonts that
+  the server lacks, a right-to-left table of 409 pages, 50 sheets of RAND()
+  formulas that every edit recalculates, the 31-sheet workbook, 56000 cells of
+  multiline text and 2 slides on a master filled with a bitmap.
 - `rtl-book-shared`, `formulas-shared`, `yottadb-shared`: every user on one
   of the real documents, as in `writer-shared`, with the same load target.
 
