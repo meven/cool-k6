@@ -33,6 +33,12 @@ end_if_paused() {
     fi
 }
 end_if_paused
+# Each run also writes its output to a file of its own, which the Schedule tab shows: the journal
+# of the unit is for root only. The 48 newest are kept, the runs of two days.
+MAIN_LOGS=$STATE/main-logs
+mkdir -p "$MAIN_LOGS"
+ls -1t "$MAIN_LOGS" | tail -n +48 | while read -r old; do rm -f "$MAIN_LOGS/$old"; done
+exec > >(tee -a "$MAIN_LOGS/$(date -u +%Y%m%dT%H%M%SZ).log") 2>&1
 # A branch or capacity run holds the lock for an hour or more, so the run of the timer waits for
 # it to end rather than give up. systemd starts no second run while this one waits.
 . deploy/common.sh

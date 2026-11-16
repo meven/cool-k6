@@ -1523,7 +1523,8 @@ function runBranch(r) {
     const main =
       `<tr class="st-${mainRunning ? "running" : "queued"}"><td class="l">${mainRunning ? "running" + stepText(state.main.step) : state.main.running ? "scheduled" : state.main.paused ? "paused" : "timer"}</td>` +
       `<td class="l" colspan="4">main${commitLink(state.main.commit)}<span class="ref">every hour, when main has a new commit</span></td>` +
-      `<td class="l">${mainStart}</td><td class="l acts">${toggle}</td></tr>`;
+      `<td class="l">${mainStart}</td><td class="l acts">${toggle} ` +
+      `<a href="api/schedule/main/log" target="_blank" rel="noopener" title="the log of the newest run of main">log</a></td></tr>`;
     tab.innerHTML =
       `<thead><tr><th class="l">state</th><th class="l">change</th><th class="l">patch set</th>` +
       `<th class="l">subject</th><th>runs</th><th class="l">start</th><th class="l"></th></tr></thead><tbody>` +

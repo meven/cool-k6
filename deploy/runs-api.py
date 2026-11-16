@@ -21,6 +21,7 @@ request, and nothing is deleted.
                                         the timer starts on main
     POST /api/schedule/<job>/cancel     a queued job
     GET  /api/schedule/<job>/log        the end of the log of a job
+    GET  /api/schedule/main/log         the end of the log of the newest run of the timer
     GET  /api/capacity                  a summary of each capacity run
     GET  /api/capacity/<run>            the time series of one capacity run
 
@@ -552,15 +553,31 @@ def schedule_cancel(jobid: str):
         return fail(409, str(e))
 
 
+def tail_text(path: Path) -> str:
+    """The last 64 KiB of the file at @p path."""
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        f.seek(max(0, f.tell() - 64 * 1024))
+        return f.read().decode(errors="replace")
+
+
+@app.get("/api/schedule/main/log")
+def schedule_main_log():
+    """The end of the log of the newest run of the timer, the running one while a run goes on."""
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+    try:
+        newest = max((state / "cool-perf" / "main-logs").glob("*.log"))
+    except (OSError, ValueError):
+        return fail(404, "there is no log of a run of main yet")
+    return Response(tail_text(newest), mimetype="text/plain")
+
+
 @app.get("/api/schedule/<jobid>/log")
 def schedule_log(jobid: str):
     if not runqueue.JOBID.fullmatch(jobid):
         return fail(400, "not a job id")
     try:
-        with open(runqueue.log_path(jobid), "rb") as f:
-            f.seek(0, os.SEEK_END)
-            f.seek(max(0, f.tell() - 64 * 1024))
-            text = f.read().decode(errors="replace")
+        text = tail_text(runqueue.log_path(jobid))
     except FileNotFoundError:
         text = "" if runqueue.read(jobid) else None
     if text is None:
