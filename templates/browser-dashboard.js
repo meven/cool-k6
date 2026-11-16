@@ -555,6 +555,28 @@ function writeHash() {
   if (CMP.b) h.set("b", CMP.b.from + (CMP.b.to ? ".." + CMP.b.to : ""));
   if (VIEW === "capacity" && CAPRUN) h.set("run", CAPRUN);
   history.replaceState(null, "", h.toString() ? "#" + h : location.pathname + location.search);
+  writeTitle();
+}
+
+// The title of the page names what the tab shows: the branch of the charts, the two sides of
+// the comparison, or the capacity run that is open.
+let CAPTITLE = "";
+function writeTitle() {
+  const side = (s) => {
+    const f = s && POINT_BY_ID[s.from],
+      t = s && s.to && POINT_BY_ID[s.to];
+    if (!f) return "nothing";
+    return `${f.branch} ${shortLabel(f.commit)}` + (t && t !== f ? ` to ${shortLabel(t.commit)}` : "");
+  };
+  const what =
+    VIEW === "compare"
+      ? `Compare ${side(CMP.a)} against ${side(CMP.b)}`
+      : VIEW === "schedule"
+        ? "Schedule of the runs"
+        : VIEW === "capacity"
+          ? CAPTITLE || "Capacity runs"
+          : `Charts of ${BRANCH}`;
+  document.title = `${what} - Collabora Online browser tests`;
 }
 
 (function () {
@@ -1002,6 +1024,7 @@ function renderCompare() {
     });
     if (v !== "charts" && fullChart) setFull(null);
     if (!init) writeHash();
+    else writeTitle();
     document.dispatchEvent(new CustomEvent("viewshown", { detail: v }));
   };
   tabs.forEach((t, i) => {
@@ -1930,6 +1953,8 @@ function runBranch(r) {
   async function pick(id) {
     run = id;
     CAPRUN = id;
+    const r = (list || []).find((x) => x.run === id);
+    CAPTITLE = r ? `Capacity run of ${scenario(r)} at ${r.commit}, ${day(r.ts)}` : "";
     writeHash();
     drawList();
     try {
