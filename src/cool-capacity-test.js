@@ -741,6 +741,8 @@ export function handleSummary(data) {
         stdout: textSummary(data, { indent: ' ', enableColors: true }) + lines.join('\n'),
         'capacity.json': JSON.stringify({
             capacity, server: SERVER, usersPerDocument: SCENARIO ? null : USERS_PER_DOC,
+            // Wall time of the start of the test, in ms: the plateau times count from it.
+            startMs: Date.now() - data.state.testRunDurationMs,
             scenario: SCENARIO,
             zooms: ZOOMS,
             documents: SHARED_FILE ? [{ fileId: SHARED_FILE, users: 'all', editorEvery: EDITOR_EVERY }]

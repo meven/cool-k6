@@ -46,10 +46,11 @@
 #                    and load targets are 4 times their default (CAP_TARGET_FACTOR).
 #
 # Outputs in OUT_DIR: coolwsd.log and wopi.log when started here, k6.log, capacity.json, perf.data
-# (coolwsd, forkit and kits), perf.log, flamegraph.svg, and with a server cgroup perf-stat.csv
-# (instructions, cycles and CPU time of the server every 5 s), perf-stat-total.txt and
-# server-cgroup.txt (its limits, peak memory and OOM kills), browser.cpuprofile
-# (open it in Chrome DevTools > Performance, or https://www.speedscope.app),
+# (coolwsd, forkit and kits), perf.log, flamegraph.svg, by-plateau/ and by-plateau.log
+# (kit-profile-by-plateau.py: the kit stacks of each plateau, and a summary), and with a server
+# cgroup perf-stat.csv (instructions, cycles and CPU time of the server every 5 s),
+# perf-stat-total.txt and server-cgroup.txt (its limits, peak memory and OOM kills),
+# browser.cpuprofile (open it in Chrome DevTools > Performance, or https://www.speedscope.app),
 # browser-latency.json (keystroke latency of the browser user, its summary also on the LATENCY:
 # line of browser.log), browser-memory.csv (the browser user's Chromium processes and JS heap),
 # server-memory.csv (coolwsd, forkit and kits from /cool/getMetrics, plus the host's available
@@ -545,6 +546,12 @@ if [ -z "${NO_PERF:-}" ] && [ -s "$OUT_DIR/perf.data" ]; then
         > "$OUT_DIR/render-job.json"
     python3 "$ROOT/k6-flamegraph.py" --render-only --out-dir "$OUT_DIR" \
         || echo "the flamegraph could not be drawn" >&2
+    # Now, while the binaries that perf unwinds from are those of the run.
+    if [ -s "$OUT_DIR/capacity.json" ]; then
+        python3 "$ROOT/kit-profile-by-plateau.py" "$OUT_DIR" --freq "$PERF_FREQ" \
+            -- "${PERF_CMD[@]}" --buildid-dir "$BUILDID_DIR" > "$OUT_DIR/by-plateau.log" 2>&1 \
+            || echo "the kit profile could not be split by plateau, see by-plateau.log" >&2
+    fi
     [ -z "${PRUNE_PERF_DATA:-}" ] || rm_perf_files "$OUT_DIR/perf.data" "$OUT_DIR/perf.data.old"
 fi
 rm_perf_files "$BUILDID_DIR"
