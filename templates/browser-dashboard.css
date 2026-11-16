@@ -1085,3 +1085,78 @@ button.linkish {
   cursor: pointer;
   text-decoration: underline;
 }
+/* What runs on the VM, what ran last and what runs next, in the top right corner over the page. */
+.now {
+  position: fixed;
+  top: 8px;
+  right: 12px;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: 14px auto;
+  gap: 1px 6px;
+  align-items: center;
+  max-width: min(46ch, 45vw);
+  padding: 5px 9px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.35;
+  text-decoration: none;
+}
+.now[hidden] {
+  display: none;
+}
+.now:hover,
+.now:focus-visible {
+  border-color: var(--accent);
+}
+.now span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.now b {
+  color: var(--ink);
+  font-weight: 600;
+}
+.now svg {
+  width: 12px;
+  height: 12px;
+}
+.now .run {
+  color: var(--accent);
+}
+.now .ok {
+  color: var(--better);
+}
+.now .bad {
+  color: var(--worse);
+}
+.now .idle {
+  color: var(--ink-faint);
+}
+.now .run circle {
+  animation: now-pulse 1.6s ease-in-out infinite;
+}
+@keyframes now-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .now .run circle {
+    animation: none;
+  }
+}
+/* On a narrow screen the corner keeps only the icons, with the text in their tooltips. */
+@media (max-width: 720px) {
+  .now {
+    grid-template-columns: 14px;
+  }
+  .now span {
+    display: none;
+  }
+}

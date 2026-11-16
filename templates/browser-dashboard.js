@@ -2587,3 +2587,160 @@ document.addEventListener("focusin", (e) => {
 document.addEventListener("focusout", (e) => {
   if (tipTarget(e.target)) tip.hidden = true;
 });
+
+// ---- the corner of the page: what runs on the VM now, what ran last and what runs next, read
+// from deploy/runs-api.py every 30 seconds whatever tab is open
+(function () {
+  const box = document.getElementById("now");
+  if (!box || !(location.protocol === "http:" || location.protocol === "https:")) return;
+  const ICONS = {
+    run: '<circle cx="6" cy="6" r="4.5" fill="currentColor"/>',
+    ok: '<path d="M2 6.5l2.6 2.6L10 3.5" fill="none" stroke="currentColor" stroke-width="2"/>',
+    bad: '<path d="M3 3l6 6M9 3l-6 6" fill="none" stroke="currentColor" stroke-width="2"/>',
+    next:
+      '<circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.4"/>' +
+      '<path d="M6 3.4V6l1.8 1.3" fill="none" stroke="currentColor" stroke-width="1.4"/>',
+    idle: '<circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="1.4"/>',
+  };
+  const hm = (t) =>
+    new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  // "12 min" or "3 h 05 min" between two times
+  const span = (a, b) => {
+    const m = Math.max(0, Math.round((b - a) / 60e3));
+    return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
+  };
+  // A job as its change and patch set, or its ref, with "capacity" for a capacity run.
+  const jobName = (j) =>
+    (j.kind === "capacity" ? "capacity " : "") +
+    (j.change ? `${j.change}/${j.patchset}` : refName(j.ref));
+  const jobTip = (j) =>
+    [jobName(j), j.subject || (j.merged && j.merged.subject), j.scenario]
+      .filter(Boolean)
+      .join(", ");
+  const row = (cls, label, html, tip) =>
+    `<svg viewBox="0 0 12 12" class="${cls}" aria-hidden="true"><title>${esc(tip)}</title>` +
+    `${ICONS[cls]}</svg><span title="${esc(tip)}">${label} ${html}</span>`;
+
+  function draw(s, last) {
+    const now = Date.parse(s.now) || Date.now();
+    const rows = [];
+
+    // what runs now: the run of main, a job of the queue, or a unit started by hand
+    const job = s.jobs.find((j) => j.state === "running" && !j.waiting);
+    const unit = s.by_hand.find((u) => u.state === "running");
+    const step = (st) => (st && st.text ? `, ${esc(st.text)}` : "");
+    if (s.main.running && !s.main.waiting) {
+      const since = Date.parse(s.main.since);
+      rows.push(
+        row(
+          "run",
+          "Running",
+          `<b>main</b>${step(s.main.step)}, ${span(since, now)}`,
+          `main since ${hm(since)}`,
+        ),
+      );
+    } else if (job) {
+      const since = Date.parse(job.started);
+      rows.push(
+        row(
+          "run",
+          "Running",
+          `<b>${esc(jobName(job))}</b>${step(job.step)}, ${span(since, now)}`,
+          `${jobTip(job)}, since ${hm(since)}`,
+        ),
+      );
+    } else if (unit) {
+      const since = Date.parse(unit.measuring_since || unit.since);
+      rows.push(
+        row(
+          "run",
+          "Running",
+          `<b>${esc(unit.unit)}</b>${step(unit.step)}, ${span(since, now)}`,
+          `${unit.unit}, started by hand, since ${hm(since)}`,
+        ),
+      );
+    } else rows.push(row("idle", "Running", "nothing", "No run is going on the VM"));
+
+    // what ran last: the newest finished job, or the last published run of main
+    const ended = s.jobs
+      .filter((j) => j.ended && (j.state === "done" || j.state === "failed"))
+      .sort((a, b) => (a.ended < b.ended ? 1 : -1))[0];
+    const mainAt = last && Date.parse(last.published_at);
+    if (ended && !(mainAt > Date.parse(ended.ended))) {
+      const at = Date.parse(ended.ended);
+      const ok = ended.state === "done";
+      rows.push(
+        row(
+          ok ? "ok" : "bad",
+          "Last",
+          `<b>${esc(jobName(ended))}</b> ${ok ? "done" : "failed"}, ` + `${span(at, now)} ago`,
+          `${jobTip(ended)}, ${ended.state} at ${hm(at)}`,
+        ),
+      );
+    } else if (mainAt) {
+      rows.push(
+        row(
+          "ok",
+          "Last",
+          `<b>main</b> ${esc(last.label)}, ${span(mainAt, now)} ago`,
+          `main ${last.label}, published at ${hm(mainAt)}`,
+        ),
+      );
+    }
+
+    // what runs next: a job that waits for the current run, else the earliest timed start
+    const queued = s.jobs.filter((j) => j.state === "queued");
+    const due = queued
+      .filter((j) => !j.not_before || Date.parse(j.not_before) <= now)
+      .sort((a, b) => (a.created < b.created ? -1 : 1))[0];
+    const timed = [
+      ...queued
+        .filter((j) => j.not_before)
+        .map((j) => [Date.parse(j.not_before), jobName(j), jobTip(j)]),
+      ...s.by_hand.filter((u) => u.at).map((u) => [Date.parse(u.at), u.unit, u.unit]),
+      ...(s.main.next && !s.main.paused
+        ? [[Date.parse(s.main.next), "main", "main, if it has moved"]]
+        : []),
+    ]
+      .filter(([t]) => t > now)
+      .sort((a, b) => a[0] - b[0])[0];
+    if (due)
+      rows.push(
+        row("next", "Next", `<b>${esc(jobName(due))}</b>, after the current run`, jobTip(due)),
+      );
+    else if (timed)
+      rows.push(row("next", "Next", `<b>${esc(timed[1])}</b> at ${hm(timed[0])}`, timed[2]));
+    else
+      rows.push(
+        row(
+          "idle",
+          "Next",
+          s.main.paused ? "nothing, main is paused" : "nothing planned",
+          "Nothing is queued or planned",
+        ),
+      );
+
+    box.innerHTML = rows.join("");
+    box.hidden = false;
+  }
+
+  async function load() {
+    try {
+      const [s, last] = await Promise.all([
+        fetch("api/schedule", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
+        fetch("last-run.json", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
+      ]);
+      if (s) draw(s, last);
+    } catch (e) {
+      // the corner stays as it was; the Schedule tab reports what failed
+    }
+  }
+  box.addEventListener("click", (e) => {
+    const tab = document.getElementById("tab-schedule");
+    if (!tab || tab.closest("[hidden]")) return;
+    e.preventDefault();
+    tab.click();
+  });
+  load();
+  setInterval(load, 30000);
+})();
