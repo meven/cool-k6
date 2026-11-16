@@ -1233,6 +1233,28 @@ function runBranch(r) {
     failed: "failed",
     cancelled: "cancelled",
   };
+  // The change, patch set and subject cells of a job. A job of a Gerrit change links to the change
+  // and to its patch set. A job of a commit of main links to the change that merged it, and shows
+  // its subject and owner the same way. A job of a branch or a tag names it.
+  const changeCells = (j, what) => {
+    if (j.change)
+      return (
+        `<td class="l">${gerritLink(j.branch, String(j.change))}</td>` +
+        `<td class="l">${gerritLink(String(j.patchset), j.change + "/" + j.patchset)}<span class="ref">${esc(j.revision.slice(0, 12))}</span></td>` +
+        `<td class="l subj">${esc(j.subject)}<span class="ref">${esc(j.uploader)}</span>${what}</td>`
+      );
+    const m = j.merged;
+    if (m)
+      return (
+        `<td class="l">${gerritLink("gerrit-" + m.change, String(m.change))}</td>` +
+        `<td class="l">merged<span class="ref">${esc(refName(j.ref).slice(0, 12))}</span></td>` +
+        `<td class="l subj">${esc(m.subject)}<span class="ref">${esc(m.owner)}</span>${what}</td>`
+      );
+    return (
+      `<td class="l"><code>${esc(refName(j.ref))}</code></td><td class="l">-</td>` +
+      `<td class="l subj">${what}</td>`
+    );
+  };
   // A duration between two ISO times, such as "1 h 05 min" or "12 min".
   const duration = (from, to) => {
     const min = Math.max(0, Math.round((Date.parse(to) - Date.parse(from)) / 60e3));
@@ -1510,12 +1532,7 @@ function runBranch(r) {
           const what = cap ? `<div>${esc(capacityText(j))}</div>` : "";
           return (
             `<tr class="st-${j.waiting ? "queued" : j.state}"><td class="l">${j.waiting ? "scheduled" : (STATES[j.state] || esc(j.state)) + stepText(j.step)}${j.exit ? ` <span class="ref">exit ${esc(j.exit)}</span>` : ""}</td>` +
-            (j.change
-              ? `<td class="l">${gerritLink(j.branch, String(j.change))}</td>` +
-                `<td class="l">${gerritLink(String(j.patchset), j.change + "/" + j.patchset)}<span class="ref">${esc(j.revision.slice(0, 12))}</span></td>` +
-                `<td class="l subj">${esc(j.subject)}<span class="ref">${esc(j.uploader)}</span>${what}</td>`
-              : `<td class="l"><code>${esc(refName(j.ref))}</code></td><td class="l">-</td>` +
-                `<td class="l subj">${what}</td>`) +
+            changeCells(j, what) +
             `<td>${j.runs}</td><td class="l">${start}</td><td class="l acts">${acts.join(" ")}</td></tr>`
           );
         })

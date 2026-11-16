@@ -377,6 +377,24 @@ def capacity_run(run):
     return jsonify(d) if d else fail(404, f"no capacity run {run}")
 
 
+# The change that merged each commit of a capacity job queued before jobs recorded it, looked up
+# on Gerrit once per commit while the service runs. None is a commit with no change found.
+merged_by_commit: dict[str, dict | None] = {}
+
+
+def merged_of(job: dict) -> dict | None:
+    if job.get("change") or job.get("kind") != "capacity":
+        return None
+    if "merged" in job:
+        return job["merged"]
+    ref = job.get("ref") or ""
+    if not runqueue.SHA.fullmatch(ref):
+        return None
+    if ref not in merged_by_commit:
+        merged_by_commit[ref] = runqueue.merged_change(ref)
+    return merged_by_commit[ref]
+
+
 @app.get("/api/schedule")
 def schedule():
     timer = (systemctl_show(["cool-perf.timer"], ["NextElapseUSecRealtime", "LastTriggerUSec"])
@@ -390,6 +408,9 @@ def schedule():
     main_waiting = running and waits_for_lock(service)
     holder = lock_holder()
     jobs = runqueue.jobs()
+    for j in jobs:
+        if merged := merged_of(j):
+            j["merged"] = merged
     # The runner runs one job at a time, so a flock in its cgroup is the one of that job, and the
     # lock that its cgroup holds is the one of that job too.
     queue_waiting = waits_for_lock(queue)

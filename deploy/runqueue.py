@@ -33,6 +33,9 @@ PROFILES = ("flamegraph", "heap")
 # A branch, tag or commit of the online repository, which cool-build fetches from origin.
 REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 
+# A commit of online, whole or abbreviated.
+SHA = re.compile(r"[0-9a-f]{7,40}")
+
 JOBID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}")
 # 18591, 18591/3, or the address of the change on Gerrit, with or without a patch set.
 CHANGE = re.compile(r"(?:.*/\+/)?(\d{1,7})(?:/(\d{1,4}))?/?")
@@ -139,6 +142,23 @@ def resolve(text: str) -> dict:
             "uploader": rev["uploader"].get("name") or email}
 
 
+def merged_change(sha: str) -> dict | None:
+    """The change of online that merged the commit @p sha, as {change, subject, owner}, or None
+    when Gerrit has none or cannot be reached."""
+    url = f"{GERRIT_URL}/changes/?q=project:online+commit:{sha}&o=DETAILED_ACCOUNTS"
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:
+            found = json.loads(r.read().decode().split("\n", 1)[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    if len(found) != 1:
+        return None
+    c = found[0]
+    owner = c.get("owner") or {}
+    return {"change": c["_number"], "subject": c.get("subject", ""),
+            "owner": owner.get("name") or owner.get("email") or ""}
+
+
 def _queue(fields: dict, at: datetime | None) -> dict:
     t = now()
     job = {"id": t.strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3), **fields,
@@ -173,6 +193,9 @@ def add_capacity(target: str, scenario: str, profile: str, scenarios: list[str],
         if not REF.fullmatch(target) or ".." in target or target.endswith((".lock", "/")):
             raise Refused("give a Gerrit change, or a branch, tag or commit of online")
         fields.update(branch=target.removeprefix("origin/"), ref=target)
+        # A commit of main shows the change that merged it, as a change job shows its own.
+        if SHA.fullmatch(target) and (merged := merged_change(target)):
+            fields["merged"] = merged
     return _queue(fields, at)
 
 
