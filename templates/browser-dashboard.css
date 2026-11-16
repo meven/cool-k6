@@ -1,4 +1,12 @@
 :root {
+  /* The band at the top of the page, down to the line under the tabs: the top padding of the
+     page, the title, the 12 px margin of the tabs, which takes in the 4 px margin of the title,
+     and the tabs with their 6 px padding above and below, the 2 px border of the selected tab and
+     the 1 px line, less the 1 px that the tab overlaps that line by. */
+  --page-top: 34px;
+  --title-line: 33px;
+  --tab-line: 17px;
+  --band: calc(var(--page-top) + var(--title-line) + 12px + var(--tab-line) + 12px + 2px);
   --surface: #fcfcfb;
   --panel: #fff;
   --ink: #0b0b0b;
@@ -99,10 +107,11 @@ body {
 .wrap {
   max-width: none;
   margin: 0 auto;
-  padding: 34px clamp(20px, 3.5vw, 48px) 64px;
+  padding: var(--page-top) clamp(20px, 3.5vw, 48px) 64px;
 }
 h1 {
   font-size: 22px;
+  line-height: var(--title-line);
   font-weight: 650;
   letter-spacing: -0.01em;
   margin: 0 0 4px;
@@ -384,6 +393,7 @@ body.has-full::before {
 .tabs [role="tab"] {
   font: inherit;
   font-size: 13.5px;
+  line-height: var(--tab-line);
   cursor: pointer;
   background: none;
   border: 0;
@@ -1088,7 +1098,9 @@ button.linkish {
 /* What runs on the VM, what ran last and what runs next, in the top right corner over the page. */
 .now {
   position: fixed;
-  top: 16px;
+  /* the middle of the band between the top of the window and the line under the tabs */
+  top: calc(var(--band) / 2);
+  transform: translateY(-50%);
   /* the side margin of the page, so the panel lines up with its content */
   right: clamp(20px, 3.5vw, 48px);
   z-index: 30;
