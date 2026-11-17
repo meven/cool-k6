@@ -31,6 +31,22 @@ lock_step() {
     echo "$$ $(date +%s) $*" > "$state/lock-step"
 }
 
+# Stop unless this script may create cgroups under its own, as a unit with Delegate=yes may.
+# Without that, k6-flamegraph.py counts the instructions of the kit by pid, which gave a
+# fraction of what the cgroup of a unit counts, so the runs are not comparable with main.
+require_delegated_cgroup() {
+    local own probe
+    own=$(sed -n 's/^0:://p' "/proc/$$/cgroup")
+    probe=/sys/fs/cgroup$own/coolperf-check-$$
+    if [ -f /sys/fs/cgroup/cgroup.controllers ] && mkdir "$probe" 2>/dev/null; then
+        rmdir "$probe"
+        return 0
+    fi
+    echo "$(basename "$0") needs a cgroup it may create cgroups under, which a unit" >&2
+    echo "with Delegate=yes gives: start it with systemd-run as DEPLOY-VM.md shows" >&2
+    exit 2
+}
+
 # The ref of a patch set of a Gerrit change, "<number>" for its current patch set or
 # "<number>/<patch set>", from the Gerrit REST API, which prefixes its JSON with a line against
 # cross-site inclusion.

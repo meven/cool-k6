@@ -2,8 +2,9 @@
 # Build a change or a branch of online, measure it, and publish its runs as a line of
 # their own on the dashboard, beside main, which it can be compared with.
 #
-# Stop cool-perf.timer as root or wait for its run to end, then run as the service user,
-# or give --wait to have the run start once the run of the timer has ended:
+# Run it as the service user in a unit with Delegate=yes, as DEPLOY-VM.md shows with
+# systemd-run, and stop cool-perf.timer as root or wait for its run to end, or give --wait
+# to have the run start once the run of the timer has ended:
 #
 #   deploy/run-branch --gerrit 18591                 the current patch set of a change
 #   deploy/run-branch --gerrit 18591/2               one patch set
@@ -50,6 +51,7 @@ if [ -n "$change" ]; then
 fi
 [ -n "$name" ] && [ ${#refs[@]} -gt 0 ] || { echo "give --gerrit, or --name and --ref" >&2; exit 2; }
 [ "$name" != main ] || { echo "main is what deploy/nightly measures" >&2; exit 2; }
+require_delegated_cgroup
 
 set -a; . /etc/cool-perf.env; set +a
 : "${COOLWSD_DIR:?not set in /etc/cool-perf.env}"

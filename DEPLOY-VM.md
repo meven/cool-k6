@@ -423,10 +423,18 @@ other, each a measured commit or a range of them on one branch, and lists the
 metrics that moved past the noise: green when B is lower, red when higher, and
 lighter for a small change. It starts on the newest change against main at the
 commit the change is based on, which deploy/run-branch records. The choices are
-kept in the address, so a comparison can be sent as a link. Wait for the run of the timer to end, or stop the timer, then:
+kept in the address, so a comparison can be sent as a link. deploy/run-branch
+refuses to start outside a unit with `Delegate=yes`: perf then counts the kit by
+pid, which gave 0.88 G instructions for calc finance where the cgroup of a unit
+counts 9.09 G. Start it with systemd-run instead, and `--wait` has it start once
+the run of the timer has ended:
 
 ```
-sudo -iu collabora /home/collabora/perf-dashboard/deploy/run-branch --gerrit 18591 --runs 3
+sudo systemd-run --unit=cool-perf-gerrit-18591 --collect \
+  -p User=collabora -p Group=collabora -p EnvironmentFile=/etc/cool-perf.env \
+  -p WorkingDirectory=/home/collabora/perf-dashboard \
+  -p TimeoutStartSec=12h -p KillMode=control-group -p Delegate=yes \
+  /home/collabora/perf-dashboard/deploy/run-branch --gerrit 18591 --runs 3 --wait
 ```
 
 **Queuing a change from the dashboard.** The Schedule tab shows the runs of the
