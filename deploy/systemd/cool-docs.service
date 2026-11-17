@@ -1,0 +1,20 @@
+[Unit]
+Description=Serve the test documents of the dashboard with the build of main, between the runs
+Documentation=file://@REPO@/DEPLOY-VM.md
+After=network.target
+
+[Service]
+User=@USER@
+Group=@USER@
+EnvironmentFile=/etc/cool-perf.env
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/deploy/docs-server
+Restart=on-failure
+# Stopping the service stops coolwsd, its kits and the WOPI host with it.
+KillMode=control-group
+# The documents opened here run only between the runs, but they share the machine with the
+# builds of the next run, so they get a share of the memory.
+MemoryMax=6G
+
+[Install]
+WantedBy=multi-user.target

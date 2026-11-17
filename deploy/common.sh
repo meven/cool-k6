@@ -5,14 +5,16 @@
 # one. With $1 set, wait for the run that holds the lock to end; another run that starts
 # meanwhile waits in turn. lock-holder beside the lock then gives the pid of this script and the
 # time it took the lock, which the Schedule tab shows as the start of the measuring.
+# deploy/docs-server holds the lock between the runs, and lets it go within seconds once a
+# process opens the lock file, so without $1 the lock is still taken if it comes free in 60 s.
 take_lock() {
     local state=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
     exec 9>"$state/lock"
     if [ -n "${1:-}" ]; then
         flock -n 9 || { echo "=== waiting for the run that holds the lock to end"; flock 9; }
     else
-        flock -n 9 || { echo "another run holds the lock; wait for it, or give --wait" >&2
-                        exit 1; }
+        flock -w 60 9 || { echo "another run holds the lock; wait for it, or give --wait" >&2
+                           exit 1; }
     fi
     echo "$$ $(date +%s)" > "$state/lock-holder"
     # cool-build then knows that its caller holds the lock already.

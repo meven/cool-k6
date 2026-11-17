@@ -492,6 +492,20 @@ incremental and goes through ccache, so a change to a few engine files costs
 their compilation and the link of `libmergedlo.so`. The tree keeps the build
 until main next moves, and the next run of main builds main again the same way.
 
+**Opening the documents from the dashboard.** The link under the title of the
+dashboard leads to `/documents/`, which lists the documents of
+`server/routes/files.json`. Each one opens in a new tab, in the coolwsd that
+`cool-docs.service` runs from the tree with `deploy/docs-server`, on port 9970
+behind nginx, beside its own WOPI host on port 9971. The WOPI host discards what
+a save sends, so the test documents stay as they are. The service runs only
+between the runs: it holds the lock of `deploy/common.sh` while it serves, and
+lets it go within seconds once a run opens the lock file to wait for it. It
+also waits while the tree holds the build of a change rather than of main, until
+the next run of main. The page shows which of these it is waiting for. Its logs
+are in `~/.local/state/cool-perf/docs-logs` of the service user. `deploy/rerun`
+and `deploy/bootstrap` without a wait give up at once while it serves, so stop
+it first with `sudo systemctl stop cool-docs.service`.
+
 **Measuring the real documents.** The browser tests of the documents of
 `documents/reference-docs.json` run outside the timer, as one run of
 `deploy/nightly` with `COOL_PERF_DOCUMENTS=reference`. Such a run is published

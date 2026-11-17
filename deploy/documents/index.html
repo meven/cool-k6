@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Test documents</title>
+    <style>
+      :root {
+        --bg: #fff;
+        --fg: #1d1d1f;
+        --muted: #6b6b70;
+        --line: #ddd;
+        --link: #5c2983;
+        --ok: #1a7f37;
+        --warn: #9a6700;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #17171a;
+          --fg: #e8e8ea;
+          --muted: #9a9aa2;
+          --line: #333;
+          --link: #c9a4e8;
+          --ok: #4ac26b;
+          --warn: #d4a72c;
+        }
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.4 system-ui, sans-serif;
+        margin: 0 auto;
+        padding: 16px;
+        max-width: 900px;
+      }
+      a { color: var(--link); }
+      p { color: var(--muted); max-width: 70ch; }
+      #status { font-weight: 600; }
+      #status.serving { color: var(--ok); }
+      #status.waiting { color: var(--warn); }
+      h2 { font-size: 15px; margin: 20px 0 6px; }
+      ul { list-style: none; padding: 0; margin: 0; }
+      li { padding: 4px 0; border-bottom: 1px solid var(--line); display: flex; gap: 12px; }
+      li span { color: var(--muted); }
+      button.open {
+        font: inherit;
+        color: var(--link);
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        text-decoration: underline;
+        text-align: left;
+      }
+      button.open:disabled { color: var(--muted); cursor: default; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <p><a href="../">Back to the dashboard</a></p>
+    <h1>Test documents</h1>
+    <p id="status" role="status" aria-live="polite">Reading the state of the server...</p>
+    <p>
+      Each document opens in a new tab, in the Collabora Online of the latest build of main that
+      the dashboard measured. Everyone who opens the same document edits it together. Saving does
+      not change the test documents. The server stops while a run measures, and starts again
+      within a minute after the run.
+    </p>
+    <div id="lists"></div>
+    <form id="open" method="post" target="_blank" hidden>
+      <input type="hidden" name="access_token" value="documents" />
+    </form>
+    <script>
+      const KINDS = [
+        ['Writer', ['odt', 'fodt', 'docx', 'doc', 'rtf']],
+        ['Calc', ['ods', 'fods', 'xlsx', 'xls', 'csv']],
+        ['Impress', ['odp', 'fodp', 'pptx', 'ppt']],
+        ['Draw', ['odg', 'fodg']],
+      ];
+      const STATES = {
+        serving: 'The server is up, with the build of main {commit}.',
+        starting: 'The server is starting, with the build of main {commit}.',
+        measuring: 'A run is measuring, so the server is stopped. It starts again after the run.',
+        'not-main':
+          'The server is stopped: the last build is of a change, not of main. It starts again after the next run of main.',
+        failed: 'The server could not start with the build {commit}. It tries again in 30 seconds.',
+        stopped: 'The server is stopped.',
+      };
+      let status = null;
+
+      function extensionOf(path) {
+        const dot = path.lastIndexOf('.');
+        return dot < 0 ? '' : path.slice(dot + 1).toLowerCase();
+      }
+
+      function showStatus() {
+        const el = document.getElementById('status');
+        const state = status ? status.state : 'unknown';
+        const text = STATES[state] || 'The state of the server is unknown.';
+        el.textContent = text.replace('{commit}', status && status.commit ? status.commit : '');
+        el.className = state === 'serving' ? 'serving' : 'waiting';
+        for (const b of document.querySelectorAll('button.open')) b.disabled = state !== 'serving';
+      }
+
+      async function refreshStatus() {
+        try {
+          const resp = await fetch('status.json', { cache: 'no-store' });
+          status = resp.ok ? await resp.json() : null;
+        } catch (e) {
+          status = null;
+        }
+        showStatus();
+      }
+
+      // The address of the editor for each file extension, from the discovery of coolwsd.
+      async function editorUrls() {
+        const resp = await fetch('/hosting/discovery', { cache: 'no-store' });
+        if (!resp.ok) throw new Error('discovery answered ' + resp.status);
+        const xml = new DOMParser().parseFromString(await resp.text(), 'application/xml');
+        const urls = {};
+        for (const action of xml.querySelectorAll('action')) {
+          const ext = action.getAttribute('ext');
+          if (ext && action.getAttribute('urlsrc') && !(ext in urls))
+            urls[ext] = action.getAttribute('urlsrc');
+        }
+        return urls;
+      }
+
+      async function openDocument(id, path) {
+        try {
+          const urls = await editorUrls();
+          const urlsrc = urls[extensionOf(path)];
+          if (!urlsrc) {
+            alert('Collabora Online has no editor for ' + path);
+            return;
+          }
+          // coolwsd reads the document from the WOPI host on its own machine.
+          const wopiSrc = `http://127.0.0.1:${status.wopi_port}/wopi/files/${id}`;
+          const form = document.getElementById('open');
+          form.action = urlsrc + 'WOPISrc=' + encodeURIComponent(wopiSrc);
+          form.submit();
+        } catch (e) {
+          await refreshStatus();
+          alert('The document could not be opened: ' + e.message);
+        }
+      }
+
+      async function showDocuments() {
+        const files = await (await fetch('files.json', { cache: 'no-store' })).json();
+        const lists = document.getElementById('lists');
+        for (const [kind, extensions] of KINDS) {
+          const entries = Object.entries(files).filter(
+            ([, f]) => f && f.path && extensions.includes(extensionOf(f.path)),
+          );
+          if (!entries.length) continue;
+          const heading = document.createElement('h2');
+          heading.textContent = kind;
+          const list = document.createElement('ul');
+          for (const [id, f] of entries) {
+            const item = document.createElement('li');
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'open';
+            button.textContent = f.path.split('/').pop();
+            button.addEventListener('click', () => openDocument(id, f.path));
+            const note = document.createElement('span');
+            note.textContent = 'file id ' + id;
+            item.append(button, note);
+            list.append(item);
+          }
+          lists.append(heading, list);
+        }
+        showStatus();
+      }
+
+      showDocuments();
+      refreshStatus();
+      setInterval(refreshStatus, 15000);
+    </script>
+  </body>
+</html>

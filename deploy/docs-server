@@ -1,0 +1,154 @@
+#!/bin/bash
+# Serve the test documents with the build of main in the tree, so that people can open them from
+# the Documents page of the dashboard. cool-docs.service runs it.
+#
+# The runs come first. This script starts coolwsd and the WOPI host only while it holds the lock
+# of deploy/common.sh, and while the tree holds a build of a commit of origin/main. As soon as
+# another process opens the lock file to wait for the lock, it stops both and lets the lock go,
+# so a run never measures beside the documents opened here, and the tree is never rebuilt under
+# them. It tries again every 30 s.
+#
+# The Documents page reads documents/status.json in the store, which this script writes, and
+# the WOPI host table server/routes/files.json, which it copies there. nginx passes /browser/,
+# /cool/ and /hosting/ to this coolwsd. The WOPI host discards what a save sends, so the test
+# documents stay as they are.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+cd "$REPO"
+
+if [ -z "${COOLWSD_DIR:-}" ] && [ -r /etc/cool-perf.env ]; then
+    set -a; . /etc/cool-perf.env; set +a
+fi
+: "${COOLWSD_DIR:?not set in /etc/cool-perf.env}"
+STORE=${COOL_PERF_STORE:-/var/lib/cool-perf}
+STATE=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
+LOCK=$STATE/lock
+# Outside 9980 to 9999, where cool-ci looks for the port of the coolwsd that it starts.
+COOL_PORT=${COOL_DOCS_PORT:-9970}
+WOPI_PORT=${COOL_DOCS_WOPI_PORT:-9971}
+PAGE=$STORE/documents
+LOGS=$STATE/docs-logs
+mkdir -p "$STATE" "$PAGE" "$LOGS"
+
+COOL_PID=
+WOPI_PID=
+
+# Write status.json: the state, and the commit of the build that is served or about to be.
+# measuring: a run holds the lock or waits for it. not-main: the tree holds the build of a change.
+# failed: coolwsd or the WOPI host did not start, see the logs in $LOGS.
+write_status() {
+    printf '{"state": "%s", "commit": "%s", "wopi_port": %s, "since": "%s"}\n' \
+        "$1" "${2:-}" "$WOPI_PORT" "$(date -u +%FT%TZ)" > "$PAGE/status.json.new"
+    mv "$PAGE/status.json.new" "$PAGE/status.json"
+}
+
+# The page and the table of documents, from this checkout, so that they follow its updates.
+copy_page() {
+    cp deploy/documents/index.html server/routes/files.json "$PAGE/"
+}
+
+# True when a process other than this script has the lock file open: a run that waits for the
+# lock, or one that is about to try. The servers started here do not inherit the lock, and the
+# test starts no process, so none of this script's own children count.
+others_want_lock() {
+    local fd pid
+    for fd in /proc/[0-9]*/fd/*; do
+        [ "$fd" -ef "$LOCK" ] 2>/dev/null || continue
+        pid=${fd#/proc/}
+        pid=${pid%%/*}
+        [ "$pid" = "$$" ] || return 0
+    done
+    return 1
+}
+
+# The commit of the build in the tree when it is a commit of origin/main, as written by
+# cool-use-build into .cool-build-installed.
+main_commit() {
+    local id
+    id=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["id"])' \
+             "$COOLWSD_DIR/.cool-build-installed" 2>/dev/null) || return 1
+    [ -n "$id" ] && git -C "$COOLWSD_DIR" merge-base --is-ancestor "$id" origin/main 2>/dev/null \
+        || return 1
+    echo "$id"
+}
+
+start_servers() {
+    local cool_cmd
+    cool_cmd=$(COOLWSD_DIR=$COOLWSD_DIR python3 "$REPO/cool-use-build" run-cmd) || return 1
+    # Plain HTTP on the loopback, behind nginx, which serves the dashboard over HTTP too.
+    cool_cmd=$(sed -e 's/--find-free-port//' -e 's/logging\.level=[a-z]*/logging.level=warning/' \
+                   -e 's/logging\.file\[@enable\]=true/logging.file[@enable]=false/' \
+                   -e 's/logging_ui_cmd\.file\[@enable\]=true/logging_ui_cmd.file[@enable]=false/' \
+                   <<< "$cool_cmd")
+    cool_cmd+=" --port=$COOL_PORT --o:net.listen=loopback --o:net.proto=IPv4"
+    cool_cmd+=" --o:ssl.enable=false --o:ssl.termination=false"
+    echo "starting coolwsd: $cool_cmd"
+    # shellcheck disable=SC2086 # the command line is split into its words on purpose
+    (cd "$COOLWSD_DIR" && exec setsid $cool_cmd) > "$LOGS/coolwsd.log" 2>&1 9>&- < /dev/null &
+    COOL_PID=$!
+    (PORT=$WOPI_PORT exec setsid npm run server) > "$LOGS/wopi.log" 2>&1 9>&- < /dev/null &
+    WOPI_PID=$!
+    local i
+    for i in $(seq 90); do
+        if curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:$COOL_PORT/hosting/discovery" \
+                && curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:$WOPI_PORT/wopi/files/11"
+        then
+            return 0
+        fi
+        kill -0 "$COOL_PID" 2>/dev/null && kill -0 "$WOPI_PID" 2>/dev/null || break
+        sleep 1
+    done
+    echo "coolwsd or the WOPI host did not come up, see $LOGS" >&2
+    return 1
+}
+
+stop_servers() {
+    local pid i
+    for pid in $COOL_PID $WOPI_PID; do kill -TERM -- "-$pid" 2>/dev/null || true; done
+    for i in $(seq 20); do
+        kill -0 "${COOL_PID:-0}" 2>/dev/null || kill -0 "${WOPI_PID:-0}" 2>/dev/null || break
+        sleep 1
+    done
+    for pid in $COOL_PID $WOPI_PID; do kill -KILL -- "-$pid" 2>/dev/null || true; done
+    wait 2>/dev/null || true
+    COOL_PID=
+    WOPI_PID=
+}
+
+trap 'stop_servers; write_status stopped; exit 0' TERM INT
+
+exec 9>"$LOCK"
+while true; do
+    copy_page
+    if ! flock -n 9; then
+        write_status measuring
+    elif others_want_lock; then
+        flock -u 9
+        write_status measuring
+    elif ! commit=$(main_commit); then
+        flock -u 9
+        write_status not-main
+    else
+        write_status starting "$commit"
+        if start_servers; then
+            write_status serving "$commit"
+            echo "serving the documents with $commit"
+            while kill -0 "$COOL_PID" 2>/dev/null && kill -0 "$WOPI_PID" 2>/dev/null \
+                    && ! others_want_lock; do
+                sleep 2
+            done
+            echo "stopping: a run wants the lock, or a server ended"
+            stop_servers
+            flock -u 9
+            write_status measuring
+        else
+            stop_servers
+            flock -u 9
+            write_status failed "$commit"
+        fi
+    fi
+    # In the background, so that systemd stopping the service does not wait for the sleep.
+    sleep 30 &
+    wait $! || true
+done
