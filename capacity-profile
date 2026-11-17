@@ -33,6 +33,7 @@
 #                    looks for a cause rather than a number, such as a heap run.
 #   METRICS_INTERVAL - seconds between two samples of coolwsd's /cool/getMetrics (default 10)
 #   METRICS_AUTH   - admin console user:password for /cool/getMetrics (default admin:admin)
+#   SMAPS_INTERVAL - seconds between two samples of smaps.csv, 0 for none (default 30)
 #   ENGINE_CONFIG  - an .xcd file of engine settings, such as deploy/engine-config/*.xcd, which
 #                    the kits read: it goes into the share/registry of the engine of COOLWSD_DIR
 #                    while the run lasts, and a copy into the results as engine-config.xcd.
@@ -58,7 +59,9 @@
 # server-memory.csv (coolwsd, forkit and kits from /cool/getMetrics, plus the host's available
 # memory), metrics.prom (every /cool/getMetrics sample in full), timeline.csv, kit-cpu.csv and
 # events.csv (timeline-sampler.py: host memory, swap and CPU, the CPU of each COOL process, the
-# background saves and the OOM kills in the server cgroup, every 0.5 s), browser.log.
+# background saves and the OOM kills in the server cgroup, every 0.5 s), smaps.csv (the memory of
+# each server process by region: heap, anonymous mappings and each mapped file, every
+# SMAPS_INTERVAL seconds), browser.log.
 # latency-spikes.py OUT_DIR lines the slow edits that k6 logs on its EDIT lines up with that
 # timeline.
 
@@ -490,7 +493,8 @@ server_watch "$K6_PID" "$(date +%s)" &
 SERVER_WATCH_PID=$!
 metrics_sample "$(date +%s)" &
 METRICS_PID=$!
-python3 "$ROOT/timeline-sampler.py" "$OUT_DIR" --cgroup "$SERVER_CG" &
+python3 "$ROOT/timeline-sampler.py" "$OUT_DIR" --cgroup "$SERVER_CG" \
+    --smaps-interval "${SMAPS_INTERVAL:-30}" &
 TIMELINE_PID=$!
 wait "$K6_PID" || k6_status=$?
 K6_PID=

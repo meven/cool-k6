@@ -19,16 +19,24 @@ Writes into OUT_DIR, until it is sent SIGTERM:
   - events.csv: when a kit or a background save appears and ends, with its pid and name. A kit is
     named kitbroker_<docbroker id> and its saves kitbgsv_<docbroker id>_<n>, so the two join on
     the docbroker id.
+  - smaps.csv, with --smaps-interval: every that many seconds, the memory of each server process
+    by region, from /proc/<pid>/smaps, one row per process and region, in kB. A region is
+    [heap], [stack], anon for the anonymous mappings (the malloc arenas and the large malloc
+    blocks among them), or the name of a mapped file, with all its mappings added up.
+    private_dirty is the memory that the process alone holds. The shared columns count the pages
+    that it shares with the forkit, the other kits or its background save.
 
 CPU columns are in CPUs (1.0 is one core busy for the whole interval). Times are Unix epoch
 milliseconds, the clock k6 uses for Date.now().
 
     ./timeline-sampler.py OUT_DIR [--interval 0.5] [--mem-interval 2] [--cgroup /sys/fs/cgroup/...]
+                          [--smaps-interval 30]
 """
 import argparse
 import os
 import signal
 import sys
+import threading
 import time
 
 CLK_TCK = os.sysconf("SC_CLK_TCK")
@@ -142,6 +150,63 @@ def pss_by_kind(procs):
     return {k: "" if k in unreadable else str(kb[k] // 1024) for k in MEM_KINDS}
 
 
+# The fields of an smaps entry, in the order of their columns in smaps.csv.
+SMAPS_FIELDS = ("Size", "Rss", "Pss", "Shared_Clean", "Shared_Dirty", "Private_Clean",
+                "Private_Dirty", "Anonymous", "Swap")
+SMAPS_INDEX = {k: i for i, k in enumerate(SMAPS_FIELDS)}
+
+
+def smaps_region(header):
+    """The region of the mapping line of an smaps entry: its bracketed name, anon for an anonymous
+    mapping, or the name of the mapped file."""
+    parts = header.split(None, 5)
+    if len(parts) < 6:
+        return "anon"
+    path = parts[5].strip()
+    if path.startswith("["):
+        return path
+    path = path.removesuffix(" (deleted)")
+    return os.path.basename(path) or path
+
+
+def read_smaps(pid):
+    """region -> [kB for each of SMAPS_FIELDS] of a process, or None for one that has ended or
+    cannot be read."""
+    regions = {}
+    current = None
+    try:
+        with open(f"/proc/{pid}/smaps") as f:
+            for line in f:
+                key, _, rest = line.partition(":")
+                if " " in key:
+                    # A mapping line, "start-end perms offset major:minor inode [path]".
+                    current = regions.setdefault(smaps_region(line), [0] * len(SMAPS_FIELDS))
+                elif key in SMAPS_INDEX and current is not None:
+                    current[SMAPS_INDEX[key]] += int(rest.split()[0])
+    except (OSError, ValueError):
+        return None
+    return regions
+
+
+def smaps_sampler(out_dir, interval, stop_event):
+    """Write smaps.csv: every interval seconds, the smaps of each server process. One pass over a
+    hundred kits takes seconds, so it runs in its own thread and does not delay the CPU samples."""
+    with open(os.path.join(out_dir, "smaps.csv"), "w", buffering=1) as out:
+        out.write("t_ms,pid,name,region," + ",".join(k.lower() for k in SMAPS_FIELDS) + "\n")
+        while not stop_event.is_set():
+            start = time.time()
+            t_ms = int(start * 1000)
+            for pid, (kind, comm, _) in scan_processes().items():
+                if kind not in MEM_KINDS:
+                    continue
+                for region, kb in sorted((read_smaps(pid) or {}).items()):
+                    # A region with nothing resident and nothing swapped out costs no memory.
+                    if kb[SMAPS_INDEX["Rss"]] or kb[SMAPS_INDEX["Swap"]]:
+                        out.write(f"{t_ms},{pid},{comm},{region.replace(',', ' ')},"
+                                  + ",".join(map(str, kb)) + "\n")
+            stop_event.wait(max(0.0, interval - (time.time() - start)))
+
+
 def scan_processes():
     """pid -> (kind, comm, cpu ticks) for the processes this run cares about."""
     procs = {}
@@ -178,6 +243,8 @@ def main():
     # memory is sampled less often than the CPU.
     parser.add_argument("--mem-interval", type=float, default=2.0)
     parser.add_argument("--cgroup", default="", help="the cgroup v2 directory of the server")
+    parser.add_argument("--smaps-interval", type=float, default=0,
+                        help="seconds between two samples of smaps.csv, 0 for none")
     args = parser.parse_args()
 
     running = True
@@ -188,6 +255,13 @@ def main():
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+
+    smaps_stop = threading.Event()
+    smaps_thread = None
+    if args.smaps_interval > 0:
+        smaps_thread = threading.Thread(target=smaps_sampler,
+                                        args=(args.out_dir, args.smaps_interval, smaps_stop))
+        smaps_thread.start()
 
     kinds = ("coolwsd", "forkit", "kit", "bgsave", "wopi", "k6", "chromium")
     timeline = open(os.path.join(args.out_dir, "timeline.csv"), "w", buffering=1)
@@ -254,6 +328,9 @@ def main():
 
         prev_stat, prev_vm, prev_procs, prev_t = (busy, iowait, total), vm, procs, t
 
+    smaps_stop.set()
+    if smaps_thread:
+        smaps_thread.join()
     for f in (timeline, kit_cpu, events):
         f.close()
     return 0
