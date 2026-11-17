@@ -37,7 +37,9 @@
 #                    the kits read: it goes into the share/registry of the engine of COOLWSD_DIR
 #                    while the run lasts, and a copy into the results as engine-config.xcd.
 #   HEAPTRACK      - a heaptrack with --follow-children, to record the allocations of coolwsd,
-#                    forkit, the kits and their background saves instead of a perf profile.
+#                    forkit and the kits instead of a perf profile. The kits save in their own
+#                    process, with an autosave every 60 s, because the child of a background
+#                    save cannot write a trace.
 #                    heap-report.py then writes heap.html, heaptrack.json, and per kind of
 #                    process flamegraphs of the peak, the allocations, the temporary allocations
 #                    and the leaks. heaptrack slows the server down several times, so the
@@ -256,6 +258,12 @@ if ! cool_up; then
     if [ -n "${HEAPTRACK:-}" ]; then
         cool_cmd="$HEAPTRACK --follow-children --raw -o $OUT_DIR/heaptrack/ht $cool_cmd"
         cool_cmd+=" --o:security.capabilities=false --o:mount_namespaces=false"
+        # Landlock lets a kit create no file outside its jail, so the child of a background save
+        # cannot open a trace. A save in the kit allocates the same, and heaptrack sees it there;
+        # without background saves the 30 s idle save waits for idle users, so autosave comes
+        # every 60 s instead of 300 s.
+        cool_cmd+=" --o:per_document.background_autosave=false"
+        cool_cmd+=" --o:per_document.autosave_duration_secs=60"
     fi
     echo "starting coolwsd: $cool_cmd"
     # shellcheck disable=SC2086 # the command line is split into its words on purpose
