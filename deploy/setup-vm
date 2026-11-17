@@ -52,7 +52,7 @@ fi
 
 # The size of the filesystem, not the free space, so that a run after the first
 # build passes too.
-MIN_DISK_GB=${COOL_PERF_MIN_DISK_GB:-120}
+MIN_DISK_GB=${COOL_PERF_MIN_DISK_GB:-200}
 disk_gb=$(df --output=size -BG / | tail -1 | tr -dc 0-9)
 if [ "$disk_gb" -lt "$MIN_DISK_GB" ]; then
     echo "/ is ${disk_gb} GB, and the engine build needs ${MIN_DISK_GB} GB." >&2

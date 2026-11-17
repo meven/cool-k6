@@ -94,9 +94,10 @@ if [ ! -d "$TREE/.git" ]; then
 fi
 
 # The engine build with symbols is large; the default 5 GB cache would only
-# hold part of it. 50 GB holds main beside the builds of changes and release
-# tags, so that building one does not evict the other.
-ccache --max-size=50G >/dev/null
+# hold part of it. 100 GB holds main beside the builds of changes and release
+# tags, so that building one does not evict the other. At 50 GB the cache was
+# full, half the compiles missed, and a build of main took an hour.
+ccache --max-size=100G >/dev/null
 
 step "configuring the engine"
 if [ -n "$RECONFIGURE" ] || [ ! -f "$TREE/engine/config_host.mk" ]; then

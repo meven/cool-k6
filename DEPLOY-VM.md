@@ -46,21 +46,21 @@ same time.
 | --- | --- | --- |
 | vCPUs | 8 | the engine build; the measurement itself uses few |
 | memory | 16 GB, 32 GB better | linking the engine with symbols |
-| disk | 170 GB | engine build with symbols (about 60 GB), ccache (50 GB), online, the store, the k6 image |
+| disk | 220 GB | engine build with symbols (about 60 GB), ccache (100 GB), online, the store, the k6 image |
 
 On incus, a VM with those resources:
 
 ```
 incus launch images:ubuntu/26.04 cool-perf --vm \
-    -c limits.cpu=8 -c limits.memory=32GiB -d root,size=170GiB
+    -c limits.cpu=8 -c limits.memory=32GiB -d root,size=220GiB
 ```
 
 Without `-d root,size=...`, incus gives a VM a 10 GB disk. `setup-vm` stops
-when `/` is smaller than 120 GB. To grow the disk of an existing VM, run this on
+when `/` is smaller than 200 GB. To grow the disk of an existing VM, run this on
 the host:
 
 ```
-incus config device override cool-perf root size=150GiB
+incus config device override cool-perf root size=220GiB
 ```
 
 Use `incus config device set` instead when the VM already has its own `root`
@@ -647,7 +647,7 @@ environment loaded, as in the `doctor` line above. The next run builds
 `main` again.
 
 **Disk.** The store grows by about 8 MB a run up to `COOL_PERF_KEEP` runs.
-The compiler cache in `/home/collabora/.cache/ccache` grows up to its 50 GB
+The compiler cache in `/home/collabora/.cache/ccache` grows up to its 100 GB
 limit, which holds main beside the builds of changes and release tags. A full
 cache evicts the objects of main while another branch builds, and the next
 build of main then compiles them again. `ccache -s` shows how full it is, and
