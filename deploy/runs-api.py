@@ -24,6 +24,9 @@ request, and nothing is deleted.
     GET  /api/schedule/main/log         the end of the log of the newest run of the timer
     GET  /api/capacity                  a summary of each capacity run
     GET  /api/capacity/<run>            the time series of one capacity run
+    GET  /api/capacity/<old>/diff/<new>/<flamegraph>[?removed=1]
+                                        the differential flamegraph of two runs, see
+                                        deploy/flamediff.py
 
 deploy/runqueue.py checks a change before it is queued.
 """
@@ -44,6 +47,7 @@ from flask import Flask, Response, jsonify, request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import capacity  # noqa: E402
+import flamediff  # noqa: E402
 import runqueue  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
@@ -379,6 +383,41 @@ def capacity_runs():
 def capacity_run(run):
     d = capacity.detail(STORE, run)
     return jsonify(d) if d else fail(404, f"no capacity run {run}")
+
+
+# The diffs drawn last, as (old run, new run, flamegraph, removed) -> SVG. Each takes a few seconds
+# to draw and a few MB to keep.
+diffs: dict[tuple, bytes] = {}
+DIFFS_KEPT = 8
+
+
+@app.get("/api/capacity/<old>/diff/<new>/<name>")
+def capacity_diff(old, new, name):
+    """The differential flamegraph of two runs: the stacks of the newer run, red where they grew,
+    or with ?removed=1 those of the older run, blue where they shrank or are gone."""
+    if not flamediff.NAMES.fullmatch(name):
+        return fail(404, f"no flamegraph {name}")
+    svgs = []
+    for run in (old, new):
+        if not capacity.RUN.fullmatch(run):
+            return fail(404, f"no capacity run {run}")
+        svg = STORE / "capacity" / run / name
+        if not svg.is_file():
+            return fail(404, f"the run {run} has no {name}")
+        svgs.append(svg)
+    removed = request.args.get("removed") == "1"
+    key = (old, new, name, removed)
+    if key not in diffs:
+        title = (f"{name} of {old} -> {new}: " +
+                 ("at the sizes of the older run, blue shrank or went away" if removed
+                  else "at the sizes of the newer run, red grew, blue shrank"))
+        try:
+            diffs[key] = flamediff.diff(*svgs, title, removed)
+        except (OSError, subprocess.CalledProcessError) as e:
+            return fail(500, f"the diff could not be drawn: {e}")
+        while len(diffs) > DIFFS_KEPT:
+            diffs.pop(next(iter(diffs)))
+    return Response(diffs[key], mimetype="image/svg+xml")
 
 
 # The change that merged each commit of a capacity job queued before jobs recorded it, looked up

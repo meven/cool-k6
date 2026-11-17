@@ -554,6 +554,9 @@ let VIEW = ((v) =>
 );
 // The folder name of the open capacity run, such as 20261109T125214Z-c18edbcbb3cd, or null.
 let CAPRUN = new URLSearchParams(location.hash.slice(1)).get("run");
+// The run of the same scenario and profile that CAPRUN is compared with, "none" when the reader
+// stopped the comparison, or null for the closest run of main.
+let CAPVS = new URLSearchParams(location.hash.slice(1)).get("vs");
 function writeHash() {
   const h = new URLSearchParams();
   if (VIEW !== "charts") h.set("view", VIEW);
@@ -561,6 +564,7 @@ function writeHash() {
   if (CMP.a) h.set("a", CMP.a.from + (CMP.a.to ? ".." + CMP.a.to : ""));
   if (CMP.b) h.set("b", CMP.b.from + (CMP.b.to ? ".." + CMP.b.to : ""));
   if (VIEW === "capacity" && CAPRUN) h.set("run", CAPRUN);
+  if (VIEW === "capacity" && CAPRUN && CAPVS) h.set("vs", CAPVS);
   history.replaceState(null, "", h.toString() ? "#" + h : location.pathname + location.search);
   writeTitle();
 }
@@ -1852,6 +1856,10 @@ function runBranch(r) {
       pages = Math.max(1, Math.ceil(kept.length / PAGE));
     page = Math.min(Math.max(page, 0), pages - 1);
     const shownRuns = kept.slice(page * PAGE, (page + 1) * PAGE);
+    const cur = list.find((x) => x.run === run);
+    // Only a run of the same scenario and profile compares with the one shown.
+    const comparable = (r) =>
+      cur && r.run !== run && scenario(r) === scenario(cur) && kind(r) === kind(cur);
     pager.hidden = pages < 2;
     document.getElementById("cappage").textContent =
       `runs ${page * PAGE + 1} to ${page * PAGE + shownRuns.length} of ${kept.length}`;
@@ -1882,6 +1890,11 @@ function runBranch(r) {
             (r.engine_config
               ? ` <a href="capacity/${esc(r.run)}/engine-config.xcd" title="${esc("The engine settings of this run, which differ from the defaults.")}">settings</a>`
               : "") +
+            (r.run === CAPVS
+              ? " <span class=\"ref\">compared</span>"
+              : comparable(r)
+                ? ` <button type="button" class="linkish" data-vs="${esc(r.run)}" title="${esc("Compare this run with the one shown below.")}">compare</button>`
+                : "") +
             "</td></tr>"
           );
         })
@@ -1940,7 +1953,10 @@ function runBranch(r) {
   tab.addEventListener("click", (e) => {
     const b = e.target.closest("button[data-run]");
     if (b) pick(b.dataset.run);
+    const v = e.target.closest("button[data-vs]");
+    if (v) compareWith(v.dataset.vs);
   });
+  document.getElementById("capcclose").addEventListener("click", () => compareWith(null));
 
   async function load() {
     try {
@@ -1961,13 +1977,36 @@ function runBranch(r) {
     const at = list.filter(matches).findIndex((r) => r.run === run);
     if (at >= 0) page = Math.floor(at / PAGE);
     drawList();
-    if (run) await pick(run);
+    // The comparison in the address holds for the run in the address only.
+    if (run) await pick(run, true);
     if (missing) msg.textContent = `There is no capacity run ${missing}, so the latest one is shown.`;
   }
 
-  async function pick(id) {
+  // The run of main closest in time to `a`, with the same scenario and profile, the older one of
+  // two as close, or null.
+  function closestMain(a) {
+    let best = null,
+      gap = Infinity;
+    for (const r of list || []) {
+      if (r.run === a.run || !r.done || (r.branch && r.branch !== "main")) continue;
+      if (scenario(r) !== scenario(a) || kind(r) !== kind(a)) continue;
+      const d = Math.abs(Date.parse(r.ts) - Date.parse(a.ts));
+      if (d < gap || (d === gap && r.ts < best.ts)) [best, gap] = [r, d];
+    }
+    return best;
+  }
+  async function pick(id, fromAddress = false) {
     run = id;
     CAPRUN = id;
+    // A run picked in the list compares with the closest run of main. The address can name
+    // another run of the same scenario and profile, or none.
+    const a = (list || []).find((x) => x.run === id),
+      b = (list || []).find((x) => x.run === CAPVS);
+    const keep =
+      fromAddress &&
+      (CAPVS === "none" ||
+        (a && b && a.run !== b.run && scenario(a) === scenario(b) && kind(a) === kind(b)));
+    if (!keep) CAPVS = a ? closestMain(a)?.run || null : null;
     const r = (list || []).find((x) => x.run === id);
     CAPTITLE = r ? `Capacity run of ${scenario(r)} at ${r.commit}, ${day(r.ts)}` : "";
     writeHash();
@@ -1981,6 +2020,7 @@ function runBranch(r) {
       return;
     }
     drawDetail();
+    drawCompare();
   }
 
   function drawDetail() {
@@ -2031,6 +2071,165 @@ function runBranch(r) {
         .join("") +
       "</tbody>";
     drawCharts();
+  }
+
+  // ---- the comparison of the run shown with another run of the same scenario and profile ----
+  const cmpSec = document.getElementById("capcmp");
+  // The details and the heap summaries read so far, by run.
+  const details = new Map(),
+    heaps = new Map();
+  async function fetchJson(url, cache, key) {
+    if (!cache.has(key))
+      cache.set(
+        key,
+        fetch(url, { cache: "no-store" }).then((res) => {
+          if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+          return res.json();
+        }),
+      );
+    try {
+      return await cache.get(key);
+    } catch (err) {
+      cache.delete(key);
+      throw err;
+    }
+  }
+  function compareWith(id) {
+    CAPVS = id || "none";
+    writeHash();
+    drawList();
+    drawCompare();
+    if (id) cmpSec.scrollIntoView({ block: "start" });
+  }
+  // One row of a comparison: the two values and the change from the older run to the newer one,
+  // shaded when it passes `th`. `lower` says whether less is better.
+  function cmpRow(name, va, vb, fmt, th, lower = true) {
+    return `<tr><td class="m">${esc(name)}</td>${cmpCells(va, vb, fmt, th, lower)}</tr>`;
+  }
+  function cmpCells(va, vb, fmt, th, lower = true) {
+    const cell = (v) => `<td>${v == null ? "-" : fmt(v)}</td>`;
+    let d = "<td class='d same'>-</td>";
+    if (va != null && vb != null && va !== 0) {
+      const x = (vb - va) / va,
+        changed = Math.abs(x) >= th,
+        good = lower ? x < 0 : x > 0,
+        k = changed ? Math.min(1, (Math.abs(x) - th) / (3 * th)) : 0;
+      d =
+        `<td class="d ${!changed ? "same" : good ? "better" : "worse"}" style="--k:${(18 + k * 50).toFixed(0)}%">` +
+        `${x > 0 ? "+" : ""}${(x * 100).toFixed(1)}%</td>`;
+    } else if (va != null && vb != null) d = `<td class="d same">${vb === va ? "0" : "+" + fmt(vb)}</td>`;
+    return cell(va) + cell(vb) + d;
+  }
+  const ms = (v) => Math.round(v) + " ms";
+  const mb = (v) => (v / 1e6).toFixed(1) + " MB";
+  const count = (v) => v.toLocaleString("en");
+  async function drawCompare() {
+    if (!CAPVS || CAPVS === "none" || !shown) {
+      cmpSec.hidden = true;
+      return;
+    }
+    let other;
+    try {
+      other = await fetchJson(`api/capacity/${encodeURIComponent(CAPVS)}`, details, CAPVS);
+    } catch (err) {
+      msg.textContent = `The run ${CAPVS} could not be read: ${err.message}`;
+      cmpSec.hidden = true;
+      return;
+    }
+    if (!CAPVS) return;
+    // The older run is the base of every change.
+    const [A, B] = [shown, other].sort((x, y) => x.ts.localeCompare(y.ts));
+    const name = (r) => `${r.commit}${r.branch ? " (" + r.branch + ")" : ""}`;
+    document.getElementById("capch").textContent = `${scenario(A)}: ${name(A)} against ${name(B)}`;
+    const heap = A.heap_profile;
+    document.getElementById("capcnote").textContent =
+      `The changes go from the older run, ${A.commit} of ${day(A.ts)}, to the newer one, ` +
+      `${B.commit} of ${day(B.ts)}, and are shaded when they pass 10% for latency and 5% for ` +
+      "memory: green is better, red worse. " +
+      (heap
+        ? "Both runs recorded the allocations of the server with heaptrack, so compare their " +
+          "memory, not their times. "
+        : "") +
+      "One run of each side is noisy: confirm a change with a second pair before quoting it.";
+    const users = [...new Set([...A.plateaus, ...B.plateaus].map((p) => p.users))].sort(
+      (x, y) => x - y,
+    );
+    const at = (r, u) => r.plateaus.find((p) => p.users === u && p.reached);
+    // heaptrack slows the server down, so the capacity and the latency of a heap run mean nothing.
+    let rows =
+      (heap ? "" : cmpRow("capacity, users", A.capacity, B.capacity, count, 0.001, false)) +
+      cmpRow("peak memory of the server", A.memory_peak_mb, B.memory_peak_mb, (v) => gb(v), 0.05) +
+      cmpRow("OOM kills", A.oom_kills, B.oom_kills, count, 0.001);
+    let stages = "";
+    for (const u of heap ? [] : users) {
+      const pa = at(A, u),
+        pb = at(B, u);
+      if (!pa && !pb) continue;
+      stages +=
+        `<tr><td>${u}</td>` +
+        cmpCells(pa?.edit_p95, pb?.edit_p95, ms, 0.1) +
+        cmpCells(pa?.load_p95, pb?.load_p95, ms, 0.1) +
+        "</tr>";
+    }
+    document.getElementById("capctab").innerHTML =
+      `<thead><tr><th>measure</th><th>older</th><th>newer</th><th>change</th></tr></thead><tbody>${rows}</tbody>`;
+    const stageTab = document.getElementById("capcstages");
+    stageTab.hidden = !stages;
+    stageTab.innerHTML =
+      "<thead><tr><th>users</th><th>edit p95, older</th><th>newer</th><th>change</th>" +
+      `<th>load p95, older</th><th>newer</th><th>change</th></tr></thead><tbody>${stages}</tbody>`;
+
+    const heapTab = document.getElementById("capcheap");
+    heapTab.hidden = !heap;
+    if (heap) {
+      try {
+        const [ha, hb] = await Promise.all(
+          [A, B].map((r) => fetchJson(`capacity/${encodeURIComponent(r.run)}/heaptrack.json`, heaps, r.run)),
+        );
+        let hrows = "";
+        for (const k of ["kit", "coolwsd", "forkit"]) {
+          const ka = ha.kinds[k],
+            kb = hb.kinds[k];
+          if (!ka && !kb) continue;
+          hrows +=
+            cmpRow(`${k}: highest peak of one process`, ka?.peak_max, kb?.peak_max, mb, 0.05) +
+            cmpRow(`${k}: peaks added up`, ka?.peak_sum, kb?.peak_sum, mb, 0.05) +
+            cmpRow(`${k}: still allocated at the end`, ka?.leaked, kb?.leaked, mb, 0.05) +
+            cmpRow(`${k}: allocations`, ka?.allocations, kb?.allocations, count, 0.05);
+        }
+        heapTab.innerHTML =
+          `<thead><tr><th>heap</th><th>older</th><th>newer</th><th>change</th></tr></thead><tbody>${hrows}</tbody>`;
+      } catch (err) {
+        heapTab.innerHTML = `<tbody><tr><td>The heap summaries could not be read: ${esc(err.message)}</td></tr></tbody>`;
+      }
+    }
+
+    // The flamegraphs that both runs have, drawn as diffs by the API.
+    const names = heap
+      ? [
+          ["heap-kit-peak.svg", "kit peak"],
+          ["heap-kit-leaked.svg", "kit memory at the end"],
+          ["heap-all-allocations.svg", "all allocations"],
+        ]
+      : A.flamegraph && B.flamegraph
+        ? [["flamegraph.svg", "CPU"]]
+        : [];
+    const url = (n, removed) =>
+      `api/capacity/${encodeURIComponent(A.run)}/diff/${encodeURIComponent(B.run)}/${n}${removed ? "?removed=1" : ""}`;
+    document.getElementById("capclinks").innerHTML = names.length
+      ? "Diff flamegraphs: " +
+        names
+          .map(
+            ([n, label]) =>
+              `${esc(label)} <a href="${url(n, false)}" target="_blank" rel="noopener">newer, red grew</a>` +
+              ` / <a href="${url(n, true)}" target="_blank" rel="noopener">older, blue went away</a>`,
+          )
+          .join("; ") +
+        ". Each takes a few seconds to draw. A frame shows the change of its own samples, not of " +
+        "those of the frames above it." +
+        (heap ? "" : " The CPU diff scales both runs to the same number of samples.")
+      : "The two runs have no flamegraph in common.";
+    cmpSec.hidden = false;
   }
 
   // Charts on one time axis, each with its own unit, rather than two units on one chart. The

@@ -109,7 +109,8 @@ if [ -n "$PACKAGES" ]; then
     if [ ! -d /opt/FlameGraph/.git ]; then
         git clone --depth 1 https://github.com/brendangregg/FlameGraph /opt/FlameGraph
     fi
-    ln -sf /opt/FlameGraph/stackcollapse-perf.pl /opt/FlameGraph/flamegraph.pl /usr/local/bin/
+    ln -sf /opt/FlameGraph/stackcollapse-perf.pl /opt/FlameGraph/flamegraph.pl \
+        /opt/FlameGraph/difffolded.pl /usr/local/bin/
 fi
 
 step "kernel settings"
