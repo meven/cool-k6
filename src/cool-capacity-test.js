@@ -104,6 +104,9 @@
  *   CAP_TARGET_FACTOR - multiplies the default edit and load targets (default 1), for a server
  *                       that a profiler slows down
  *   CAP_MAX_ERRORS    - share of failed sessions allowed             (default 0.01)
+ *   CAP_VECTOR        - 1 draws text documents and presentations from vector primitives, as the
+ *                       browser client with vector=true does, see lib/vector_view.js. A scenario
+ *                       name with "-vector" after it, such as impress-vector, does the same.
  */
 
 import exec from 'k6/execution';
@@ -113,6 +116,7 @@ import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.2/index.js';
 
 import { checkWopi, getWopiClientUrl, getWopiSrc } from '../lib/wopi_discovery.js';
 import { CoolClientWs } from '../lib/cool_client_ws.js';
+import { VectorView } from '../lib/vector_view.js';
 import { wopiHost, wopiUrl } from './config.js';
 
 const num = (name, fallback) => Number(__ENV[name] ?? fallback);
@@ -180,15 +184,19 @@ const EDITOR_EVERY = Math.max(1, num('CAP_EDITOR_EVERY', 10));
 // 160 users have 16 editors.
 const PARAGRAPH_STEP = 8;
 const SCENARIO = __ENV['CAP_SCENARIO'] || (__ENV['CAP_DOCS'] ? 'custom' : null);
-const SHARED_FILE = SHARED[SCENARIO] ?? null;
-if (SCENARIO && SCENARIO !== 'custom' && !SCENARIOS[SCENARIO] && !SHARED_FILE) {
+// The scenario without its "-vector", which only changes how the documents are drawn.
+const DOCUMENTS = SCENARIO?.replace(/-vector$/, '') ?? null;
+const VECTOR = __ENV['CAP_VECTOR'] === '1' || DOCUMENTS !== SCENARIO;
+const SHARED_FILE = SHARED[DOCUMENTS] ?? null;
+if (DOCUMENTS && DOCUMENTS !== 'custom' && !SCENARIOS[DOCUMENTS] && !SHARED_FILE) {
     throw new Error(`CAP_SCENARIO=${SCENARIO} is not one of `
-        + `${[...Object.keys(SCENARIOS), ...Object.keys(SHARED)].join(', ')}`);
+        + `${[...Object.keys(SCENARIOS), ...Object.keys(SHARED)].join(', ')}, `
+        + 'with or without -vector after it');
 }
-const DOCS = SCENARIO === 'custom'
+const DOCS = DOCUMENTS === 'custom'
     ? __ENV['CAP_DOCS'].split(',').map((s) => s.split(':').map((v) => v.trim()))
         .map(([id, users]) => [id, Math.max(1, Number(users) || 1)])
-    : SHARED_FILE ? [[SHARED_FILE, 1]] : SCENARIOS[SCENARIO] ?? [[FILE_ID, USERS_PER_DOC]];
+    : SHARED_FILE ? [[SHARED_FILE, 1]] : SCENARIOS[DOCUMENTS] ?? [[FILE_ID, USERS_PER_DOC]];
 // The users of one round of DOCS, each as [index of its document in DOCS, seat in that document].
 const SEATS = DOCS.flatMap(([, users], doc) => Array.from({ length: users }, (_, seat) => [doc, seat]));
 const THINK_MIN_MS = num('CAP_THINK_MIN_MS', 2000);
@@ -296,6 +304,9 @@ const docLoadTime = new Trend('doc_load_time', true);
 const sessionErrors = new Rate('session_errors');
 const editTimeouts = new Counter('edit_timeouts');
 const loadRetries = new Counter('load_retries');
+// The time that k6 spends decompressing and reading vector primitives, which takes CPU from the
+// users on the same cores.
+const vectorDecodeMs = new Counter('vector_decode_ms');
 
 // The plateau whose hold is under way, or 'ramp' between two holds.
 function plateauTag() {
@@ -397,6 +408,10 @@ export default async function () {
             edits: 0,
             // the loads asked for again, and whether the next one is due
             retries: 0, retrying: false,
+            // the vector rendering of a text document or a presentation, or null for tiles
+            vector: null,
+            // the slide that the user shows
+            slide: 0,
         };
         let client;
 
@@ -437,6 +452,7 @@ export default async function () {
         }
 
         function requestVisibleTiles() {
+            if (s.vector) return;
             const now = Date.now();
             if (now - s.lastTileRequest < TILE_REQUEST_GAP_MS) return;
             s.lastTileRequest = now;
@@ -493,6 +509,7 @@ export default async function () {
             sendVisibleArea();
             s.lastTileRequest = 0;
             requestVisibleTiles();
+            if (s.vector && s.kind === 'text') s.vector.showPages(s.viewTop, ROWS * tile);
         }
 
         function nextWord() {
@@ -537,6 +554,8 @@ export default async function () {
                 // coolwsd.
                 const slide = place % Math.max(1, s.parts.length);
                 client.send(`setclientpart part=${s.parts[slide]?.part ?? slide}`);
+                s.slide = slide;
+                s.vector?.showSlide(s.parts, slide);
                 if (editor) pressKey(9, KEY_TAB);
             } else if (s.kind === 'presentation') {
                 client.send('uno .uno:GoToEndOfDoc');
@@ -643,6 +662,19 @@ export default async function () {
             later(() => { s.retrying = false; connect(); }, 500 * s.retries * s.retries);
         }
 
+        // The parts that the status names: the pages in view of a text document, or the current
+        // slide of a presentation, which the status names by its identifier.
+        function showVector(status) {
+            if (s.kind === 'text') {
+                s.vector.setPages(status);
+                s.vector.showPages(s.viewTop, ROWS * s.tileTwips);
+                return;
+            }
+            const selected = s.parts.findIndex((p) => String(p.part) === String(status.selectedpart));
+            if (selected >= 0) s.slide = selected;
+            s.vector.showSlide(s.parts, s.slide);
+        }
+
         // A new socket for each attempt to load. The events of an earlier socket are ignored.
         function connect() {
             const c = new CoolClientWs(wopiClient, wopiSrc, () => {
@@ -665,7 +697,16 @@ export default async function () {
                     return;
                 }
                 if (typeof e.data !== 'string') {
-                    if (e.data instanceof ArrayBuffer) tileReceived(e.data);
+                    if (!(e.data instanceof ArrayBuffer)) return;
+                    if (!s.vector) {
+                        tileReceived(e.data);
+                        return;
+                    }
+                    const before = s.vector.decodeMs;
+                    if (!s.vector.received(e.data)) tileReceived(e.data);
+                    if (s.vector.decodeMs > before) {
+                        vectorDecodeMs.add(s.vector.decodeMs - before, plateauTag());
+                    }
                     return;
                 }
                 if (!s.loaded && e.data.startsWith('status:')) {
@@ -679,15 +720,34 @@ export default async function () {
                     const type = /"type"\s*:\s*"(\w+)"|\btype=(\w+)/.exec(e.data);
                     s.kind = type?.[1] ?? type?.[2] ?? 'text';
                     s.viewId = /"viewid"\s*:\s*(\d+)/.exec(e.data)?.[1] ?? null;
+                    let status = {};
                     try {
-                        s.parts = JSON.parse(e.data.substring(e.data.indexOf('{'))).parts ?? [];
+                        status = JSON.parse(e.data.substring(e.data.indexOf('{')));
+                        s.parts = status.parts ?? [];
                     } catch (err) { /* the older status: of key=value pairs */ }
+                    if (VECTOR && (s.kind === 'text' || s.kind === 'presentation'
+                                   || s.kind === 'drawing')) {
+                        s.vector = new VectorView((message) => client.send(message));
+                    }
                     sendVisibleArea();
+                    if (s.vector) showVector(status);
                     placeCursor();
                     requestVisibleTiles();
                     // A viewer keeps the document open for the session, without typing.
                     if (!editor) later(close, SESSION_MS);
                     else if (s.editing) nextWord();
+                } else if (s.vector && e.data.startsWith('statusupdate:')) {
+                    try {
+                        const status = JSON.parse(e.data.substring(e.data.indexOf('{')));
+                        if (status.parts) s.parts = status.parts;
+                        showVector(status);
+                    } catch (err) { /* not JSON */ }
+                } else if (s.vector && e.data.startsWith('setpart:')) {
+                    const m = /part=(\d+)/.exec(e.data);
+                    if (m) {
+                        s.slide = Number(m[1]);
+                        s.vector.showSlide(s.parts, s.slide);
+                    }
                 } else if (e.data.startsWith('viewlock:')) {
                     try {
                         const lock = JSON.parse(e.data.substring(e.data.indexOf(':') + 1));
@@ -791,7 +851,8 @@ export function handleSummary(data) {
     const on = SERVER.cpus ? ` on cores ${SERVER.cpus} and ${SERVER.memory}` : ' on a server of unknown size';
     lines.push('', `capacity: ${capacity} users${on} (targets: edit p95 < ${EDIT_P95_MS} ms, `
         + `load p95 < ${LOAD_P95_MS} ms, failed sessions < ${100 * MAX_ERRORS}%, `
-        + `${SCENARIO ? `scenario ${SCENARIO}` : `${USERS_PER_DOC} user(s) per document`})`, '');
+        + `${SCENARIO ? `scenario ${SCENARIO}` : `${USERS_PER_DOC} user(s) per document`}`
+        + `${VECTOR && !/-vector$/.test(SCENARIO ?? '') ? ', vector rendering' : ''})`, '');
 
     return {
         stdout: textSummary(data, { indent: ' ', enableColors: true }) + lines.join('\n'),
@@ -800,6 +861,7 @@ export function handleSummary(data) {
             // Wall time of the start of the test, in ms: the plateau times count from it.
             startMs: Date.now() - data.state.testRunDurationMs,
             scenario: SCENARIO,
+            vector: VECTOR,
             zooms: ZOOMS,
             documents: SHARED_FILE ? [{ fileId: SHARED_FILE, users: 'all', editorEvery: EDITOR_EVERY }]
                 : DOCS.map(([id, users]) => ({ fileId: id, users })),

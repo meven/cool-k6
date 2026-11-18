@@ -598,6 +598,13 @@ other, and `all` runs every one, about eight hours:
   multiline text and 2 slides on a master filled with a bitmap.
 - `rtl-book-shared`, `formulas-shared`, `yottadb-shared`: every user on one
   of the real documents, as in `writer-shared`, with the same load target.
+- `writer-vector`, `impress-vector`, `writer-pairs-vector`,
+  `impress-pairs-vector`, `writer-shared-vector`, `impress-shared-vector`: the
+  same scenarios, with the users drawing from vector primitives as the browser
+  client with `vector=true` does. Each user asks for the primitives of the
+  pages or slides it shows, then for each font and image that they name, and
+  receives a delta of each one it holds when it changes, instead of tiles.
+  `CAP_VECTOR=1` does the same for any scenario. A spreadsheet stays on tiles.
 
 The Capacity tab names the scenario of each run.
 

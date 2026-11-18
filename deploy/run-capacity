@@ -29,6 +29,9 @@ SCENARIOS+=" writer-shared calc-shared impress-shared finance-shared"
 # The real documents of documents/fetch-reference-docs.py.
 SCENARIOS+=" reference reference-pairs rtl-book-shared formulas-shared yottadb-shared"
 SCENARIOS+=" reference-ooxml reference-ooxml-pairs"
+# The Writer and Impress ones drawn from vector primitives, as the browser client with vector=true.
+SCENARIOS+=" writer-vector impress-vector writer-pairs-vector impress-pairs-vector"
+SCENARIOS+=" writer-shared-vector impress-shared-vector"
 . deploy/common.sh
 
 wait=
