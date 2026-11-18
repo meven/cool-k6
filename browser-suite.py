@@ -62,8 +62,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 APPS = ("writer", "calc", "impress", "draw")
-DOCS = ("blank", "blank-vector", "5mb", "5mb-vector", "10mb", "duplicate", "duplicate-vector",
-        "ooxml", "ooxml-vector", "image5mb", "finance", "finance-ooxml")
+DOCS = ("blank", "blank-vector", "5mb", "5mb-vector", "10mb", "10mb-vector", "duplicate",
+        "duplicate-vector", "ooxml", "ooxml-vector", "image5mb", "image5mb-vector", "finance",
+        "finance-ooxml")
 
 # What each application has to open. "ooxml" is the same content as "5mb" in the Microsoft
 # format, so the two read as a comparison of the formats; Draw has no such format of its own,
@@ -71,12 +72,14 @@ DOCS = ("blank", "blank-vector", "5mb", "5mb-vector", "10mb", "duplicate", "dupl
 # one service-level requirement is written about, and "image5mb" opens a blank text document
 # and inserts a 5 MB image into it, which is another, so only Writer has those two; "duplicate"
 # is the deck the slide-duplication requirement is measured on, so only Impress has that one.
-# A "-vector" document is the same test with vector rendering, which draws the slides from
-# the primitives the engine sends instead of from tiles, so it reads beside the tile one.
+# A "-vector" document is the same test with vector rendering, which draws the slides or the
+# text pages from the primitives the engine sends instead of from tiles, so it reads beside the
+# tile one.
 # Calc opens a sales ledger with a pivot table, charts and conditional formats instead of a
 # 5 MB document, "finance", and "finance-ooxml" is the same workbook in the Microsoft format.
 DOCS_BY_APP = {
-    "writer": ("blank", "5mb", "10mb", "ooxml", "image5mb"),
+    "writer": ("blank", "blank-vector", "5mb", "5mb-vector", "10mb", "10mb-vector", "ooxml",
+               "ooxml-vector", "image5mb", "image5mb-vector"),
     "calc": ("blank", "finance", "finance-ooxml"),
     "impress": ("blank", "blank-vector", "5mb", "5mb-vector", "duplicate", "duplicate-vector",
                 "ooxml", "ooxml-vector"),
@@ -953,7 +956,7 @@ def demo_history() -> dict:
                          "browser_heap_mb": _stat(base_bh * drift * j())}
                     if users > 1:
                         m["edit_ms"] = _stat(190 * big * drift * j())
-                    if doc == "image5mb":
+                    if base_doc == "image5mb":
                         m["image_displayed_ms"] = _stat(1400 * drift * j())
                     if base_doc == "duplicate":
                         m["slide_duplicated_ms"] = _stat(120 * users * drift * j())
