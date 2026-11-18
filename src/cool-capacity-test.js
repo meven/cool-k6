@@ -673,6 +673,8 @@ export default async function () {
                     docLoadTime.add(Date.now() - s.openedAt, plateauTag());
                     client.send(`clientzoom tilepixelwidth=${TILE_PX} tilepixelheight=${TILE_PX} `
                         + `tiletwipwidth=${s.tileTwips} tiletwipheight=${s.tileTwips}`);
+                    // The browser asks for the font list of the toolbar once a document is loaded.
+                    client.send('commandvalues command=.uno:CharFontName');
                     // The status is JSON, with "type" as in the older "type=" form of the message.
                     const type = /"type"\s*:\s*"(\w+)"|\btype=(\w+)/.exec(e.data);
                     s.kind = type?.[1] ?? type?.[2] ?? 'text';
