@@ -64,7 +64,7 @@ ROOT = Path(__file__).resolve().parent
 APPS = ("writer", "calc", "impress", "draw")
 DOCS = ("blank", "blank-vector", "5mb", "5mb-vector", "10mb", "10mb-vector", "duplicate",
         "duplicate-vector", "ooxml", "ooxml-vector", "image5mb", "image5mb-vector", "finance",
-        "finance-ooxml")
+        "finance-ooxml", "scroll", "scroll-vector")
 
 # What each application has to open. "ooxml" is the same content as "5mb" in the Microsoft
 # format, so the two read as a comparison of the formats; Draw has no such format of its own,
@@ -77,14 +77,25 @@ DOCS = ("blank", "blank-vector", "5mb", "5mb-vector", "10mb", "10mb-vector", "du
 # tile one.
 # Calc opens a sales ledger with a pivot table, charts and conditional formats instead of a
 # 5 MB document, "finance", and "finance-ooxml" is the same workbook in the Microsoft format.
+# "scroll" has 3 users page through the 5 MB document, or the finance workbook, each at a zoom
+# of its own.
 DOCS_BY_APP = {
     "writer": ("blank", "blank-vector", "5mb", "5mb-vector", "10mb", "10mb-vector", "ooxml",
-               "ooxml-vector", "image5mb", "image5mb-vector"),
-    "calc": ("blank", "finance", "finance-ooxml"),
+               "ooxml-vector", "image5mb", "image5mb-vector", "scroll", "scroll-vector"),
+    "calc": ("blank", "finance", "finance-ooxml", "scroll"),
     "impress": ("blank", "blank-vector", "5mb", "5mb-vector", "duplicate", "duplicate-vector",
-                "ooxml", "ooxml-vector"),
-    "draw": ("blank", "5mb"),
+                "ooxml", "ooxml-vector", "scroll", "scroll-vector"),
+    "draw": ("blank", "5mb", "scroll"),
 }
+
+# The user counts of a document that does not run at every count of the run: the scroll test
+# is about several users at different zooms, so it runs with 3 users only.
+USERS_BY_DOC = {"scroll": (3,), "scroll-vector": (3,)}
+
+
+def users_for(doc: str, users_list) -> tuple[int, ...]:
+    """The user counts that @p doc runs at in a run of @p users_list."""
+    return tuple(USERS_BY_DOC.get(doc, users_list))
 
 
 # Real documents that are hard on the application, which documents/fetch-reference-docs.py
@@ -407,7 +418,8 @@ def capture_flamegraphs(results_dir: Path, runid: str, coolwsd_dir: str,
               "before trusting these flamegraphs.", file=sys.stderr)
     failed = []
     outcomes = []
-    captures = [(app, doc, users) for app, doc in documents(which) for users in users_list]
+    captures = [(app, doc, users) for app, doc in documents(which)
+                for users in users_for(doc, users_list)]
     ran = []
     for app, doc, users in captures:
             name = f"{app}-{doc}" + (f"-{users}u" if users > 1 else "")
@@ -506,7 +518,7 @@ def run_suite(results_dir: Path, runid: str, users_list: list[int],
     record per run, a run counting as ok when it measured the document opening."""
     outcomes = []
     for app, doc in documents(which):
-            for users in users_list:
+            for users in users_for(doc, users_list):
                 rel = (results_dir / runid / f"{app}-{doc}-{users}u").as_posix()
                 run_one(app, doc, users, rel, commit)
                 ok, why = measured(ROOT / rel)
@@ -940,7 +952,7 @@ def demo_history() -> dict:
             base_doc = doc.removesuffix("-vector")
             big = {"5mb": 2.3, "ooxml": 2.3, "10mb": 3.6, "finance": 1.6,
                    "finance-ooxml": 1.6}.get(base_doc, 1.0)
-            for users in (1, 3):
+            for users in users_for(doc, (1, 3)):
                 base_dl = (900 + ai * 350) * big * (1.6 if users == 3 else 1.0)
                 # the client shell, near enough the same whatever the document
                 base_fr = 1200 * (1.4 if users == 3 else 1.0)
@@ -958,6 +970,8 @@ def demo_history() -> dict:
                         m["edit_ms"] = _stat(190 * big * drift * j())
                     if base_doc == "image5mb":
                         m["image_displayed_ms"] = _stat(1400 * drift * j())
+                    if base_doc == "scroll":
+                        m["scroll_ms"] = _stat(150 * drift * j())
                     if base_doc == "duplicate":
                         m["slide_duplicated_ms"] = _stat(120 * users * drift * j())
                     pts.append({

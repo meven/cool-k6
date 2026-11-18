@@ -8,6 +8,7 @@ const MS = [
   { m: "edit_ms" },
   { m: "image_displayed_ms" },
   { m: "slide_duplicated_ms" },
+  { m: "scroll_ms" },
 ];
 const NAMES = {
   instr_kit: "document kit instructions",
@@ -20,6 +21,7 @@ const NAMES = {
   edit_ms: "edit",
   image_displayed_ms: "image displayed",
   slide_duplicated_ms: "slide duplicated",
+  scroll_ms: "scroll step",
   cool_mem: "COOL memory",
   browser_mem: "browser heap",
   tab_mem: "page process",
@@ -41,6 +43,8 @@ const APP_ORDER = ["writer", "calc", "impress", "draw"],
     "image5mb-vector",
     "finance",
     "finance-ooxml",
+    "scroll",
+    "scroll-vector",
     // the real documents of documents/reference-docs.json
     "rtl-book",
     "odf-spec",
