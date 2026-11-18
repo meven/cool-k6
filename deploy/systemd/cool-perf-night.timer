@@ -1,0 +1,11 @@
+[Unit]
+Description=Collabora Online runs of the suite and capacity runs every night at midnight
+
+[Timer]
+OnCalendar=*-*-* 00:00:00
+# A night missed while the machine was off does not run at the next boot, since it would measure
+# during the day.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

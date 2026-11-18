@@ -1,0 +1,21 @@
+[Unit]
+Description=Measure Collabora Online main at night: runs of the suite, then capacity runs
+Documentation=file://@REPO@/DEPLOY-VM.md
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+EnvironmentFile=/etc/cool-perf.env
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/deploy/night
+# deploy/night starts no step that would end after COOL_PERF_NIGHT_HOURS, 8 by default. This
+# limit stops a step that runs longer than it should.
+TimeoutStartSec=8h
+# The settings of cool-perf.service, so that the runs measure as a run of the timer does.
+KillMode=control-group
+# k6-flamegraph.py --cgroup creates a cgroup for its coolwsd under this one.
+Delegate=yes

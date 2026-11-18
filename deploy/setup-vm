@@ -167,8 +167,8 @@ fi
 chmod 644 "$ENV_FILE"
 
 step "systemd units"
-for unit in cool-perf.service cool-perf.timer cool-perf-api.service cool-perf-queue.service \
-        cool-docs.service; do
+for unit in cool-perf.service cool-perf.timer cool-perf-night.service cool-perf-night.timer \
+        cool-perf-api.service cool-perf-queue.service cool-docs.service; do
     sed -e "s|@REPO@|$REPO|g" -e "s|@USER@|$SVC_USER|g" \
         "$REPO/deploy/systemd/$unit" > "/etc/systemd/system/$unit"
 done
@@ -177,6 +177,9 @@ systemctl daemon-reload
 # deploy/bootstrap has built the tree a run could only fail.
 systemctl enable cool-perf.timer
 systemctl start cool-perf.timer
+# The runs of the suite and the capacity runs of the night, from midnight.
+systemctl enable cool-perf-night.timer
+systemctl start cool-perf-night.timer
 # The Schedule tab deletes and queues runs through this service.
 systemctl enable cool-perf-api.service
 systemctl restart cool-perf-api.service

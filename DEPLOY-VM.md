@@ -27,6 +27,7 @@ Everything after that runs by itself.
 | `/var/lib/cool-perf/` | the results store: every published run, and `index.html`, the dashboard |
 | `/etc/cool-perf.env` | the configuration, see [Configuration](#configuration) |
 | `/etc/systemd/system/cool-perf.{service,timer}` | the hourly job |
+| `/etc/systemd/system/cool-perf-night.{service,timer}` | the runs of the suite and the capacity runs of main, from midnight for 8 hours |
 | `/etc/systemd/system/cool-perf-api.service` | deletes runs and queues changes from the Schedule tab |
 | `/etc/systemd/system/cool-perf-queue.service` | builds and measures the changes that the Schedule tab queued |
 | `/etc/nginx/sites-available/cool-perf.conf` | serves `/var/lib/cool-perf` on port 80 |
@@ -333,6 +334,17 @@ The empty `OnCalendar=` clears the hourly entry first. A run takes about 20
 minutes when the engine build is incremental. A run that is still going when
 the timer fires again holds the lock, so the new run exits at once.
 
+**The night.** `cool-perf-night.timer` starts `deploy/night` at midnight, in
+the time zone of the machine. It measures `origin/main` with
+`COOL_PERF_NIGHT_RUNS` runs of the suite on the line `main-nightly`, then with
+one capacity run of each scenario of `COOL_PERF_NIGHT_SCENARIOS`. It starts no
+step when fewer than `COOL_PERF_NIGHT_STEP_MINUTES` are left of
+`COOL_PERF_NIGHT_HOURS`, 8 by default, and the unit stops at 8 hours. Each
+step takes the lock and gives it back at its end, so the hourly runs and the
+queued jobs go on between the steps. Pause on the main row of the Schedule tab
+ends the night before its next step. The log of each night is under
+`~/.local/state/cool-perf/night-logs/` of the service user.
+
 ## The build
 
 The engine is configured like a production engine, with
@@ -407,6 +419,8 @@ was measured.
 | resume them | Resume on the same row, which deletes that file |
 | stop the timer itself | `sudo systemctl disable --now cool-perf.timer` |
 | start it again | `sudo systemctl enable --now cool-perf.timer` |
+| follow the night | `journalctl -u cool-perf-night.service -f` |
+| stop the nights | `sudo systemctl disable --now cool-perf-night.timer` |
 | check the machine | `sudo -iu collabora sh -c 'set -a; . /etc/cool-perf.env; ~/perf-dashboard/cool-ci doctor'` |
 | the last published run | `cat /var/lib/cool-perf/last-run.json` |
 

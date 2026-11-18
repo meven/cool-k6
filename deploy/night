@@ -1,0 +1,60 @@
+#!/bin/bash
+# The night of measurements of main: COOL_PERF_NIGHT_RUNS runs of the suite on the line
+# main-nightly, then a capacity run of each scenario of COOL_PERF_NIGHT_SCENARIOS, until
+# COOL_PERF_NIGHT_HOURS have passed since the start. cool-perf-night.timer starts it at midnight.
+# To run it by hand, start the service, so the night gets the same user, cgroup and environment:
+#
+#   sudo systemctl start cool-perf-night.service
+#   journalctl -u cool-perf-night.service -f
+#
+# Each step takes the lock of deploy/nightly and gives it back at its end, so a run of the hourly
+# timer or a queued job can come between two steps.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+cd "$REPO"
+
+set -a; . /etc/cool-perf.env; set +a
+: "${COOLWSD_DIR:?not set in /etc/cool-perf.env}"
+
+hours=${COOL_PERF_NIGHT_HOURS:-8}
+runs=${COOL_PERF_NIGHT_RUNS:-3}
+read -ra scenarios <<< "${COOL_PERF_NIGHT_SCENARIOS:-writer calc impress mixed}"
+# A capacity run of one scenario takes about 25 minutes, and its build a few more.
+step_minutes=${COOL_PERF_NIGHT_STEP_MINUTES:-35}
+deadline=$(( $(date +%s) + hours * 3600 ))
+store=${COOL_PERF_STORE:-/var/lib/cool-perf}
+
+# The output also goes to a file of its own, as the runs of deploy/nightly do. The 14 newest are
+# kept.
+STATE=${XDG_STATE_HOME:-$HOME/.local/state}/cool-perf
+NIGHT_LOGS=$STATE/night-logs
+mkdir -p "$NIGHT_LOGS"
+ls -1t "$NIGHT_LOGS" | tail -n +14 | while read -r old; do rm -f "$NIGHT_LOGS/$old"; done
+exec > >(tee -a "$NIGHT_LOGS/$(date -u +%Y%m%dT%H%M%SZ).log") 2>&1
+
+# True while the night has time left for one more step, and the runs of main are not paused from
+# the Schedule tab.
+may_go_on() {
+    if [ -f "$store/main-paused" ]; then
+        echo "=== the runs of main are paused from the Schedule tab, the night ends here"
+        return 1
+    fi
+    local left=$(( (deadline - $(date +%s)) / 60 ))
+    if [ "$left" -lt "$step_minutes" ]; then
+        echo "=== $left minutes left, less than the $step_minutes of a step, the night ends here"
+        return 1
+    fi
+}
+
+status=0
+if [ "$runs" -gt 0 ] && may_go_on; then
+    echo "=== $runs runs of origin/main on the line main-nightly"
+    deploy/run-branch --name main-nightly --ref origin/main --runs "$runs" --wait || status=$?
+fi
+for scenario in "${scenarios[@]}"; do
+    may_go_on || break
+    echo "=== capacity run of origin/main, scenario $scenario"
+    deploy/run-capacity --wait --ref origin/main "$scenario" || status=$?
+done
+exit "$status"
