@@ -5,7 +5,7 @@
  */
 import { scenarioOptions, setupWopi, runDocScenario, makeSummary }
     from '../lib/browser_scenario.js';
-import { scrollThrough, SCROLL_METRICS, SCROLL_TIMEOUT_COUNTER } from '../lib/scroll_probe.js';
+import { scrollThrough, SCROLL_METRICS, SCROLL_COUNTERS } from '../lib/scroll_probe.js';
 
 const FILE_ID = Number(__ENV['FILE_ID'] || 25);  // documents/calc-finance.ods
 
@@ -17,6 +17,6 @@ export default async function () {
 export function handleSummary(data) {
     return makeSummary('calc', 'scroll', undefined, {
         metrics: SCROLL_METRICS,
-        counters: { scroll_timeouts: SCROLL_TIMEOUT_COUNTER },
+        counters: SCROLL_COUNTERS,
     })(data);
 }

@@ -878,6 +878,7 @@ def collect(results_dir: Path) -> dict:
             "commit": d.get("commit"), "ts": ts,
             "runid": _runid_of(mj, results_dir),
             "metrics": metrics,
+            "counters": d.get("counters"),
             "cool_memory": d.get("cool_memory") or _capture_memory(mj),
             "browser_memory": d.get("browser_memory") or _capture_browser_memory(mj),
             "instructions": d.get("instructions") or _capture_instructions(mj),
