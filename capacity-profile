@@ -67,6 +67,10 @@
 
 set -euo pipefail
 
+# coolwsd.service sets LimitNOFILE=infinity. Under the systemd default of 1024, coolwsd ran out of
+# file descriptors at about 150 documents (EMFILE), and k6 users waited on sockets forever.
+ulimit -n "$(ulimit -Hn)"
+
 ROOT=$(cd "$(dirname "$0")" && pwd)
 OUT_DIR=${OUT_DIR:-$ROOT/results/capacity-$(date -u +%Y%m%dT%H%M%SZ)}
 WOPI_URL=${WOPI_URL:-https://localhost:9980/}
