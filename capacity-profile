@@ -481,9 +481,15 @@ K6_PID=$!
 # k6 does not interrupt a user that waits on a socket the server keeps open, so a run where the
 # server stopped answering would never end. Past the deadline k6 is stopped, and still writes
 # its summary.
+# A SIGTERM only starts a graceful stop, which waits for those same users, so a k6 that is
+# still there a minute later gets a SIGKILL.
 ( sleep "$K6_DEADLINE"
   echo "capacity-profile: k6 still runs ${K6_DEADLINE}s after its start, stopping it" >&2
-  kill -TERM "$K6_PID" 2>/dev/null || true ) &
+  kill -TERM "$K6_PID" 2>/dev/null || exit 0
+  sleep 60
+  kill -0 "$K6_PID" 2>/dev/null || exit 0
+  echo "capacity-profile: k6 ignored SIGTERM, killing it" >&2
+  kill -KILL "$K6_PID" 2>/dev/null || true ) &
 K6_WATCHDOG_PID=$!
 if [ "$MEM_FLOOR_MB" -gt 0 ]; then
     mem_watch "$K6_PID" &
